@@ -6,6 +6,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 SCHEMA_FILE="$REPO_ROOT/config.schema.json"
 DISCOVER_PREVIOUS_RUN_ID=""
 NEGOTIATE_EXIT_NEEDS_HUMAN=3
+EXECUTE_EXIT_NEEDS_HUMAN=4
 
 # shellcheck source=lib/providers/common.sh
 source "$REPO_ROOT/lib/providers/common.sh"
@@ -61,6 +62,21 @@ repo_abs_path() {
   local repo="$1"
   [[ -d "$repo" ]] || die "repository not found: $repo"
   (cd "$repo" && pwd -P)
+}
+
+repo_paused_file() {
+  printf '%s/.e3d-pilot/paused' "$1"
+}
+
+repo_is_paused() {
+  [[ -f "$(repo_paused_file "$1")" ]]
+}
+
+ensure_repo_not_paused() {
+  local repo="$1" stage="${2:-stage}"
+  if repo_is_paused "$repo"; then
+    die "$stage is paused because $(repo_paused_file "$repo") exists"
+  fi
 }
 
 config_path_for_repo() {
@@ -745,6 +761,148 @@ draft_validate_spec() {
   [[ ! -s "$violations_file" ]]
 }
 
+execute_spec_guard() {
+  local spec_file="$1" config_file="$2" violations_file="$3"
+  draft_validate_spec "$spec_file" "$config_file" "$violations_file"
+}
+
+ensure_worktree() {
+  local repo="$1" run_dir="$2" run_id="$3" branch worktree_dir start_ref
+  branch="e3d-pilot/$run_id"
+  worktree_dir="$(mktemp -d "${TMPDIR:-/tmp}/e3d-pilot.${run_id}.XXXXXX")"
+  start_ref="HEAD"
+
+  if ! git -C "$repo" worktree add -b "$branch" "$worktree_dir" "$start_ref" >/dev/null 2>&1; then
+    rm -rf "$worktree_dir"
+    die "failed to create execute worktree for branch $branch"
+  fi
+
+  printf '%s\t%s\n' "$branch" "$worktree_dir" > "$run_dir/execute-worktree.txt"
+  printf '%s' "$worktree_dir"
+}
+
+prepare_execute_spec_in_worktree() {
+  local worktree_dir="$1" run_id="$2" source_spec="$3" worktree_run_dir target_spec
+  worktree_run_dir="$worktree_dir/.e3d-pilot/runs/$run_id"
+  target_spec="$worktree_run_dir/spec-final.md"
+  mkdir -p "$worktree_run_dir"
+  cp "$source_spec" "$target_spec"
+  printf '%s' "$target_spec"
+}
+
+count_git_diff() {
+  local worktree_dir="$1" diff_output untracked files_changed=0 lines_changed=0 add del path
+  diff_output="$(git -C "$worktree_dir" diff --numstat --no-renames -- . 2>/dev/null || true)"
+  while IFS=$'\t' read -r add del path; do
+    [[ -n "$path" ]] || continue
+    files_changed=$((files_changed + 1))
+    if [[ "$add" != "-" ]]; then
+      lines_changed=$((lines_changed + add))
+    fi
+    if [[ "$del" != "-" ]]; then
+      lines_changed=$((lines_changed + del))
+    fi
+  done <<< "$diff_output"
+  untracked="$(git -C "$worktree_dir" ls-files --others --exclude-standard 2>/dev/null || true)"
+  while IFS= read -r path; do
+    [[ -n "$path" ]] || continue
+    files_changed=$((files_changed + 1))
+    if [[ -f "$worktree_dir/$path" ]]; then
+      lines_changed=$((lines_changed + $(wc -l < "$worktree_dir/$path")))
+    fi
+  done <<< "$untracked"
+  printf '%s\t%s\n' "$files_changed" "$lines_changed"
+}
+
+copy_csr_state_artifacts() {
+  local worktree_dir="$1" run_dir="$2" csr_state_dir
+  csr_state_dir="$worktree_dir/.codex-spec-runner"
+  if [[ -d "$csr_state_dir" ]]; then
+    rm -rf "$run_dir/csr-state"
+    cp -R "$csr_state_dir" "$run_dir/csr-state"
+  fi
+}
+
+execute_stage() {
+  local repo="$1" run_id="$2" run_dir config_file spec_final_file violations_file worktree_dir branch
+  local max_diff_files max_diff_lines diff_counts diff_files diff_lines csr_bin csr_stdout csr_stderr csr_status
+  local worktree_spec_file csr_command_file
+
+  ensure_git_repo "$repo"
+  config_file="$(config_path_for_repo "$repo")"
+  validate_config_file "$config_file"
+  run_dir="$(runs_dir_for_repo "$repo")/$run_id"
+  mkdir -p "$run_dir"
+
+  spec_final_file="$run_dir/spec-final.md"
+  [[ -f "$spec_final_file" ]] || die "execute requires spec-final.md for run $run_id; run negotiate first"
+
+  violations_file="$run_dir/execute-guard-violations.txt"
+  if ! execute_spec_guard "$spec_final_file" "$config_file" "$violations_file"; then
+    {
+      printf 'execute: rejected spec-final.md before csr was invoked because it violates protected_paths\n'
+      while IFS= read -r line; do
+        [[ -n "$line" ]] || continue
+        printf '  - %s\n' "$line"
+      done < "$violations_file"
+    }
+    return "$EXECUTE_EXIT_NEEDS_HUMAN"
+  fi
+
+  worktree_dir="$(ensure_worktree "$repo" "$run_dir" "$run_id")"
+  branch="e3d-pilot/$run_id"
+  worktree_spec_file="$(prepare_execute_spec_in_worktree "$worktree_dir" "$run_id" "$spec_final_file")"
+  max_diff_files="$(config_value "$config_file" '.max_diff_files')"
+  max_diff_lines="$(config_value "$config_file" '.max_diff_lines')"
+
+  csr_bin="$(command -v codex-spec-runner || true)"
+  [[ -n "$csr_bin" ]] || die "codex-spec-runner not found on PATH"
+
+  csr_stdout="$run_dir/execute-csr.stdout"
+  csr_stderr="$run_dir/execute-csr.stderr"
+  csr_command_file="$run_dir/execute-csr.command"
+  printf 'cd %s && %s %s all\n' "$worktree_dir" "$csr_bin" "$worktree_spec_file" > "$csr_command_file"
+
+  set +e
+  ( cd "$worktree_dir" && "$csr_bin" "$worktree_spec_file" all ) >"$csr_stdout" 2>"$csr_stderr"
+  csr_status=$?
+  set -e
+
+  copy_csr_state_artifacts "$worktree_dir" "$run_dir"
+
+  if [[ $csr_status -ne 0 ]]; then
+    if [[ -s "$csr_stderr" ]]; then
+      die "execute csr run failed: $(tr '\n' ' ' < "$csr_stderr")"
+    fi
+    die "execute csr run failed with exit status $csr_status"
+  fi
+
+  diff_counts="$(count_git_diff "$worktree_dir")"
+  diff_files="${diff_counts%%$'\t'*}"
+  diff_lines="${diff_counts#*$'\t'}"
+  {
+    printf 'branch: %s\n' "$branch"
+    printf 'worktree: %s\n' "$worktree_dir"
+    printf 'diff_files: %s\n' "$diff_files"
+    printf 'diff_lines: %s\n' "$diff_lines"
+    printf 'max_diff_files: %s\n' "$max_diff_files"
+    printf 'max_diff_lines: %s\n' "$max_diff_lines"
+  } > "$run_dir/execute-diff-summary.txt"
+
+  if (( diff_files > max_diff_files || diff_lines > max_diff_lines )); then
+    {
+      printf 'execute: diff exceeds configured ceiling; stopping before review/publish\n'
+      printf '  branch: %s\n' "$branch"
+      printf '  worktree: %s\n' "$worktree_dir"
+      printf '  diff_files: %s (max %s)\n' "$diff_files" "$max_diff_files"
+      printf '  diff_lines: %s (max %s)\n' "$diff_lines" "$max_diff_lines"
+    }
+    return "$EXECUTE_EXIT_NEEDS_HUMAN"
+  fi
+
+  printf 'execute: completed csr run on %s with diff_files=%s diff_lines=%s\n' "$branch" "$diff_files" "$diff_lines"
+}
+
 draft_stage() {
   local repo="$1" run_id="$2" run_dir config_file candidates_file selected
   ensure_git_repo "$repo"
@@ -1083,6 +1241,7 @@ run_single_stage() {
   local run_dir
   run_dir="$(runs_dir_for_repo "$repo")/$run_id"
   mkdir -p "$run_dir"
+  ensure_repo_not_paused "$repo" "$stage"
   case "$stage" in
     discover)
       discover_stage "$repo" "$run_id"
@@ -1096,7 +1255,10 @@ run_single_stage() {
     negotiate)
       negotiate_stage "$repo" "$run_id"
       ;;
-    execute|review|publish)
+    execute)
+      execute_stage "$repo" "$run_id"
+      ;;
+    review|publish)
       stage_stub "$stage" "$repo" "$run_id" "$run_dir"
       ;;
     all)
@@ -1109,6 +1271,10 @@ run_single_stage() {
         set -e
         if [[ $current_status -eq "$NEGOTIATE_EXIT_NEEDS_HUMAN" ]]; then
           printf 'negotiate: needs human; stopping before execute\n'
+          return "$current_status"
+        fi
+        if [[ $current_status -eq "$EXECUTE_EXIT_NEEDS_HUMAN" ]]; then
+          printf 'execute: human review required; stopping before review\n'
           return "$current_status"
         fi
         [[ $current_status -eq 0 ]] || return "$current_status"
@@ -1165,7 +1331,6 @@ cmd_run() {
   [[ -n "$repo" ]] || die "--repo is required"
   [[ -n "$stage" ]] || die "--stage is required"
   repo="$(repo_abs_path "$repo")"
-
   if [[ "$stage" == "discover" || "$stage" == "all" ]]; then
     if [[ -z "$run_id" ]]; then
       if [[ -f "$(latest_run_path_for_repo "$repo")" ]]; then
