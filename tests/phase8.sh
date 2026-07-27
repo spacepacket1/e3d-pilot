@@ -142,11 +142,36 @@ make_execute_like_worktree() {
   printf '%s' "$worktree"
 }
 
+make_network_trace_bin_dir() {
+  local bin_dir="$1" trace_file="$2" real_git real_gh
+  mkdir -p "$bin_dir"
+  real_git="$(command -v git)"
+  cat > "$bin_dir/git" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "\${1:-}" == "push" ]]; then
+  printf 'git push %s\n' "\$*" >> "$trace_file"
+fi
+exec "$real_git" "\$@"
+EOF
+  chmod +x "$bin_dir/git"
+
+  real_gh="$(command -v gh 2>/dev/null || true)"
+  cat > "$bin_dir/gh" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'gh %s\n' "\$*" >> "$trace_file"
+${real_gh:+exec "$real_gh" "\$@"}
+EOF
+  chmod +x "$bin_dir/gh"
+}
+
 review_verify_failure_blocks_publish() {
-  local repo run_id out status
+  local repo run_id out status trace_bin_dir trace_file
   repo="$(make_repo_with_commit)"
   run_id="2026-07-27-phase8-fail"
-  write_phase8_config "$repo" "local" '["false"]'
+  write_phase8_config "$repo" "github" '["false"]'
+  git -C "$repo" remote add origin "https://github.com/example/test-repo.git"
   write_phase8_run_artifacts "$repo" "$run_id"
   make_execute_like_worktree "$repo" "$run_id" >/dev/null
 
@@ -157,12 +182,20 @@ review_verify_failure_blocks_publish() {
   assert_eq "$status" "5" "verify failure should return review exit code"
   assert_contains "$out" "review: verify failed"
 
+  trace_bin_dir="$(mktemp -d)"
+  trace_file="$(mktemp)"
+  make_network_trace_bin_dir "$trace_bin_dir" "$trace_file"
+
   set +e
-  out="$("$BIN" run --repo "$repo" --stage publish --run-id "$run_id" 2>&1)"
+  out="$(PATH="$trace_bin_dir:$PATH" "$BIN" run --repo "$repo" --stage publish --run-id "$run_id" 2>&1)"
   status=$?
   set -e
   assert_eq "$status" "1" "publish should refuse after verify failure"
   assert_contains "$out" "publish refused because verify did not pass"
+  [[ ! -s "$trace_file" ]] || { echo "publish should not have attempted any git push or gh call: $(cat "$trace_file")" >&2; exit 1; }
+
+  rm -rf "$trace_bin_dir"
+  rm -f "$trace_file"
 }
 
 review_auto_detects_make_test_when_verify_empty() {
@@ -186,7 +219,7 @@ EOF
 }
 
 local_publish_commits_audit_artifacts() {
-  local repo run_id worktree bin_dir out tree summary commands status_text
+  local repo run_id worktree bin_dir out tree summary commands status_text trace_bin_dir trace_file
   repo="$(make_repo_with_commit)"
   run_id="2026-07-27-phase8-local"
   write_phase8_config "$repo" "local" '["test -f README.md"]' '{"command":"e3d-agent verify-live"}'
@@ -208,8 +241,15 @@ EOF
   assert_contains "$commands" "e3d-agent verify-live"
   [[ -f "$worktree/.live-verify.txt" ]] || { echo "expected live verify marker in worktree" >&2; exit 1; }
 
-  out="$(PATH="$bin_dir:$PATH" "$BIN" run --repo "$repo" --stage publish --run-id "$run_id")"
+  trace_bin_dir="$(mktemp -d)"
+  trace_file="$(mktemp)"
+  make_network_trace_bin_dir "$trace_bin_dir" "$trace_file"
+
+  out="$(PATH="$bin_dir:$trace_bin_dir:$PATH" "$BIN" run --repo "$repo" --stage publish --run-id "$run_id")"
   assert_contains "$out" "mode: local"
+  [[ ! -s "$trace_file" ]] || { echo "local publish should never push or call gh: $(cat "$trace_file")" >&2; exit 1; }
+  rm -rf "$trace_bin_dir"
+  rm -f "$trace_file"
   summary="$(cat "$repo/.e3d-pilot/runs/$run_id/publish-summary.md")"
   assert_contains "$summary" ".e3d-pilot/runs/$run_id/findings.md"
   assert_contains "$summary" ".e3d-pilot/runs/$run_id/candidates.md"

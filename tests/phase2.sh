@@ -37,21 +37,41 @@ providers_list_reports_local_unavailable_when_unset() {
   assert_contains "$out" "local    unavailable"
 }
 
-providers_list_reports_local_available_against_curl_stub() {
-  local stub_dir out
-  stub_dir="$(mktemp -d)"
-  cat > "$stub_dir/curl" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-exit 0
-EOF
-  chmod +x "$stub_dir/curl"
+providers_list_reports_local_available_against_real_http_stub() {
+  local dir port server_pid out attempt endpoint
+  dir="$(mktemp -d)"
+  port=$(( (RANDOM % 5000) + 20000 ))
+  endpoint="http://127.0.0.1:$port/"
 
-  out="$(PATH="$stub_dir:$PATH" LOCAL_MODEL_ENDPOINT="http://127.0.0.1:18734/v1" "$BIN" providers list)"
+  (cd "$dir" && exec python3 -m http.server "$port" --bind 127.0.0.1) >/dev/null 2>&1 &
+  server_pid=$!
 
-  rm -rf "$stub_dir"
+  attempt=0
+  until curl -s -o /dev/null -m 1 "$endpoint" || [[ $attempt -ge 50 ]]; do
+    attempt=$((attempt + 1))
+    sleep 0.1
+  done
+  if [[ $attempt -ge 50 ]]; then
+    kill "$server_pid" 2>/dev/null || true
+    rm -rf "$dir"
+    echo "throwaway HTTP stub never became reachable" >&2
+    exit 1
+  fi
+
+  out="$(LOCAL_MODEL_ENDPOINT="$endpoint" "$BIN" providers list)"
+
+  kill "$server_pid" 2>/dev/null || true
+  wait "$server_pid" 2>/dev/null || true
+  rm -rf "$dir"
 
   assert_contains "$out" "local    available"
+}
+
+providers_list_reports_local_unavailable_against_closed_port() {
+  local port out
+  port=$(( (RANDOM % 5000) + 25000 ))
+  out="$(LOCAL_MODEL_ENDPOINT="http://127.0.0.1:$port/" "$BIN" providers list)"
+  assert_contains "$out" "local    unavailable"
 }
 
 providers_list_reports_claude_and_codex_status() {
@@ -214,7 +234,8 @@ convergence_three_entries_one_dissenting_does_not_converge() {
 
 main() {
   providers_list_reports_local_unavailable_when_unset
-  providers_list_reports_local_available_against_curl_stub
+  providers_list_reports_local_available_against_real_http_stub
+  providers_list_reports_local_unavailable_against_closed_port
   providers_list_reports_claude_and_codex_status
   claude_provider_requires_prompt_file_argument
   claude_provider_dry_run_prints_command

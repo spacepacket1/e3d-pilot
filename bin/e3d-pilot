@@ -296,6 +296,27 @@ discover_previous_run_findings_path() {
   printf '%s' "$path"
 }
 
+DEFAULT_ANALOGY_DOMAINS=(
+  "game progression and reward loops"
+  "social feed and notification mechanics"
+  "marketplace liquidity and two-sided matching"
+  "developer-tool CLI ergonomics"
+  "fintech trust and verification UX"
+)
+
+# Config carries analogy_domains as data (like research_topics); this just
+# resolves it to a newline-separated list, falling back to the built-in
+# default when the target repo's config omits or empties the field.
+analogy_domains_list() {
+  local config_file="$1" raw
+  raw="$(jq -r 'if (has("analogy_domains") and (.analogy_domains | length) > 0) then (.analogy_domains | join("\n")) else empty end' "$config_file")"
+  if [[ -n "$raw" ]]; then
+    printf '%s\n' "$raw"
+  else
+    printf '%s\n' "${DEFAULT_ANALOGY_DOMAINS[@]}"
+  fi
+}
+
 build_discover_facts_markdown() {
   local repo="$1" config_file="$2" facts_file="$3" previous_findings="$4"
   local head_sha research_topics
@@ -304,6 +325,7 @@ build_discover_facts_markdown() {
   {
     printf 'Repo head sha: %s\n\n' "$head_sha"
     printf 'Research topics: %s\n\n' "$research_topics"
+    printf 'Analogy domains to consider: %s\n\n' "$(analogy_domains_list "$config_file" | paste -sd ';' - | sed 's/;/; /g')"
     printf '## Git history\n'
     load_git_log_summary "$repo" "$previous_findings" "${HISTORY_LOOKBACK_COMMITS:-20}"
     printf '\n## Branches\n'
@@ -323,6 +345,12 @@ build_discover_prompt() {
     printf 'You are producing the "External Context" section of a repo findings report.\n'
     printf 'Keep it short and focused on the current state of the art relevant to the repo.\n\n'
     printf 'Return markdown bullet points or short paragraphs only.\n\n'
+    printf 'Also include a distinct "### Analogous Patterns" subsection: pick the 2-3\n'
+    printf 'most transferable entries from the "Analogy domains to consider" line in the\n'
+    printf 'local facts below for this specific repo, and for each one name the source\n'
+    printf 'domain, the mechanic being borrowed, and one concrete sentence on how it\n'
+    printf 'could apply here. The goal is to seed ideation with cross-domain metaphors,\n'
+    printf 'not just incremental extensions of what the repo already does.\n\n'
     printf 'Local facts:\n\n'
     cat "$facts_file"
   } > "$prompt_file"
@@ -476,11 +504,26 @@ build_ideate_prompt() {
     printf 'For EACH candidate you must explicitly check it against the git branches, the\n'
     printf 'PR list (when available), and past runs candidates/specs listed below, and\n'
     printf 'state plainly whether it duplicates something that already exists.\n\n'
+    printf 'This project'"'"'s primary goal is attracting and retaining users; revenue is\n'
+    printf 'secondary. Draw on the findings'"'"' "Analogous Patterns" subsection where it\n'
+    printf 'applies, and consider ideas spanning multiple categories (data usefulness,\n'
+    printf 'workflow-in-UI, social, gamification, testing, marketing, selling) when good\n'
+    printf 'ones exist for each -- but never force a weak or duplicate idea into a\n'
+    printf 'category just for coverage.\n\n'
     printf 'Respond using exactly this format, one block per candidate:\n\n'
     printf '### Candidate <N>: <short title>\n'
     printf 'Duplicate: yes|no\n'
     printf 'Dedup rationale: <cite the specific branch/PR/run you checked, or say why not>\n'
+    printf 'Category: data|workflow|social|gamification|testing|marketing|selling|other\n'
+    printf 'Analogy: <source domain> -- <how it transfers, or "none" if not applicable>\n'
+    printf 'Attraction (1-5): <score, new-user pull>\n'
+    printf 'Retention (1-5): <score, repeat-engagement value>\n'
+    printf 'Effort: low|medium|high\n'
+    printf 'Revenue (1-5|n/a): <score, secondary -- never outranks Attraction+Retention>\n'
     printf 'Description: <what to build and why>\n\n'
+    printf 'Rank non-duplicate candidates primarily by Attraction + Retention (highest\n'
+    printf 'first); Revenue may only break ties between otherwise-equal candidates and\n'
+    printf 'must never let a lower Attraction + Retention candidate outrank a higher one.\n\n'
     printf 'After all candidates, end your response with exactly this block: choose the\n'
     printf 'highest-ranked candidate that is NOT a duplicate as "selected", using the\n'
     printf 'literal value "none" only if every candidate is a duplicate of existing work.\n\n'
@@ -493,19 +536,86 @@ build_ideate_prompt() {
 }
 
 write_candidates_markdown() {
-  local selected="$1" reason="$2" facts_file="$3" response_file="$4" candidates_file="$5"
+  local selected="$1" reason="$2" facts_file="$3" response_file="$4" candidates_file="$5" warnings_file="${6:-}"
   {
     printf -- '---\n'
     printf 'selected: %s\n' "$selected"
     printf 'reason: %s\n' "$reason"
     printf -- '---\n\n'
     printf '# Candidates\n\n'
+    if [[ -n "$warnings_file" && -s "$warnings_file" ]]; then
+      printf '## Validation Warnings\n\n'
+      while IFS= read -r line; do
+        [[ -n "$line" ]] && printf -- '- %s\n' "$line"
+      done < "$warnings_file"
+      printf '\n'
+    fi
     printf '## Dedup Context\n\n'
     cat "$facts_file"
     printf '\n## Proposed Candidates\n\n'
     cat "$response_file"
     printf '\n'
   } > "$candidates_file"
+}
+
+# Prompt-only requirements ("propose 3-5 candidates", "each with a dedup
+# rationale") aren't otherwise enforced anywhere, so a model that ignores them
+# would go unnoticed. This is a soft check: it records warnings (surfaced in
+# candidates.md and stdout) rather than failing the stage, since neither the
+# spec nor Phase 4's acceptance criteria treat this as a hard rejection like
+# Phase 5's protected_paths guard.
+ideate_validate_candidates() {
+  local response_file="$1" warnings_file="$2"
+  : > "$warnings_file"
+
+  local count
+  count="$(grep -cE '^### Candidate [0-9]+:' "$response_file" || true)"
+  if (( count < 3 || count > 5 )); then
+    printf 'expected 3-5 candidates, got %s\n' "$count" >> "$warnings_file"
+  fi
+
+  local current_num="" current_rationale=""
+  local has_category=0 has_analogy=0 has_attraction=0 has_retention=0 has_effort=0 line
+
+  while IFS= read -r line; do
+    if [[ "$line" =~ ^###\ Candidate\ ([0-9]+): ]]; then
+      if [[ -n "$current_num" ]]; then
+        [[ -n "$current_rationale" ]] || printf 'Candidate %s is missing a Dedup rationale\n' "$current_num" >> "$warnings_file"
+        (( has_category )) || printf 'Candidate %s is missing a Category field\n' "$current_num" >> "$warnings_file"
+        (( has_analogy )) || printf 'Candidate %s is missing an Analogy field\n' "$current_num" >> "$warnings_file"
+        (( has_attraction )) || printf 'Candidate %s is missing an Attraction score\n' "$current_num" >> "$warnings_file"
+        (( has_retention )) || printf 'Candidate %s is missing a Retention score\n' "$current_num" >> "$warnings_file"
+        (( has_effort )) || printf 'Candidate %s is missing an Effort field\n' "$current_num" >> "$warnings_file"
+      fi
+      current_num="${BASH_REMATCH[1]}"
+      current_rationale=""
+      has_category=0; has_analogy=0; has_attraction=0; has_retention=0; has_effort=0
+    elif [[ -n "$current_num" ]]; then
+      if [[ "$line" =~ ^Dedup\ rationale:[[:space:]]*(.*)$ ]]; then
+        current_rationale="${BASH_REMATCH[1]}"
+      elif [[ "$line" =~ ^Category:[[:space:]]*(.+)$ ]]; then
+        has_category=1
+      elif [[ "$line" =~ ^Analogy:[[:space:]]*(.+)$ ]]; then
+        has_analogy=1
+      elif [[ "$line" =~ ^Attraction.*:[[:space:]]*[0-9] ]]; then
+        has_attraction=1
+      elif [[ "$line" =~ ^Retention.*:[[:space:]]*[0-9] ]]; then
+        has_retention=1
+      elif [[ "$line" =~ ^Effort:[[:space:]]*(.+)$ ]]; then
+        has_effort=1
+      fi
+    fi
+  done < "$response_file"
+  if [[ -n "$current_num" ]]; then
+    [[ -n "$current_rationale" ]] || printf 'Candidate %s is missing a Dedup rationale\n' "$current_num" >> "$warnings_file"
+    (( has_category )) || printf 'Candidate %s is missing a Category field\n' "$current_num" >> "$warnings_file"
+    (( has_analogy )) || printf 'Candidate %s is missing an Analogy field\n' "$current_num" >> "$warnings_file"
+    (( has_attraction )) || printf 'Candidate %s is missing an Attraction score\n' "$current_num" >> "$warnings_file"
+    (( has_retention )) || printf 'Candidate %s is missing a Retention score\n' "$current_num" >> "$warnings_file"
+    (( has_effort )) || printf 'Candidate %s is missing an Effort field\n' "$current_num" >> "$warnings_file"
+  fi
+
+  [[ ! -s "$warnings_file" ]]
 }
 
 ideate_stage() {
@@ -553,7 +663,15 @@ ideate_stage() {
   reason="$(ideate_status_field "reason" <<<"$provider_output" || true)"
   [[ -n "$selected" ]] || die "ideate provider response missing ---IDEATE-STATUS--- selected field"
 
-  write_candidates_markdown "$selected" "$reason" "$facts_file" "$run_dir/ideate-response.md" "$candidates_file"
+  local warnings_file="$run_dir/ideate-warnings.txt"
+  if ! ideate_validate_candidates "$run_dir/ideate-response.md" "$warnings_file"; then
+    printf 'ideate: warning: candidate response did not fully match the expected format:\n'
+    while IFS= read -r line; do
+      [[ -n "$line" ]] && printf '  - %s\n' "$line"
+    done < "$warnings_file"
+  fi
+
+  write_candidates_markdown "$selected" "$reason" "$facts_file" "$run_dir/ideate-response.md" "$candidates_file" "$warnings_file"
   printf '%s\n' "$run_id"
 }
 
@@ -688,10 +806,50 @@ draft_phase_body() {
   fi
 }
 
+strip_recursive_wildcard() {
+  # Turns "foo/**" -> "foo" and "**/*.env" -> "*.env" so a leading/trailing
+  # "**" segment is also tried as matching zero directories -- bash's plain
+  # pattern matching (used below) treats "**" as just another "*" and never
+  # matches "zero directories" on its own, unlike gitignore/glob conventions.
+  local p="$1"
+  p="${p%/\*\*}"
+  p="${p#\*\*/}"
+  printf '%s' "$p"
+}
+
+glob_variants() {
+  local p="$1"
+  printf '%s\n' "$p"
+  [[ "$p" == '**/'* ]] && printf '%s\n' "${p#\*\*/}"
+  [[ "$p" == *'/**' ]] && printf '%s\n' "${p%/\*\*}"
+}
+
 touches_glob_conflicts_with_protected() {
   local touches="$1" protected="$2"
-  [[ "$touches" == $protected ]] && return 0
-  [[ "$protected" == $touches ]] && return 0
+  local tv pv
+  while IFS= read -r tv; do
+    [[ -n "$tv" ]] || continue
+    while IFS= read -r pv; do
+      [[ -n "$pv" ]] || continue
+      [[ "$touches" == $pv ]] && return 0
+      [[ "$protected" == $tv ]] && return 0
+      [[ "$tv" == $pv ]] && return 0
+    done < <(glob_variants "$protected")
+  done < <(glob_variants "$touches")
+
+  # Bare-directory containment: a protected_paths (or touches) entry with no
+  # glob metacharacters is meant to also cover everything nested under it
+  # (e.g. protected="src/config" must also protect "src/config/db.json"),
+  # even though neither string is literally a glob pattern of the other.
+  local touches_base protected_base
+  touches_base="$(strip_recursive_wildcard "$touches")"
+  protected_base="$(strip_recursive_wildcard "$protected")"
+  if [[ "$touches_base" != *['*?[']* && "$protected_base" != *['*?[']* ]]; then
+    [[ "$touches_base" == "$protected_base" ]] && return 0
+    [[ "$touches_base" == "$protected_base"/* ]] && return 0
+    [[ "$protected_base" == "$touches_base"/* ]] && return 0
+  fi
+
   return 1
 }
 
@@ -704,6 +862,14 @@ draft_validate_spec() {
   done < <(jq -r '.protected_paths[]' "$config_file")
 
   : > "$violations_file"
+
+  local required_section
+  for required_section in 'Overview' 'Goals' 'Non-Goals' 'Existing Files' 'Shared Constraints'; do
+    grep -qiE "^#{1,6}[[:space:]]+${required_section}([[:space:]]|\$)" "$spec_file" \
+      || printf 'Missing required "## %s" section\n' "$required_section" >> "$violations_file"
+  done
+  grep -qE '^#[[:space:]]+[^#]' "$spec_file" \
+    || printf 'Missing top-level "# <Title>" heading\n' >> "$violations_file"
 
   local pairs total_phases
   pairs="$(draft_phase_pairs "$spec_file")"
@@ -732,7 +898,9 @@ draft_validate_spec() {
     fi
 
     model_lines="$(printf '%s\n' "$body" | grep -oE '<!--[[:space:]]*runner:model=[^ ]+[[:space:]]*-->' || true)"
-    if [[ -n "$model_lines" ]]; then
+    if [[ -z "$model_lines" ]]; then
+      printf 'Phase %s: missing a runner:model annotation (must be codex or claude)\n' "$phase_number" >> "$violations_file"
+    else
       local model_line value
       while IFS= read -r model_line; do
         [[ -n "$model_line" ]] || continue
@@ -743,19 +911,79 @@ draft_validate_spec() {
       done <<< "$model_lines"
     fi
 
-    if [[ -n "$touches_lines" && ${#protected_paths[@]} -gt 0 ]]; then
+    if [[ -n "$touches_lines" ]]; then
       local touch_line glob protected
       while IFS= read -r touch_line; do
         [[ -n "$touch_line" ]] || continue
         glob="$(printf '%s\n' "$touch_line" | sed -E 's/^<!--[[:space:]]*pilot:touches=([^ ]+)[[:space:]]*-->$/\1/')"
-        for protected in "${protected_paths[@]}"; do
-          if touches_glob_conflicts_with_protected "$glob" "$protected"; then
-            printf 'Phase %s: pilot:touches "%s" matches protected_paths entry "%s"\n' "$phase_number" "$glob" "$protected" >> "$violations_file"
-          fi
-        done
+        if [[ ${#protected_paths[@]} -gt 0 ]]; then
+          for protected in "${protected_paths[@]}"; do
+            if touches_glob_conflicts_with_protected "$glob" "$protected"; then
+              printf 'Phase %s: pilot:touches "%s" matches protected_paths entry "%s"\n' "$phase_number" "$glob" "$protected" >> "$violations_file"
+            fi
+          done
+        fi
       done <<< "$touches_lines"
     fi
   done <<< "$pairs"
+
+  [[ ! -s "$violations_file" ]]
+}
+
+# Draft-time-only proxy for max_diff_files/max_diff_lines: at draft time there
+# is no real diff yet, so this estimates scope from the drafted spec itself
+# (distinct pilot:touches paths as a file-count proxy, Requirements/Acceptance
+# Criteria bullet count x a configurable per-bullet line estimate as a
+# line-count proxy) rather than leaving the ceiling entirely up to the model's
+# own self-reported status. Intentionally NOT reused by execute_spec_guard:
+# that guard re-checks protected_paths against the final spec exactly, while
+# the real max_diff_files/max_diff_lines ceiling is enforced by execute_stage
+# after csr runs, against the actual git diff -- this is only a pre-execution
+# estimate to catch an obviously-too-big candidate before negotiate/execute.
+draft_check_scope_ceiling() {
+  local spec_file="$1" config_file="$2" violations_file="$3"
+  local max_diff_files max_diff_lines lines_per_bullet
+  max_diff_files="$(config_value "$config_file" '.max_diff_files')"
+  max_diff_lines="$(config_value "$config_file" '.max_diff_lines')"
+  lines_per_bullet="${DRAFT_LINES_PER_REQUIREMENT_BULLET:-20}"
+
+  local pairs total_phases
+  pairs="$(draft_phase_pairs "$spec_file")"
+  [[ -n "$pairs" ]] || return 0
+  total_phases="$(printf '%s\n' "$pairs" | wc -l | tr -d '[:space:]')"
+
+  local -A all_touches_seen=()
+  local requirement_bullet_count=0
+  local index=0 phase_number start_line
+  while IFS=$'\t' read -r phase_number start_line; do
+    index=$((index + 1))
+    local end_line=""
+    if [[ $index -lt $total_phases ]]; then
+      end_line="$(printf '%s\n' "$pairs" | sed -n "$((index + 1))p" | cut -f2)"
+    fi
+
+    local body
+    body="$(draft_phase_body "$spec_file" "$start_line" "$end_line")"
+    requirement_bullet_count=$((requirement_bullet_count + $(printf '%s\n' "$body" | grep -cE '^[[:space:]]*[-*][[:space:]]' || true)))
+
+    local glob
+    while IFS= read -r glob; do
+      [[ -n "$glob" ]] || continue
+      all_touches_seen["$glob"]=1
+    done < <(printf '%s\n' "$body" | grep -oE '<!--[[:space:]]*pilot:touches=[^ ]+[[:space:]]*-->' | sed -E 's/^<!--[[:space:]]*pilot:touches=([^ ]+)[[:space:]]*-->$/\1/' || true)
+  done <<< "$pairs"
+
+  local unique_touches_count=${#all_touches_seen[@]}
+  if [[ "$max_diff_files" =~ ^[0-9]+$ ]] && (( unique_touches_count > max_diff_files )); then
+    printf 'Drafted spec declares %s distinct pilot:touches paths, exceeding max_diff_files=%s\n' \
+      "$unique_touches_count" "$max_diff_files" >> "$violations_file"
+  fi
+
+  local estimated_lines=$(( requirement_bullet_count * lines_per_bullet ))
+  if [[ "$max_diff_lines" =~ ^[0-9]+$ ]] && (( estimated_lines > max_diff_lines )); then
+    printf 'Drafted spec has an estimated ~%s changed lines (%s requirement/acceptance bullets x %s lines/bullet), exceeding max_diff_lines=%s\n' \
+      "$estimated_lines" "$requirement_bullet_count" "$lines_per_bullet" "$max_diff_lines" >> "$violations_file"
+  fi
 
   [[ ! -s "$violations_file" ]]
 }
@@ -958,13 +1186,28 @@ review_status_value() {
   awk -F': ' -v key="$field" '$1 == key { print $2; exit }' "$file"
 }
 
+publish_backend_outcome_value() {
+  local file="$1"
+  awk -F': ' '$1 == "outcome" { print $2; exit }' "$file"
+}
+
 selected_candidate_excerpt() {
-  local candidates_file="$1"
-  awk '
-    /^### Candidate / && seen == 0 { seen=1; print; next }
-    seen == 1 && /^### Candidate / { exit }
-    seen == 1 { print }
-  ' "$candidates_file"
+  local candidates_file="$1" selected number
+  selected="$(candidates_selected_field "$candidates_file")"
+  number="${selected##*-}"
+  if [[ "$selected" == candidate-* && "$number" =~ ^[0-9]+$ ]]; then
+    awk -v n="$number" '
+      $0 ~ ("^### Candidate " n "([:[:space:]]|$)") && seen == 0 { seen=1; print; next }
+      seen == 1 && /^### Candidate / { exit }
+      seen == 1 { print }
+    ' "$candidates_file"
+  else
+    awk '
+      /^### Candidate / && seen == 0 { seen=1; print; next }
+      seen == 1 && /^### Candidate / { exit }
+      seen == 1 { print }
+    ' "$candidates_file"
+  fi
 }
 
 negotiation_outcome_excerpt() {
@@ -1153,6 +1396,15 @@ publish_stage() {
   set -e
   [[ $backend_status -eq 0 ]] || die "publish backend failed: $(tr '\n' ' ' < "$run_dir/publish-backend.stderr" 2>/dev/null)"
   printf '%s\n' "$output" > "$run_dir/publish-backend.out"
+
+  local outcome
+  outcome="$(publish_backend_outcome_value "$run_dir/publish-backend.out")"
+  case "$outcome" in
+    published|needs-attention) ;;
+    error) die "publish backend $backend reported outcome: error: $(tr '\n' ' ' < "$run_dir/publish-backend.out")" ;;
+    *) die "publish backend $backend did not report a recognized outcome (published/needs-attention/error): $(tr '\n' ' ' < "$run_dir/publish-backend.out")" ;;
+  esac
+
   printf '%s\n' "$output"
 }
 
@@ -1239,11 +1491,13 @@ draft_stage() {
   printf '%s\n' "$spec_block" > "$candidate_spec_file"
 
   local violations_file="$run_dir/draft-violations.txt"
-  if ! draft_validate_spec "$candidate_spec_file" "$config_file" "$violations_file"; then
+  draft_validate_spec "$candidate_spec_file" "$config_file" "$violations_file" || true
+  draft_check_scope_ceiling "$candidate_spec_file" "$config_file" "$violations_file" || true
+  if [[ -s "$violations_file" ]]; then
     {
       printf -- '---\n'
       printf 'status: protected-path-conflict\n'
-      printf 'reason: drafted spec failed protected_paths / annotation validation\n'
+      printf 'reason: drafted spec failed protected_paths / annotation / scope validation\n'
       printf -- '---\n\n'
       printf '# Draft Rejected\n\n'
       printf 'The drafted spec was rejected before being written because it violates\n'
@@ -1436,6 +1690,8 @@ validate_config_file() {
   json_type_check "$file" '.protected_paths | all(.[]; type == "string")' "config.protected_paths must be an array of strings"
   json_type_check "$file" 'has("research_topics")' "config.research_topics is required"
   json_type_check "$file" '.research_topics | type == "string"' "config.research_topics must be a string"
+  json_type_check "$file" 'if has("analogy_domains") then (.analogy_domains | type == "array") else true end' "config.analogy_domains must be an array when provided"
+  json_type_check "$file" 'if has("analogy_domains") then (.analogy_domains | all(.[]; type == "string")) else true end' "config.analogy_domains must be an array of strings when provided"
   json_type_check "$file" 'has("pr")' "config.pr is required"
   json_type_check "$file" '.pr | type == "object"' "config.pr must be an object"
   json_type_check "$file" '.pr | has("base_branch") and has("draft") and has("labels") and has("backend")' "config.pr must include base_branch, draft, labels, and backend"
@@ -1519,10 +1775,21 @@ run_single_stage() {
       local ordered=(discover ideate draft negotiate execute review publish)
       local current current_status
       for current in "${ordered[@]}"; do
-        set +e
-        run_single_stage "$current" "$repo" "$run_id"
-        current_status=$?
-        set -e
+        # Deliberately an `if`, not `set +e; ...; set -e`: several substages
+        # (discover/ideate/draft/negotiate/execute/review) internally do
+        # their own `set +e; provider call; set -e` bracketing before
+        # returning a non-zero "needs human" status, which would otherwise
+        # re-enable errexit and make bash abort this whole script the moment
+        # that non-zero status is returned -- silently skipping every check
+        # below, including the "stopping before X" messages. Errexit is
+        # unconditionally suspended for the duration of an `if` condition
+        # regardless of what the callee does with `set -e` internally, so
+        # this is immune to that.
+        if run_single_stage "$current" "$repo" "$run_id"; then
+          current_status=0
+        else
+          current_status=$?
+        fi
         if [[ $current_status -eq "$NEGOTIATE_EXIT_NEEDS_HUMAN" ]]; then
           printf 'negotiate: needs human; stopping before execute\n'
           return "$current_status"

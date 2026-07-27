@@ -125,13 +125,31 @@ explicit_run_id_on_new_discover_updates_latest() {
   rm -rf "$bin_dir"
 }
 
+bin_passes_bash_syntax_check() {
+  bash -n "$BIN" || { echo "expected bash -n bin/e3d-pilot to pass" >&2; exit 1; }
+}
+
+gitignore_ignores_e3d_pilot_dir() {
+  local repo
+  repo="$(make_repo)"
+  cp "$ROOT/.gitignore" "$repo/.gitignore"
+  mkdir -p "$repo/.e3d-pilot/runs"
+  git -C "$repo" check-ignore -q ".e3d-pilot/config.json" \
+    || { echo "expected .e3d-pilot/ to be git-ignored" >&2; exit 1; }
+  git -C "$repo" check-ignore -q ".e3d-pilot/runs" \
+    || { echo "expected .e3d-pilot/runs to be git-ignored" >&2; exit 1; }
+}
+
 main() {
+  bin_passes_bash_syntax_check
+  gitignore_ignores_e3d_pilot_dir
   validate_missing_config
   validate_sample_config
   help_lists_commands
   discover_creates_distinct_runs
   explicit_run_id_resolves_latest
   explicit_run_id_on_new_discover_updates_latest
+  echo "phase1: all tests passed"
 }
 
 main "$@"

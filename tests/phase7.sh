@@ -131,6 +131,7 @@ EOF
 
 execute_uses_isolated_worktree_and_copies_csr_artifacts() {
   local repo run_id run_dir bin_dir out branch worktree spec_copy trace_line trace_file primary_readme
+  local primary_head_before primary_branch_before primary_head_after primary_branch_after
   repo="$(make_repo_with_commit)"
   write_phase7_config "$repo" 10 50
   run_id="2026-07-27-repo-execute-worktree"
@@ -141,7 +142,13 @@ execute_uses_isolated_worktree_and_copies_csr_artifacts() {
   trace_file="$(mktemp)"
   make_fake_csr_bin "$bin_dir"
 
+  primary_head_before="$(git -C "$repo" rev-parse HEAD)"
+  primary_branch_before="$(git -C "$repo" symbolic-ref --short HEAD)"
+
   out="$(PATH="$bin_dir:$PATH" FAKE_CSR_MODE="small-diff" FAKE_CSR_TRACE_FILE="$trace_file" "$BIN" run --repo "$repo" --stage execute --run-id "$run_id")"
+
+  primary_head_after="$(git -C "$repo" rev-parse HEAD)"
+  primary_branch_after="$(git -C "$repo" symbolic-ref --short HEAD)"
 
   branch="$(cut -f1 "$run_dir/execute-worktree.txt")"
   worktree="$(cut -f2 "$run_dir/execute-worktree.txt")"
@@ -155,6 +162,9 @@ execute_uses_isolated_worktree_and_copies_csr_artifacts() {
   [[ -f "$worktree/CHANGELOG.md" ]] || { echo "expected csr changes in worktree" >&2; exit 1; }
   [[ ! -f "$repo/CHANGELOG.md" ]] || { echo "primary checkout should remain untouched" >&2; exit 1; }
   assert_contains "$primary_readme" "# Sample Repo"
+  assert_eq "$primary_head_after" "$primary_head_before" "primary checkout HEAD sha should be unchanged"
+  assert_eq "$primary_branch_after" "$primary_branch_before" "primary checkout should remain on its original branch"
+  [[ "$primary_branch_after" != "e3d-pilot/$run_id" ]] || { echo "primary checkout should never be switched onto the execute branch" >&2; exit 1; }
   assert_contains "$trace_line" "$worktree|$spec_copy|all"
   assert_contains "$(cat "$run_dir/execute-csr.command")" "$spec_copy"
   [[ -f "$run_dir/csr-state/manifest.json" ]] || { echo "expected csr manifest copy in run dir" >&2; exit 1; }
@@ -234,11 +244,127 @@ execute_respects_paused_file() {
   [[ ! -f "$repo/.e3d-pilot/runs/$run_id/execute-worktree.txt" ]] || { echo "paused execute should not create a worktree" >&2; exit 1; }
 }
 
+write_phase7_all_stage_config() {
+  local repo="$1" max_files="$2" max_lines="$3"
+  mkdir -p "$repo/.e3d-pilot"
+  jq \
+    --argjson max_files "$max_files" \
+    --argjson max_lines "$max_lines" \
+    '.max_diff_files = $max_files | .max_diff_lines = $max_lines
+     | .providers.discover = "claude" | .providers.ideate = "claude"
+     | .providers.draft = "claude" | .providers.negotiate = ["claude"]' \
+    "$SAMPLE_CONFIG" > "$repo/.e3d-pilot/config.json"
+}
+
+make_fake_claude_bin_for_full_pipeline() {
+  local bin_dir="$1"
+  mkdir -p "$bin_dir"
+  cat > "$bin_dir/claude" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+prompt="$(cat)"
+
+if grep -q -- 'the negotiate loop' <<<"$prompt"; then
+  cat <<'OUT'
+---STATUS---
+status: approved
+reason: fixture spec is already scoped correctly
+OUT
+elif grep -q -- 'the draft stage' <<<"$prompt"; then
+  cat <<'OUT'
+```spec
+# Touch The Readme
+
+## Overview
+
+Touch the readme so execute has something to diff.
+
+## Goals
+
+- Exercise the full pipeline through execute.
+
+## Non-Goals
+
+- N/A
+
+## Existing Files
+
+- `README.md`
+
+## Shared Constraints
+
+- Keep this fixture minimal.
+
+## Phase 1 - Touch Readme
+
+<!-- runner:model=claude:sonnet -->
+<!-- pilot:touches=README.md -->
+
+### Requirements
+
+- Touch the readme.
+
+### Acceptance Criteria
+
+- The readme changed.
+```
+
+---DRAFT-STATUS---
+status: ok
+reason: single small phase touching only the readme.
+OUT
+elif grep -q -- 'the ideate stage' <<<"$prompt"; then
+  cat <<'OUT'
+### Candidate 1: Touch the readme
+Duplicate: no
+Dedup rationale: no existing branch, PR, or past run covers this.
+Description: Touch the readme so execute has a diff to enforce ceilings against.
+
+---IDEATE-STATUS---
+selected: candidate-1
+reason: only candidate, not a duplicate.
+OUT
+else
+  printf -- '- external context placeholder\n'
+fi
+EOF
+  chmod +x "$bin_dir/claude"
+}
+
+execute_oversized_diff_halts_stage_all_before_review_and_publish() {
+  local repo bin_dir csr_bin_dir out status run_id run_dir
+  repo="$(make_repo_with_commit)"
+  write_phase7_all_stage_config "$repo" 10 5
+  bin_dir="$(mktemp -d)"
+  make_fake_claude_bin_for_full_pipeline "$bin_dir"
+  csr_bin_dir="$(mktemp -d)"
+  make_fake_csr_bin "$csr_bin_dir"
+
+  set +e
+  out="$(PATH="$bin_dir:$csr_bin_dir:$PATH" DRAFT_LINES_PER_REQUIREMENT_BULLET=0 FAKE_CSR_MODE="huge-diff" "$BIN" run --repo "$repo" --stage all 2>&1)"
+  status=$?
+  set -e
+
+  run_id="$(cat "$repo/.e3d-pilot/latest-run")"
+  run_dir="$repo/.e3d-pilot/runs/$run_id"
+
+  assert_eq "$status" "4" "oversized diff via --stage all should request human review"
+  assert_contains "$out" "diff exceeds configured ceiling"
+  assert_contains "$out" "execute: human review required; stopping before review"
+  [[ -f "$run_dir/spec-final.md" ]] || { echo "expected negotiate to have converged and written spec-final.md" >&2; exit 1; }
+  [[ ! -f "$run_dir/review-status.txt" ]] || { echo "review stage should never have run" >&2; exit 1; }
+  [[ ! -f "$run_dir/publish-summary.md" ]] || { echo "publish stage should never have run" >&2; exit 1; }
+  [[ ! -f "$run_dir/publish-backend.out" ]] || { echo "publish backend should never have been invoked" >&2; exit 1; }
+
+  rm -rf "$bin_dir" "$csr_bin_dir"
+}
+
 main() {
   execute_uses_isolated_worktree_and_copies_csr_artifacts
   execute_rejects_protected_path_before_invoking_csr
   execute_stops_when_diff_exceeds_ceiling
   execute_respects_paused_file
+  execute_oversized_diff_halts_stage_all_before_review_and_publish
 }
 
 main "$@"

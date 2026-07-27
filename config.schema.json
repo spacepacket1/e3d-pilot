@@ -27,6 +27,10 @@
     "research_topics": {
       "type": "string"
     },
+    "analogy_domains": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
     "pr": {
       "type": "object",
       "additionalProperties": false,

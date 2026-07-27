@@ -325,11 +325,52 @@ negotiate_three_reviewers_apply_replacements_in_order() {
   rm -f "$trace"
 }
 
+
+# Same test body run at two different reviewer-array arities, to directly
+# confirm (per this phase's acceptance criteria) that the convergence code
+# path is identical regardless of how many reviewers are configured -- not
+# just exercised by two structurally different scenarios elsewhere in this
+# file.
+negotiate_all_approve_converges_at_arity() {
+  local count="$1" repo run_id trace out spec_final log name names=() i expected_trace=""
+  repo="$(make_repo_with_commit)"
+  run_id="2026-07-27-repo-negotiate-arity-$count"
+  for ((i = 1; i <= count; i++)); do
+    names+=("phase6-arity${count}-reviewer${i}")
+  done
+  write_phase6_config "$repo" "$(printf '%s\n' "${names[@]}" | jq -R . | jq -s .)"
+  write_phase6_draft "$repo" "$run_id"
+  for name in "${names[@]}"; do
+    make_phase6_provider "$name" "approve"
+  done
+
+  trace="$(mktemp)"
+  out="$(NEGOTIATE_TRACE_FILE="$trace" "$BIN" run --repo "$repo" --stage negotiate --run-id "$run_id")"
+
+  spec_final="$repo/.e3d-pilot/runs/$run_id/spec-final.md"
+  log="$repo/.e3d-pilot/runs/$run_id/negotiation-log.md"
+  [[ -f "$spec_final" ]] || { echo "expected spec-final.md to be written ($count-reviewer arity)" >&2; exit 1; }
+  [[ -f "$log" ]] || { echo "expected negotiation-log.md to be written ($count-reviewer arity)" >&2; exit 1; }
+
+  assert_contains "$out" "converged in round 1"
+  assert_contains "$(cat "$log")" "## Round 1"
+
+  for name in "${names[@]}"; do
+    expected_trace+="${name}|initial"$'\n'
+  done
+  expected_trace="${expected_trace%$'\n'}"
+  assert_eq "$(cat "$trace")" "$expected_trace" "$count-reviewer all-approve trace order"
+
+  rm -f "$trace"
+}
+
 main() {
   negotiate_two_reviewers_converge_round_one
   negotiate_unavailable_reviewer_fails_before_round_one_requests
   negotiate_always_revise_hits_max_rounds_and_needs_human
   negotiate_three_reviewers_apply_replacements_in_order
+  negotiate_all_approve_converges_at_arity 2
+  negotiate_all_approve_converges_at_arity 3
   echo "phase6: all tests passed"
 }
 

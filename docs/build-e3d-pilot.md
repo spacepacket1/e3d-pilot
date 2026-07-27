@@ -18,6 +18,7 @@ This "any repo" claim is precise about *where* it holds: discover, ideate, draft
 - Reuse csr's existing conventions (provider CLIs, `runner:model=provider:model` annotations, manifest/summary format) instead of inventing parallel ones.
 - Zero assumptions baked in about which org, remote host, or repo naming convention is in use — a stranger cloning e3d-pilot against their own unrelated GitHub (or GitLab, or a remote-less local repo) project should have the same experience as running it on e3d-cast, all the way through review; publish degrades to a `local` backend instead of a forge-specific one where there is no supported forge configured yet.
 - A single, well-defined run-id lifecycle: every `e3d-pilot run` invocation is either starting a new run or resuming a specific existing one, and this is never ambiguous or left to an implementer's guess.
+- Ideation should optimize for attracting and retaining users first, revenue second — candidates are graded and ranked accordingly (Phase 4), and sourced in part from cross-domain analogies/metaphors (games, social platforms, marketplaces, dev tools, fintech, etc.) rather than only from the target repo's own backlog (Phase 3), spanning categories such as making data more useful, adding workflow to UI, social features, gamification, testing, marketing, and selling.
 
 ## Non-Goals
 
@@ -60,6 +61,7 @@ Create the e3d-pilot repo skeleton and the per-target-repo config contract every
   - `verify`: array of shell commands to run in the review stage (falls back to auto-detection from `package.json`/`requirements.txt`/`Makefile` if absent).
   - `protected_paths`: array of glob patterns e3d-pilot must never modify or propose modifying (e.g. CI config, deploy scripts, secrets).
   - `research_topics`: free-text hints for the discover stage's web research pass (e.g. "AI video generation", "wallet-paid APIs").
+  - `analogy_domains`: optional array of cross-domain seed strings used by the discover stage's analogy pass (e.g. "game progression/reward loops", "social feed and notification mechanics", "marketplace liquidity", "fintech trust/verification UX"); if absent, e3d-pilot falls back to a built-in default list spanning games, social platforms, marketplaces, dev tools, and fintech.
   - `pr`: `{ "base_branch": "main", "draft": true, "labels": [], "backend": "auto" }`. `backend` is `"auto"` (detect from remote), `"github"`, or `"local"`; `"gitlab"` is a reserved future value, not implemented by this spec.
   - `providers`: per-stage provider assignment, e.g. `{ "discover": "claude", "ideate": "claude", "draft": "codex", "negotiate": ["claude", "codex"], "review": "claude" }`. `negotiate` is explicitly an array to keep the reviewer count variable.
   - `max_diff_files` / `max_diff_lines`: ceilings enforced before execute.
@@ -127,12 +129,15 @@ Produce `findings.md` for a target repo: what's going on in it right now, plus o
 - Every `findings.md` records the repo's current `git rev-parse HEAD` as a `head_sha` front-matter field.
 - Local facts gathered directly (no model call needed for this part): `git log <previous-run's-head_sha>..HEAD` when a prior run's `findings.md` exists for this repo, else the last `HISTORY_LOOKBACK_COMMITS` commits (default `20`, configurable via env); open branches; `gh issue list` / `gh pr list` if `gh` is authenticated and the repo has a remote; existing `AGENTS.md`/`CLAUDE.md`/`README.md` content; and any files matching `TODO`/`FIXME` greps.
 - Model call (using the configured `discover` provider): given the local facts bundle plus `research_topics` from config, produce a short "what's the current state of the art relevant to this repo" section. This model call always runs, with or without a `gh` remote — it is independent of `gh`/GitHub entirely, since it's a web-research pass over `research_topics`, not a repo-hosting query. Only the `gh issue list`/`gh pr list` local-facts sub-step is skipped when there is no authenticated `gh` remote; everything else (git facts, docs, TODO/FIXME grep, and this model call) still runs.
+- Analogy pass (same model call, not a second provider invocation): the prompt must also instruct the provider to pick the 2-3 most transferable entries from `analogy_domains` (or the built-in default list) for this specific repo, and produce a distinct "Analogous Patterns" subsection under "External Context" naming, per entry, the source domain, the mechanic being borrowed, and one concrete sentence on how it could apply here. The intent (see project goals) is to seed ideation with cross-domain metaphors — e.g. a game's progression loop suggesting a retention mechanic, a marketplace's liquidity trick suggesting a two-sided workflow — rather than leaving novel, non-obvious ideas to chance.
 
 ### Acceptance Criteria
 
 - Running discover against a repo with no `gh` remote configured still succeeds: the "Local State" section omits the `gh issue`/`gh pr` subsection (noted as skipped, with why) while git-derived facts are still present, and the "External Context" section (from the model call) is still produced normally.
 - `findings.md` is well-formed Markdown with clearly separated "Local State" and "External Context" sections, and a `head_sha` front-matter field.
 - Re-running discover the same day for the same repo does not overwrite the prior run's directory, and the second run's `git log` range starts from the first run's recorded `head_sha`.
+- The "External Context" section contains a distinct "Analogous Patterns" subsection naming at least one source domain (from `analogy_domains` or the default list) plus a one-line transfer rationale per entry.
+- Overriding `analogy_domains` in a target repo's config changes which domains appear in the prompt sent to the discover provider (verifiable with a stub provider that echoes the prompt it received back into its output).
 
 ## Phase 4 - Ideate and Dedup Stage
 
@@ -144,14 +149,20 @@ Turn findings into a ranked list of candidate ideas, each checked against everyt
 
 - `--stage ideate` reads the current run's `findings.md`, plus **every prior run's `candidates.md` and `spec-final.md`** for this repo under `.e3d-pilot/runs/*/`, plus current `git branch -a`. `gh pr list --state all` output is included the same way Phase 3 handles it: only when `gh` is authenticated and the repo has a remote it recognizes; otherwise this sub-step is skipped and noted as skipped in `candidates.md`, exactly like `findings.md` already notes it for discover. Dedup against branches and past runs still runs in full either way — a missing `gh` view narrows what dedup can check, it never blocks the stage.
 - Model call (configured `ideate` provider) proposes 3-5 candidate ideas. For each candidate, it must explicitly state why it is not already covered by an existing branch, open/closed PR (when that data was available), or a past run — not just propose ideas in isolation.
+- Each candidate block carries, beyond the existing `Duplicate`/`Dedup rationale` fields: `Category` (one of `data`, `workflow`, `social`, `gamification`, `testing`, `marketing`, `selling`, `other`), `Analogy` (source domain plus one sentence on how it transfers — drawing on Phase 3's "Analogous Patterns" findings where relevant, or a fresh analogy if the candidate doesn't map to one already surfaced), `Attraction (1-5)` and `Retention (1-5)` (new-user pull and repeat-engagement value, per this project's stated goal that attracting and retaining users is primary), `Effort (low|medium|high)`, and an optional `Revenue (1-5|n/a)` scored explicitly as secondary to Attraction/Retention, never a substitute for them.
+- The prompt should encourage candidates spanning multiple `Category` values across the full set when plausible ideas exist for each, but must not force a low-quality or duplicate candidate into an underrepresented category just for coverage — non-duplication and genuine merit still come first.
+- Ranking rule: non-duplicate candidates are ordered primarily by `Attraction + Retention` (highest first); `Revenue` may only break ties between otherwise-equal candidates, and must never let a lower `Attraction + Retention` candidate outrank a higher one.
 - Output: `.e3d-pilot/runs/<run-id>/candidates.md`, ranked, with the top candidate marked as selected and the rest kept for audit/traceability.
 - If every candidate is judged a duplicate of existing work, the stage exits cleanly with no selected candidate and a note explaining why — this is a valid, non-error outcome (nothing to do today).
+- The existing soft-validation mechanism (which already warns, non-fatally, when the model ignores the 3-5-candidate or dedup-rationale prompt requirements) must extend the same treatment to the new required fields: a candidate missing `Category`, `Analogy`, `Attraction`, `Retention`, or `Effort` (Revenue may legitimately be `n/a`) surfaces as a warning in `candidates.md` and stdout, exactly like today's count/rationale warnings — not a hard rejection.
 
 ### Acceptance Criteria
 
 - A synthetic test repo with an open PR titled "Add X" and a findings.md that would otherwise suggest "Add X" results in that candidate being marked duplicate, not selected.
 - Running ideate against a repo with no `gh` remote configured still succeeds: `candidates.md` notes the PR-list sub-step as skipped, and dedup against branches and past runs still runs normally.
 - The "nothing to do" outcome is distinguishable programmatically (e.g. a `selected: none` field) so `e3d-pilot run --stage all` can stop cleanly without proceeding to draft.
+- Given two non-duplicate candidates from a stub provider — one with higher `Revenue` but lower `Attraction + Retention`, one with lower `Revenue` but higher `Attraction + Retention` — the higher `Attraction + Retention` candidate is selected/ranked first.
+- Every candidate in a produced `candidates.md` has `Category`, `Analogy`, `Attraction`, `Retention`, and `Effort` fields present; a stub response that omits one of these triggers the corresponding soft warning without failing the stage.
 
 ## Phase 5 - Draft Stage
 

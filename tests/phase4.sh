@@ -235,10 +235,151 @@ EOF
   rm -rf "$bin_dir" "$response"
 }
 
+ideate_warns_on_candidate_count_and_missing_rationale() {
+  local repo bin_dir run_id response out candidates contents
+  repo="$(make_repo_with_commit)"
+  write_ideate_config "$repo"
+  run_id="2026-07-26-repo-warn"
+  write_findings "$repo" "$run_id"
+
+  bin_dir="$(mktemp -d)"
+  response="$(mktemp)"
+  cat > "$response" <<'EOF'
+### Candidate 1: Add retry logic
+Duplicate: no
+Dedup rationale:
+Description: Add retry logic to network calls.
+
+---IDEATE-STATUS---
+selected: candidate-1
+reason: only candidate proposed.
+EOF
+  make_fake_claude_bin_returning "$bin_dir" "$response"
+
+  out="$(PATH="$bin_dir:$PATH" "$BIN" run --repo "$repo" --stage ideate --run-id "$run_id")"
+
+  candidates="$repo/.e3d-pilot/runs/$run_id/candidates.md"
+  contents="$(cat "$candidates")"
+
+  assert_contains "$out" "ideate: warning:"
+  assert_contains "$out" "expected 3-5 candidates, got 1"
+  assert_contains "$out" "Candidate 1 is missing a Dedup rationale"
+  assert_contains "$contents" "## Validation Warnings"
+  assert_contains "$contents" "expected 3-5 candidates, got 1"
+  # A format warning must not block the pipeline: the stage still selects
+  # a candidate and writes candidates.md normally.
+  assert_contains "$contents" "selected: candidate-1"
+
+  rm -rf "$bin_dir" "$response"
+}
+
+ideate_prompt_requires_scoring_fields_and_ranking_rule() {
+  local repo bin_dir run_id prompt response
+  repo="$(make_repo_with_commit)"
+  write_ideate_config "$repo"
+  run_id="2026-07-27-repo-prompt"
+  write_findings "$repo" "$run_id"
+
+  bin_dir="$(mktemp -d)"
+  response="$(mktemp)"
+  cat > "$response" <<'EOF'
+### Candidate 1: Add retry logic
+Duplicate: no
+Dedup rationale: no existing branch or past run covers retries.
+Category: workflow
+Analogy: fintech trust and verification UX -- retry confirmations build user confidence
+Attraction (1-5): 3
+Retention (1-5): 3
+Effort: low
+Revenue (1-5|n/a): n/a
+Description: Add retry logic to network calls.
+
+---IDEATE-STATUS---
+selected: candidate-1
+reason: only candidate, not a duplicate.
+EOF
+  make_fake_claude_bin_returning "$bin_dir" "$response"
+
+  PATH="$bin_dir:$PATH" "$BIN" run --repo "$repo" --stage ideate --run-id "$run_id" >/dev/null
+  prompt="$(cat "$repo/.e3d-pilot/runs/$run_id/ideate-prompt.md")"
+
+  assert_contains "$prompt" "attracting and retaining users"
+  assert_contains "$prompt" "Category: data|workflow|social|gamification|testing|marketing|selling|other"
+  assert_contains "$prompt" "Attraction (1-5):"
+  assert_contains "$prompt" "Retention (1-5):"
+  assert_contains "$prompt" "Rank non-duplicate candidates primarily by Attraction + Retention"
+
+  rm -rf "$bin_dir" "$response"
+}
+
+ideate_warns_on_missing_scoring_fields() {
+  local repo bin_dir run_id response out candidates contents
+  repo="$(make_repo_with_commit)"
+  write_ideate_config "$repo"
+  run_id="2026-07-27-repo-scorewarn"
+  write_findings "$repo" "$run_id"
+
+  bin_dir="$(mktemp -d)"
+  response="$(mktemp)"
+  cat > "$response" <<'EOF'
+### Candidate 1: Add retry logic
+Duplicate: no
+Dedup rationale: no existing branch or past run covers retries.
+Description: Add retry logic to network calls.
+
+### Candidate 2: Add progress bar
+Duplicate: no
+Dedup rationale: no existing branch or past run covers this.
+Category: workflow
+Analogy: game progression and reward loops -- a visible progress bar mirrors a game quest tracker
+Attraction (1-5): 4
+Retention (1-5): 3
+Effort: low
+Revenue (1-5|n/a): n/a
+Description: Show a progress bar during long-running operations.
+
+### Candidate 3: Add leaderboard
+Duplicate: no
+Dedup rationale: no existing branch or past run covers this.
+Category: gamification
+Analogy: game progression and reward loops -- leaderboards drive repeat visits
+Attraction (1-5): 5
+Retention (1-5): 5
+Effort: medium
+Revenue (1-5|n/a): n/a
+Description: Add a leaderboard for contributors.
+
+---IDEATE-STATUS---
+selected: candidate-3
+reason: highest Attraction + Retention among non-duplicates.
+EOF
+  make_fake_claude_bin_returning "$bin_dir" "$response"
+
+  out="$(PATH="$bin_dir:$PATH" "$BIN" run --repo "$repo" --stage ideate --run-id "$run_id")"
+  candidates="$repo/.e3d-pilot/runs/$run_id/candidates.md"
+  contents="$(cat "$candidates")"
+
+  assert_contains "$out" "Candidate 1 is missing a Category field"
+  assert_contains "$out" "Candidate 1 is missing an Analogy field"
+  assert_contains "$out" "Candidate 1 is missing an Attraction score"
+  assert_contains "$out" "Candidate 1 is missing a Retention score"
+  assert_contains "$out" "Candidate 1 is missing an Effort field"
+  assert_not_contains "$out" "Candidate 2 is missing"
+  assert_not_contains "$out" "Candidate 3 is missing"
+  # Selection still follows the ranking rule (highest Attraction + Retention
+  # among non-duplicates) even though a format warning was raised elsewhere.
+  assert_contains "$contents" "selected: candidate-3"
+
+  rm -rf "$bin_dir" "$response"
+}
+
 main() {
   ideate_marks_pr_duplicate_and_selects_other
   ideate_no_remote_skips_pr_list_but_dedups_normally
   ideate_nothing_to_do_is_distinguishable_and_stops_all
+  ideate_warns_on_candidate_count_and_missing_rationale
+  ideate_prompt_requires_scoring_fields_and_ranking_rule
+  ideate_warns_on_missing_scoring_fields
   echo "phase4: all tests passed"
 }
 

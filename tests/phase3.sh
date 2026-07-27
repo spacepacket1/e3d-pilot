@@ -64,6 +64,20 @@ EOF
   chmod +x "$bin_dir/claude"
 }
 
+make_fake_claude_bin_capturing_prompt() {
+  local bin_dir="$1" capture_file="$2"
+  mkdir -p "$bin_dir"
+  cat > "$bin_dir/claude" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+cat > "$capture_file"
+cat <<'OUT'
+- stub external context
+OUT
+EOF
+  chmod +x "$bin_dir/claude"
+}
+
 discover_writes_findings_and_skips_gh_without_remote() {
   local repo bin_dir out run_id findings contents head_sha
   repo="$(make_repo_with_commit)"
@@ -120,9 +134,108 @@ discover_second_run_uses_previous_head_sha() {
   rm -rf "$bin_dir"
 }
 
+git_history_section() {
+  local findings_file="$1"
+  awk '/^## Git history/{f=1; next} /^## /{f=0} f' "$findings_file"
+}
+
+git_history_commit_line_count() {
+  local findings_file="$1"
+  git_history_section "$findings_file" | grep -cE '^[0-9a-f]+ ' || true
+}
+
+add_n_commits() {
+  local repo="$1" count="$2" i
+  for i in $(seq 1 "$count"); do
+    printf 'commit %s\n' "$i" >> "$repo/extra.txt"
+    git -C "$repo" add extra.txt
+    git -C "$repo" commit -q -m "extra commit $i"
+  done
+}
+
+discover_history_lookback_defaults_to_20_commits() {
+  local repo bin_dir run_id findings section
+  repo="$(make_repo_with_commit)"
+  write_discover_config "$repo"
+  add_n_commits "$repo" 25
+  bin_dir="$(mktemp -d)"
+  make_fake_claude_bin "$bin_dir"
+
+  env -u HISTORY_LOOKBACK_COMMITS PATH="$bin_dir:$PATH" "$BIN" run --repo "$repo" --stage discover >/dev/null
+  run_id="$(cat "$repo/.e3d-pilot/latest-run")"
+  findings="$repo/.e3d-pilot/runs/$run_id/findings.md"
+  section="$(git_history_section "$findings")"
+
+  assert_contains "$section" "range: last 20 commits"
+  assert_eq "$(git_history_commit_line_count "$findings")" "20" "default lookback should list exactly 20 commits"
+  rm -rf "$bin_dir"
+}
+
+discover_history_lookback_respects_env_override() {
+  local repo bin_dir run_id findings section
+  repo="$(make_repo_with_commit)"
+  write_discover_config "$repo"
+  add_n_commits "$repo" 10
+  bin_dir="$(mktemp -d)"
+  make_fake_claude_bin "$bin_dir"
+
+  HISTORY_LOOKBACK_COMMITS=3 PATH="$bin_dir:$PATH" "$BIN" run --repo "$repo" --stage discover >/dev/null
+  run_id="$(cat "$repo/.e3d-pilot/latest-run")"
+  findings="$repo/.e3d-pilot/runs/$run_id/findings.md"
+  section="$(git_history_section "$findings")"
+
+  assert_contains "$section" "range: last 3 commits"
+  assert_eq "$(git_history_commit_line_count "$findings")" "3" "HISTORY_LOOKBACK_COMMITS=3 should list exactly 3 commits"
+  rm -rf "$bin_dir"
+}
+
+discover_prompt_includes_default_analogy_domains() {
+  local repo bin_dir capture_file prompt
+  repo="$(make_repo_with_commit)"
+  write_discover_config "$repo"
+  bin_dir="$(mktemp -d)"
+  capture_file="$(mktemp)"
+  make_fake_claude_bin_capturing_prompt "$bin_dir" "$capture_file"
+
+  PATH="$bin_dir:$PATH" "$BIN" run --repo "$repo" --stage discover >/dev/null
+  prompt="$(cat "$capture_file")"
+
+  assert_contains "$prompt" "Analogy domains to consider:"
+  assert_contains "$prompt" "game progression and reward loops"
+  assert_contains "$prompt" "### Analogous Patterns"
+  rm -rf "$bin_dir"
+  rm -f "$capture_file"
+}
+
+discover_prompt_respects_analogy_domains_override() {
+  local repo bin_dir capture_file prompt
+  repo="$(make_repo_with_commit)"
+  write_discover_config "$repo"
+  mkdir -p "$repo/.e3d-pilot"
+  jq '.analogy_domains = ["custom domain alpha", "custom domain beta"]' \
+    "$repo/.e3d-pilot/config.json" > "$repo/.e3d-pilot/config.json.tmp"
+  mv "$repo/.e3d-pilot/config.json.tmp" "$repo/.e3d-pilot/config.json"
+  bin_dir="$(mktemp -d)"
+  capture_file="$(mktemp)"
+  make_fake_claude_bin_capturing_prompt "$bin_dir" "$capture_file"
+
+  PATH="$bin_dir:$PATH" "$BIN" run --repo "$repo" --stage discover >/dev/null
+  prompt="$(cat "$capture_file")"
+
+  assert_contains "$prompt" "custom domain alpha"
+  assert_contains "$prompt" "custom domain beta"
+  [[ "$prompt" != *"game progression and reward loops"* ]] || { echo "override should replace, not append to, the default domain list" >&2; exit 1; }
+  rm -rf "$bin_dir"
+  rm -f "$capture_file"
+}
+
 main() {
   discover_writes_findings_and_skips_gh_without_remote
   discover_second_run_uses_previous_head_sha
+  discover_history_lookback_defaults_to_20_commits
+  discover_history_lookback_respects_env_override
+  discover_prompt_includes_default_analogy_domains
+  discover_prompt_respects_analogy_domains_override
   echo "phase3: all tests passed"
 }
 
