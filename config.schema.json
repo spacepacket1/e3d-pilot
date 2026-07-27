@@ -85,6 +85,21 @@
           "type": "string"
         }
       }
+    },
+    "notify": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "email": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["to"],
+          "properties": {
+            "to": { "type": "string" },
+            "command": { "type": "string" }
+          }
+        }
+      }
     }
   }
 }

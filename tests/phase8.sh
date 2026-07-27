@@ -22,6 +22,14 @@ assert_eq() {
   }
 }
 
+assert_not_contains() {
+  local haystack="$1" needle="$2"
+  [[ "$haystack" != *"$needle"* ]] || {
+    printf 'did not expect to find %q in output\n' "$needle" >&2
+    exit 1
+  }
+}
+
 make_repo_with_commit() {
   local repo
   repo="$(mktemp -d)"
@@ -166,6 +174,43 @@ EOF
   chmod +x "$bin_dir/gh"
 }
 
+add_notify_email_config() {
+  local repo="$1" to="$2"
+  jq --arg to "$to" '.notify = {"email": {"to": $to}}' "$repo/.e3d-pilot/config.json" \
+    > "$repo/.e3d-pilot/config.json.tmp"
+  mv "$repo/.e3d-pilot/config.json.tmp" "$repo/.e3d-pilot/config.json"
+}
+
+make_fake_mail_capturing() {
+  local bin_dir="$1" capture_file="$2"
+  mkdir -p "$bin_dir"
+  cat > "$bin_dir/mail" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+{
+  printf 'ARGS: %s\n' "\$*"
+  printf 'BODY:\n'
+  cat
+} > "$capture_file"
+EOF
+  chmod +x "$bin_dir/mail"
+}
+
+make_fake_gh_returning_pr_url() {
+  local bin_dir="$1" pr_url="$2"
+  mkdir -p "$bin_dir"
+  cat > "$bin_dir/gh" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "\${1:-}" == "pr" && "\${2:-}" == "create" ]]; then
+  printf '%s\n' "$pr_url"
+  exit 0
+fi
+exit 1
+EOF
+  chmod +x "$bin_dir/gh"
+}
+
 review_verify_failure_blocks_publish() {
   local repo run_id out status trace_bin_dir trace_file
   repo="$(make_repo_with_commit)"
@@ -285,6 +330,81 @@ github_publish_dry_run_prints_exact_commands() {
   assert_contains "$tree" ".e3d-pilot/runs/$run_id/csr-manifest-rows.json"
 }
 
+local_publish_sends_email_notification_when_configured() {
+  local repo run_id worktree bin_dir capture_file out contents
+  repo="$(make_repo_with_commit)"
+  run_id="2026-07-27-phase8-notify"
+  write_phase8_config "$repo" "local" '["test -f README.md"]'
+  add_notify_email_config "$repo" "ops@example.com"
+  write_phase8_run_artifacts "$repo" "$run_id"
+  worktree="$(make_execute_like_worktree "$repo" "$run_id")"
+
+  "$BIN" run --repo "$repo" --stage review --run-id "$run_id" >/dev/null
+
+  bin_dir="$(mktemp -d)"
+  capture_file="$(mktemp)"
+  make_fake_mail_capturing "$bin_dir" "$capture_file"
+
+  out="$(PATH="$bin_dir:$PATH" "$BIN" run --repo "$repo" --stage publish --run-id "$run_id")"
+  contents="$(cat "$capture_file")"
+
+  assert_contains "$out" "publish: notified ops@example.com"
+  assert_contains "$contents" "ARGS: -s"
+  assert_contains "$contents" "ops@example.com"
+  assert_contains "$contents" "Local review branch: e3d-pilot/$run_id"
+  assert_contains "$contents" "# e3d-pilot Publish Summary"
+
+  rm -rf "$bin_dir" "$worktree"
+  rm -f "$capture_file"
+}
+
+publish_notify_skips_silently_without_config_or_mail_command() {
+  local repo run_id worktree out
+  repo="$(make_repo_with_commit)"
+  run_id="2026-07-27-phase8-nonotify"
+  write_phase8_config "$repo" "local" '["test -f README.md"]'
+  write_phase8_run_artifacts "$repo" "$run_id"
+  worktree="$(make_execute_like_worktree "$repo" "$run_id")"
+
+  "$BIN" run --repo "$repo" --stage review --run-id "$run_id" >/dev/null
+  out="$("$BIN" run --repo "$repo" --stage publish --run-id "$run_id")"
+
+  assert_not_contains "$out" "publish: notified"
+  assert_not_contains "$out" "publish: notify failed"
+
+  rm -rf "$worktree"
+}
+
+github_publish_captures_pr_url_and_notifies() {
+  local repo run_id worktree bare bin_dir capture_file out contents pr_url
+  repo="$(make_repo_with_commit)"
+  run_id="2026-07-27-phase8-prurl"
+  write_phase8_config "$repo" "github" '["test -f README.md"]'
+  bare="$(mktemp -d)"
+  git init -q --bare "$bare"
+  git -C "$repo" remote add origin "$bare"
+  add_notify_email_config "$repo" "ops@example.com"
+  write_phase8_run_artifacts "$repo" "$run_id"
+  worktree="$(make_execute_like_worktree "$repo" "$run_id")"
+
+  "$BIN" run --repo "$repo" --stage review --run-id "$run_id" >/dev/null
+
+  pr_url="https://github.com/example/test-repo/pull/99"
+  bin_dir="$(mktemp -d)"
+  make_fake_gh_returning_pr_url "$bin_dir" "$pr_url"
+  capture_file="$(mktemp)"
+  make_fake_mail_capturing "$bin_dir" "$capture_file"
+
+  out="$(PATH="$bin_dir:$PATH" "$BIN" run --repo "$repo" --stage publish --run-id "$run_id")"
+  contents="$(cat "$capture_file")"
+
+  assert_contains "$out" "pr_url: $pr_url"
+  assert_contains "$contents" "View on GitHub: $pr_url"
+
+  rm -rf "$bin_dir" "$bare" "$worktree"
+  rm -f "$capture_file"
+}
+
 main() {
   install_review_provider_stub
   trap cleanup_review_provider_stub EXIT
@@ -292,6 +412,9 @@ main() {
   review_auto_detects_make_test_when_verify_empty
   local_publish_commits_audit_artifacts
   github_publish_dry_run_prints_exact_commands
+  local_publish_sends_email_notification_when_configured
+  publish_notify_skips_silently_without_config_or_mail_command
+  github_publish_captures_pr_url_and_notifies
 }
 
 main "$@"

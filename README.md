@@ -81,6 +81,7 @@ Create `.e3d-pilot/config.json` in the target repository. Start from [`examples/
 - `docs`: optional guidance-document path; otherwise common filenames are detected.
 - `live_verify`: optional `{ "command": "..." }` hook. It runs only when repository docs identify a supported E3D paid-API surface and `e3d-agent` is available; otherwise it is skipped.
 - `pr`: `base_branch`, draft flag, labels, and backend (`auto`, `github`, or `local`).
+- `notify`: optional `{ "email": { "to": "...", "command": "..." } }`. See [Notifications](#notifications).
 
 Validate and run:
 
@@ -108,6 +109,33 @@ The execute stage is intentionally limited to providers supported by `codex-spec
 
 Only after verification passes, publish force-adds findings, candidates, negotiation log, final spec, and csr manifest under the run's audit path so summary links resolve on the branch.
 
+## Notifications
+
+Once a run publishes — a new branch (and, on GitHub, a draft PR) now exists and is ready for a human to look at — e3d-pilot can send a best-effort email so you don't have to go check. It's opt-in: add `notify.email` to the target repo's config and nothing else changes.
+
+```json
+"notify": {
+  "email": {
+    "to": "you@example.com"
+  }
+}
+```
+
+The email's subject names the branch (and calls out when the outcome `needs-attention`, e.g. no `gh` available for a GitHub repo); the body is the PR URL or local branch/path followed by the same summary that goes into the PR body — findings excerpt, the selected candidate and why it wasn't a duplicate, the negotiation outcome, and links to every audit artifact.
+
+By default it shells out to `mail -s "$E3D_PILOT_EMAIL_SUBJECT" "$E3D_PILOT_EMAIL_TO"` with the body on stdin. Override `notify.email.command` to use `sendmail`, `msmtp`, or a script that calls SES/SendGrid/etc. — same env vars, any transport:
+
+```json
+"notify": {
+  "email": {
+    "to": "you@example.com",
+    "command": "msmtp \"$E3D_PILOT_EMAIL_TO\""
+  }
+}
+```
+
+If `notify` is absent, or no mail command is configured or found on `PATH`, publish still succeeds — the notification step degrades to a no-op (or a one-line warning) rather than failing the run.
+
 ## Fleet mode
 
 Provide a JSON array of repository paths:
@@ -117,6 +145,24 @@ e3d-pilot fleet examples/sample-fleet.json
 ```
 
 Each repository runs independently. Fleet continues after failures, prints a per-repository result and final totals, and exits nonzero if any repository failed.
+
+## Running on a schedule
+
+e3d-pilot is deliberately not a daemon — every invocation is a single, short-lived CLI call that runs (or resumes) a stage and exits. There's no built-in scheduler, so "continuous" is up to whatever calls it: cron, a systemd timer, a scheduled CI workflow, or your own orchestrator all work equally well.
+
+A daily cron entry running a whole fleet at 6am, logging output and exit status:
+
+```cron
+0 6 * * * PATH="/usr/local/bin:$PATH" /path/to/e3d-pilot/bin/e3d-pilot fleet /path/to/fleet.json >> /var/log/e3d-pilot.log 2>&1
+```
+
+Or a single repository, on its own config-driven cadence:
+
+```cron
+0 */6 * * * /path/to/e3d-pilot/bin/e3d-pilot run --repo /path/to/repo --stage all >> /var/log/e3d-pilot.log 2>&1
+```
+
+A nonzero exit can mean a real failure, or a legitimate stop (`ideate`'s "nothing to do," a `negotiate` deadlock needing human input, a failed `verify`) — check `.e3d-pilot/runs/<run-id>/` in the target repo before treating it as a crash. Drop a `.e3d-pilot/paused` file in a target repo to make the scheduled job a no-op without touching the crontab.
 
 ## Safety model
 

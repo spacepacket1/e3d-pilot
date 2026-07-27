@@ -1186,9 +1186,69 @@ review_status_value() {
   awk -F': ' -v key="$field" '$1 == key { print $2; exit }' "$file"
 }
 
+publish_backend_field_value() {
+  local file="$1" field="$2"
+  awk -F': ' -v key="$field" '$1 == key { print $2; exit }' "$file"
+}
+
 publish_backend_outcome_value() {
-  local file="$1"
-  awk -F': ' '$1 == "outcome" { print $2; exit }' "$file"
+  publish_backend_field_value "$1" "outcome"
+}
+
+# Email is an opt-in, best-effort notification: it never blocks or fails
+# publish (the branch/PR already exists by the time this runs), and it never
+# assumes a specific mail transport -- it shells out to a configured command
+# (or a plain `mail` fallback), exactly like verify/live_verify's commands do.
+publish_notify_email_command() {
+  local config_file="$1" configured
+  configured="$(config_value "$config_file" '.notify.email.command')"
+  if [[ -n "$configured" && "$configured" != "null" ]]; then
+    printf '%s' "$configured"
+    return 0
+  fi
+  command -v mail >/dev/null 2>&1 || return 1
+  printf '%s' 'mail -s "$E3D_PILOT_EMAIL_SUBJECT" "$E3D_PILOT_EMAIL_TO"'
+}
+
+publish_notify_link_line() {
+  local backend="$1" branch="$2" backend_out="$3" pr_url
+  case "$backend" in
+    github)
+      pr_url="$(publish_backend_field_value "$backend_out" "pr_url")"
+      if [[ -n "$pr_url" ]]; then
+        printf 'View on GitHub: %s\n' "$pr_url"
+      else
+        printf 'Branch pushed: %s (see %s for the exact push/PR commands)\n' "$branch" "$backend_out"
+      fi
+      ;;
+    *)
+      printf 'Local review branch: %s (no remote configured; inspect it in your clone)\n' "$branch"
+      ;;
+  esac
+}
+
+publish_send_notification() {
+  local config_file="$1" run_dir="$2" branch="$3" backend="$4" outcome="$5" summary_file="$6"
+  local to
+  to="$(config_value "$config_file" '.notify.email.to')"
+  [[ -n "$to" && "$to" != "null" ]] || return 0
+
+  local subject body command_str
+  subject="e3d-pilot: new branch ready for review ($branch)"
+  [[ "$outcome" == "needs-attention" ]] && subject="e3d-pilot: action needed for $branch"
+
+  body="$( { publish_notify_link_line "$backend" "$branch" "$run_dir/publish-backend.out"; printf '\n'; cat "$summary_file"; } )"
+
+  if ! command_str="$(publish_notify_email_command "$config_file")"; then
+    printf 'publish: notify skipped: no mail command available and notify.email.command not set\n'
+    return 0
+  fi
+
+  if E3D_PILOT_EMAIL_TO="$to" E3D_PILOT_EMAIL_SUBJECT="$subject" bash -c "$command_str" <<<"$body" >"$run_dir/publish-notify.stdout" 2>"$run_dir/publish-notify.stderr"; then
+    printf 'publish: notified %s\n' "$to"
+  else
+    printf 'publish: notify failed: %s\n' "$(tr '\n' ' ' < "$run_dir/publish-notify.stderr")"
+  fi
 }
 
 selected_candidate_excerpt() {
@@ -1404,6 +1464,8 @@ publish_stage() {
     error) die "publish backend $backend reported outcome: error: $(tr '\n' ' ' < "$run_dir/publish-backend.out")" ;;
     *) die "publish backend $backend did not report a recognized outcome (published/needs-attention/error): $(tr '\n' ' ' < "$run_dir/publish-backend.out")" ;;
   esac
+
+  publish_send_notification "$config_file" "$run_dir" "$branch" "$backend" "$outcome" "$summary"
 
   printf '%s\n' "$output"
 }
@@ -1721,6 +1783,11 @@ validate_config_file() {
   json_type_check "$file" 'if has("live_verify") then (.live_verify | type == "object") else true end' "config.live_verify must be an object when provided"
   json_type_check "$file" 'if has("live_verify") then (.live_verify | has("command")) else true end' "config.live_verify.command is required when live_verify is provided"
   json_type_check "$file" 'if has("live_verify") then (.live_verify.command | type == "string") else true end' "config.live_verify.command must be a string"
+  json_type_check "$file" 'if has("notify") then (.notify | type == "object") else true end' "config.notify must be an object when provided"
+  json_type_check "$file" 'if (has("notify") and (.notify | has("email"))) then (.notify.email | type == "object") else true end' "config.notify.email must be an object when provided"
+  json_type_check "$file" 'if (has("notify") and (.notify | has("email"))) then (.notify.email | has("to")) else true end' "config.notify.email.to is required when notify.email is provided"
+  json_type_check "$file" 'if (has("notify") and (.notify | has("email"))) then (.notify.email.to | type == "string") else true end' "config.notify.email.to must be a string"
+  json_type_check "$file" 'if (has("notify") and (.notify | has("email")) and (.notify.email | has("command"))) then (.notify.email.command | type == "string") else true end' "config.notify.email.command must be a string when provided"
   printf 'config valid: %s\n' "$file"
 }
 

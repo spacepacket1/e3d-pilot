@@ -29,8 +29,9 @@ fi
 command -v gh >/dev/null 2>&1 || { echo "error: gh CLI unavailable" >&2; exit 1; }
 
 git -C "$worktree" push -u origin "$branch"
-(cd "$worktree" && gh "${args[@]}")
+pr_url="$(cd "$worktree" && gh "${args[@]}")"
 
 printf 'outcome: published\n'
 printf 'mode: github\n'
 printf 'branch: %s\n' "$branch"
+printf 'pr_url: %s\n' "$pr_url"

@@ -66,6 +66,7 @@ Create the e3d-pilot repo skeleton and the per-target-repo config contract every
   - `providers`: per-stage provider assignment, e.g. `{ "discover": "claude", "ideate": "claude", "draft": "codex", "negotiate": ["claude", "codex"], "review": "claude" }`. `negotiate` is explicitly an array to keep the reviewer count variable.
   - `max_diff_files` / `max_diff_lines`: ceilings enforced before execute.
   - `docs`: optional explicit path to repo guidance docs (`AGENTS.md`, `CLAUDE.md`); if absent, auto-detect by filename.
+  - `notify`: optional `{ "email": { "to": "...", "command": "..." } }`. When present, a successful publish sends a best-effort email; `command` overrides the default `mail` invocation (see Phase 8).
 - Write a `config.schema.json` (or equivalent inline validation function) and a `e3d-pilot config validate <repo>` subcommand that checks a target repo's config against it.
 - `bin/e3d-pilot --help` documents all subcommands this spec will add across phases, even as stubs that print "not yet implemented" for later-phase commands.
 
@@ -244,6 +245,8 @@ Independently verify the executed change, then open a draft PR — and stop.
   - `lib/publish/local`: used when there is no supported forge remote (or none configured). Leaves the branch committed in the worktree, does not push anywhere, and writes a plain-text summary (same content that would have gone in a PR body) to `.e3d-pilot/runs/<run-id>/publish-summary.md`, printing its path and the branch name so a human can open it however they publish changes in their own workflow.
   - Adding a GitLab (`glab`) backend later is only implementing `lib/publish/gitlab` against this same contract — out of scope for this spec (see Non-Goals), but this phase's job is to make that true.
 - Publish never merges, never pushes to `base_branch` directly, and refuses to run if `verify` failed.
+- After a successful publish (outcome `published` or `needs-attention`), if `config.notify.email.to` is set, send a best-effort email notification: subject naming the branch (and flagging when the outcome needs human action), body containing a link (the PR URL for `github`, or the local branch name/path when there is no remote) followed by the same summary content used for the PR body. Notification is strictly opt-in (absent by default), and its failure or the absence of a mail transport never fails the publish stage — it degrades to a skip, same as `live_verify`'s config-opt-in pattern. The actual send is a configurable shell command (default: `mail`), never a hardcoded SMTP/API integration, matching this project's stance against baking in a specific external stack.
+- `lib/publish/github` captures and reports the created PR's URL (`pr_url:` in its machine-readable output) so the notification step and any other caller can link to it directly, instead of only printing human-readable push/PR commands.
 
 ### Acceptance Criteria
 
@@ -251,6 +254,8 @@ Independently verify the executed change, then open a draft PR — and stop.
 - A successful run against a repo with a `github.com` remote produces a draft PR (verified against a throwaway/test GitHub repo, or a dry-run mode that prints the exact `gh` command without executing it, for environments without a disposable repo), and the audit files it links to are present in that PR's file list.
 - A successful run against a repo with no remote configured produces a committed local branch and a `publish-summary.md`, and does not attempt any network call.
 - The PR body (or `publish-summary.md`, for the `local` backend) contains working links/paths to all audit artifacts, and those paths exist in the branch's tree.
+- With `notify.email.to` configured and a stub mail command on `PATH`, a successful publish invokes that command with the configured recipient, a subject naming the branch, and a body containing the PR URL (github backend) or local branch name (local backend) plus the summary content.
+- With `notify` absent from config, publish completes exactly as before and never invokes a mail command.
 
 ## Phase 9 - Fleet Mode and Documentation
 
