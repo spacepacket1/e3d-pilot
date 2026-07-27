@@ -43,7 +43,12 @@ make_fake_claude_bin() {
 #!/usr/bin/env bash
 set -euo pipefail
 cat >/dev/null
-printf 'stubbed external context\n'
+cat <<'OUT'
+stubbed external context
+---IDEATE-STATUS---
+selected: candidate-1
+reason: stubbed candidate
+OUT
 EOF
   chmod +x "$bin_dir/claude"
 }
@@ -100,7 +105,7 @@ explicit_run_id_resolves_latest() {
   older="$(cat "$repo/.e3d-pilot/latest-run")"
   PATH="$bin_dir:$PATH" "$BIN" run --repo "$repo" --stage discover >/dev/null
   newer="$(cat "$repo/.e3d-pilot/latest-run")"
-  "$BIN" run --repo "$repo" --stage ideate --run-id "$older" >/dev/null
+  PATH="$bin_dir:$PATH" "$BIN" run --repo "$repo" --stage ideate --run-id "$older" >/dev/null
   after="$(cat "$repo/.e3d-pilot/latest-run")"
   [[ "$after" == "$newer" ]]
   [[ -d "$repo/.e3d-pilot/runs/$older" ]]
@@ -130,4 +135,3 @@ main() {
 }
 
 main "$@"
-

@@ -37,23 +37,18 @@ providers_list_reports_local_unavailable_when_unset() {
   assert_contains "$out" "local    unavailable"
 }
 
-providers_list_reports_local_available_against_http_stub() {
-  local stub_dir port out stub_pid tries
+providers_list_reports_local_available_against_curl_stub() {
+  local stub_dir out
   stub_dir="$(mktemp -d)"
-  port=18734
-  (cd "$stub_dir" && python3 -m http.server "$port" --bind 127.0.0.1 >/dev/null 2>&1) &
-  stub_pid=$!
+  cat > "$stub_dir/curl" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+exit 0
+EOF
+  chmod +x "$stub_dir/curl"
 
-  tries=0
-  until curl -s -o /dev/null -m 1 "http://127.0.0.1:$port/" || [[ $tries -ge 20 ]]; do
-    sleep 0.1
-    tries=$((tries + 1))
-  done
+  out="$(PATH="$stub_dir:$PATH" LOCAL_MODEL_ENDPOINT="http://127.0.0.1:18734/v1" "$BIN" providers list)"
 
-  out="$(LOCAL_MODEL_ENDPOINT="http://127.0.0.1:$port/v1" "$BIN" providers list)"
-
-  kill "$stub_pid" 2>/dev/null || true
-  wait "$stub_pid" 2>/dev/null || true
   rm -rf "$stub_dir"
 
   assert_contains "$out" "local    available"
@@ -219,7 +214,7 @@ convergence_three_entries_one_dissenting_does_not_converge() {
 
 main() {
   providers_list_reports_local_unavailable_when_unset
-  providers_list_reports_local_available_against_http_stub
+  providers_list_reports_local_available_against_curl_stub
   providers_list_reports_claude_and_codex_status
   claude_provider_requires_prompt_file_argument
   claude_provider_dry_run_prints_command

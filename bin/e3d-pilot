@@ -5,6 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 SCHEMA_FILE="$REPO_ROOT/config.schema.json"
 DISCOVER_PREVIOUS_RUN_ID=""
+NEGOTIATE_EXIT_NEEDS_HUMAN=3
 
 # shellcheck source=lib/providers/common.sh
 source "$REPO_ROOT/lib/providers/common.sh"
@@ -224,6 +225,16 @@ load_git_log_summary() {
 repo_has_remote() {
   local repo="$1"
   git -C "$repo" remote | grep -q '.'
+}
+
+provider_availability_probe() {
+  local script="$1" output status
+  set +e
+  output="$(E3D_PILOT_CHECK=1 "$script" 2>&1)"
+  status=$?
+  set -e
+  printf '%s' "$output"
+  return "$status"
 }
 
 gh_local_facts() {
@@ -843,6 +854,155 @@ draft_stage() {
   printf '%s\n' "$run_id"
 }
 
+build_negotiate_prompt() {
+  local reviewer="$1" round="$2" draft_file="$3" prompt_file="$4"
+  {
+    printf 'You are reviewer %s in round %s of the negotiate loop.\n' "$reviewer" "$round"
+    printf 'Read the current draft below as the only source of truth.\n'
+    printf 'If it is ready, respond with the Phase 2 status block and status: approved.\n'
+    printf 'If it needs changes, respond with the Phase 2 status block, status: revise,\n'
+    printf 'and include a fenced ```spec block containing the full replacement spec.\n\n'
+    printf 'Current draft:\n\n'
+    cat "$draft_file"
+    printf '\n'
+  } > "$prompt_file"
+}
+
+init_negotiation_log() {
+  local log_file="$1" run_id="$2"
+  if [[ ! -f "$log_file" ]]; then
+    {
+      printf -- '---\n'
+      printf 'run_id: %s\n' "$run_id"
+      printf -- '---\n\n'
+      printf '# Negotiation Log\n\n'
+    } > "$log_file"
+  fi
+}
+
+append_negotiation_round_log() {
+  local log_file="$1" round_log_file="$2"
+  cat "$round_log_file" >> "$log_file"
+}
+
+negotiate_stage() {
+  local repo="$1" run_id="$2" run_dir config_file spec_draft_file negotiation_log_file max_rounds
+  local provider provider_script availability_output provider_status round reviewer_index
+  local round_log_file round_prompt_file round_response_file provider_output status reason replacement_spec
+  local -a providers statuses
+
+  ensure_git_repo "$repo"
+  config_file="$(config_path_for_repo "$repo")"
+  validate_config_file "$config_file"
+  run_dir="$(runs_dir_for_repo "$repo")/$run_id"
+  mkdir -p "$run_dir"
+
+  spec_draft_file="$run_dir/spec-draft.md"
+  [[ -f "$spec_draft_file" ]] || die "negotiate requires spec-draft.md for run $run_id; run draft first"
+
+  negotiation_log_file="$run_dir/negotiation-log.md"
+  init_negotiation_log "$negotiation_log_file" "$run_id"
+  max_rounds="${NEGOTIATE_MAX_ROUNDS:-4}"
+
+  mapfile -t providers < <(jq -r '.providers.negotiate[]' "$config_file")
+
+  for provider in "${providers[@]}"; do
+    provider_script="$REPO_ROOT/lib/providers/$provider"
+    [[ -x "$provider_script" ]] || die "negotiate provider script missing or not executable: $provider_script"
+    if availability_output="$(provider_availability_probe "$provider_script")"; then
+      :
+    else
+      provider_status=$?
+      if [[ $provider_status -eq "$PROVIDER_EXIT_UNAVAILABLE" ]]; then
+        die "negotiate reviewer \"$provider\" unavailable: ${availability_output:-no availability details}"
+      fi
+      die "negotiate reviewer \"$provider\" availability check failed: ${availability_output:-unknown error}"
+    fi
+  done
+
+  for ((round=1; round<=max_rounds; round++)); do
+    round_log_file="$run_dir/.negotiation-round-${round}.md"
+    : > "$round_log_file"
+    {
+      printf '## Round %s\n\n' "$round"
+      printf '### Draft Before Round\n\n```text\n'
+      cat "$spec_draft_file"
+      printf '\n```\n\n'
+    } >> "$round_log_file"
+
+    statuses=()
+    reviewer_index=0
+
+    for provider in "${providers[@]}"; do
+      reviewer_index=$((reviewer_index + 1))
+      provider_script="$REPO_ROOT/lib/providers/$provider"
+      round_prompt_file="$run_dir/negotiate-round-${round}-reviewer-${reviewer_index}-${provider}-prompt.md"
+      round_response_file="$run_dir/negotiate-round-${round}-reviewer-${reviewer_index}-${provider}-response.md"
+
+      build_negotiate_prompt "$provider" "$round" "$spec_draft_file" "$round_prompt_file"
+
+      set +e
+      provider_output="$(E3D_PILOT_DRY_RUN=0 "$provider_script" "$round_prompt_file" 2>"$run_dir/negotiate-round-${round}-reviewer-${reviewer_index}-${provider}.stderr")"
+      provider_status=$?
+      set -e
+      if [[ $provider_status -ne 0 ]]; then
+        local provider_error=""
+        if [[ -s "$run_dir/negotiate-round-${round}-reviewer-${reviewer_index}-${provider}.stderr" ]]; then
+          provider_error="$(<"$run_dir/negotiate-round-${round}-reviewer-${reviewer_index}-${provider}.stderr")"
+        fi
+        if [[ $provider_status -eq "$PROVIDER_EXIT_UNAVAILABLE" ]]; then
+          die "negotiate reviewer \"$provider\" became unavailable mid-round: ${provider_error:-no availability details}"
+        fi
+        die "negotiate reviewer \"$provider\" failed: ${provider_error:-no stderr captured}"
+      fi
+
+      printf '%s\n' "$provider_output" > "$round_response_file"
+      status="$("$REPO_ROOT/lib/negotiate/parse-status" "$round_response_file" status)"
+      reason="$("$REPO_ROOT/lib/negotiate/parse-status" "$round_response_file" reason)"
+      replacement_spec=""
+      if [[ "$status" == "revise" ]]; then
+        replacement_spec="$("$REPO_ROOT/lib/negotiate/parse-status" "$round_response_file" spec)"
+        printf '%s\n' "$replacement_spec" > "$spec_draft_file"
+      fi
+      statuses+=("$status")
+
+      {
+        printf '### Reviewer %s: %s\n\n' "$reviewer_index" "$provider"
+        printf 'Status: %s\n\n' "$status"
+        printf 'Reason: %s\n\n' "$reason"
+        if [[ "$status" == "revise" ]]; then
+          printf 'Replacement Spec:\n\n```spec\n%s\n```\n\n' "$replacement_spec"
+        fi
+        printf 'Raw Response:\n\n```text\n%s\n```\n\n' "$provider_output"
+      } >> "$round_log_file"
+    done
+
+    if "$REPO_ROOT/lib/negotiate/convergence" "${statuses[@]}" >/dev/null; then
+      append_negotiation_round_log "$negotiation_log_file" "$round_log_file"
+      cp "$spec_draft_file" "$run_dir/spec-final.md"
+      {
+        printf '## Final Outcome\n\n'
+        printf 'Converged in round %s.\n' "$round"
+      } >> "$negotiation_log_file"
+      printf 'negotiate: converged in round %s; wrote spec-final.md\n' "$round"
+      return 0
+    fi
+
+    {
+      printf 'Round Result: not converged\n\n'
+      printf 'At least one reviewer requested revision in round %s.\n\n' "$round"
+    } >> "$round_log_file"
+    append_negotiation_round_log "$negotiation_log_file" "$round_log_file"
+  done
+
+  {
+    printf '## Final Outcome\n\n'
+    printf 'Needs human review after %s rounds; spec-draft.md left in place.\n' "$max_rounds"
+  } >> "$negotiation_log_file"
+  printf 'negotiate: needs human after %s rounds; spec-draft.md and negotiation-log.md left in place\n' "$max_rounds"
+  return "$NEGOTIATE_EXIT_NEEDS_HUMAN"
+}
+
 json_type_check() {
   local file="$1" filter="$2" message="$3"
   if ! jq -e "$filter" "$file" >/dev/null; then
@@ -933,14 +1093,25 @@ run_single_stage() {
     draft)
       draft_stage "$repo" "$run_id"
       ;;
-    negotiate|execute|review|publish)
+    negotiate)
+      negotiate_stage "$repo" "$run_id"
+      ;;
+    execute|review|publish)
       stage_stub "$stage" "$repo" "$run_id" "$run_dir"
       ;;
     all)
       local ordered=(discover ideate draft negotiate execute review publish)
-      local current
+      local current current_status
       for current in "${ordered[@]}"; do
+        set +e
         run_single_stage "$current" "$repo" "$run_id"
+        current_status=$?
+        set -e
+        if [[ $current_status -eq "$NEGOTIATE_EXIT_NEEDS_HUMAN" ]]; then
+          printf 'negotiate: needs human; stopping before execute\n'
+          return "$current_status"
+        fi
+        [[ $current_status -eq 0 ]] || return "$current_status"
         if [[ "$current" == "ideate" ]]; then
           local candidates_file="$run_dir/candidates.md" selected
           if [[ -f "$candidates_file" ]]; then
@@ -1024,10 +1195,11 @@ providers_list() {
   for provider in claude codex local; do
     script="$REPO_ROOT/lib/providers/$provider"
     [[ -x "$script" ]] || die "provider script missing or not executable: $script"
-    set +e
-    output="$(E3D_PILOT_CHECK=1 "$script" 2>&1)"
-    exit_code=$?
-    set -e
+    if output="$(provider_availability_probe "$script")"; then
+      exit_code=0
+    else
+      exit_code=$?
+    fi
     if [[ $exit_code -eq 0 ]]; then
       status="available"
     else
