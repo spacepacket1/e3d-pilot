@@ -6,6 +6,9 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 SCHEMA_FILE="$REPO_ROOT/config.schema.json"
 DISCOVER_PREVIOUS_RUN_ID=""
 
+# shellcheck source=lib/providers/common.sh
+source "$REPO_ROOT/lib/providers/common.sh"
+
 die() {
   printf 'error: %s\n' "$*" >&2
   exit 1
@@ -361,6 +364,194 @@ discover_stage() {
   printf '%s\n' "$run_id"
 }
 
+gh_availability_reason() {
+  local repo="$1"
+  if ! repo_has_remote "$repo"; then
+    printf 'no git remote configured'
+    return 1
+  fi
+  if ! command -v gh >/dev/null 2>&1; then
+    printf 'gh CLI not available'
+    return 1
+  fi
+  if ! gh auth status >/dev/null 2>&1; then
+    printf 'gh is not authenticated'
+    return 1
+  fi
+  if ! (cd "$repo" && gh repo view >/dev/null 2>&1); then
+    printf 'git remote is not recognized by gh'
+    return 1
+  fi
+  return 0
+}
+
+ideate_gh_pr_list() {
+  local repo="$1" reason prs
+  if ! reason="$(gh_availability_reason "$repo")"; then
+    printf 'skipped: %s\n' "$reason"
+    return 0
+  fi
+  prs="$(cd "$repo" && gh pr list --state all --limit 50 2>/dev/null || true)"
+  if [[ -n "$prs" ]]; then
+    printf '```text\n%s\n```\n' "$prs"
+  else
+    printf -- '- none found\n'
+  fi
+}
+
+load_prior_runs_content() {
+  local repo="$1" current_run_id="$2" runs_dir dir run_name found
+  runs_dir="$(runs_dir_for_repo "$repo")"
+  found=0
+  if [[ -d "$runs_dir" ]]; then
+    for dir in "$runs_dir"/*/; do
+      [[ -d "$dir" ]] || continue
+      run_name="$(basename "$dir")"
+      [[ "$run_name" == "$current_run_id" ]] && continue
+      if [[ -f "$dir/candidates.md" ]]; then
+        found=1
+        printf '### %s/candidates.md\n```text\n' "$run_name"
+        cat "$dir/candidates.md"
+        printf '\n```\n'
+      fi
+      if [[ -f "$dir/spec-final.md" ]]; then
+        found=1
+        printf '### %s/spec-final.md\n```text\n' "$run_name"
+        cat "$dir/spec-final.md"
+        printf '\n```\n'
+      fi
+    done
+  fi
+  [[ $found -eq 1 ]] || printf -- '- none found\n'
+}
+
+build_ideate_facts_markdown() {
+  local repo="$1" run_dir="$2" run_id="$3" facts_file="$4" findings_file
+  findings_file="$run_dir/findings.md"
+  {
+    printf '## Current Findings\n\n```text\n'
+    cat "$findings_file"
+    printf '\n```\n'
+    printf '\n## Git Branches\n'
+    load_git_branch_summary "$repo"
+    printf '\n## GH PR List (state: all)\n'
+    ideate_gh_pr_list "$repo"
+    printf '\n## Prior Runs (candidates.md / spec-final.md)\n'
+    load_prior_runs_content "$repo" "$run_id"
+  } > "$facts_file"
+}
+
+build_ideate_prompt() {
+  local facts_file="$1" prompt_file="$2"
+  {
+    printf 'You are the ideate stage of an autonomous repo-improvement pipeline.\n'
+    printf 'Propose 3-5 ranked candidate ideas (most valuable first) for what this repo\n'
+    printf 'should work on next, based on the findings and dedup context below.\n\n'
+    printf 'For EACH candidate you must explicitly check it against the git branches, the\n'
+    printf 'PR list (when available), and past runs candidates/specs listed below, and\n'
+    printf 'state plainly whether it duplicates something that already exists.\n\n'
+    printf 'Respond using exactly this format, one block per candidate:\n\n'
+    printf '### Candidate <N>: <short title>\n'
+    printf 'Duplicate: yes|no\n'
+    printf 'Dedup rationale: <cite the specific branch/PR/run you checked, or say why not>\n'
+    printf 'Description: <what to build and why>\n\n'
+    printf 'After all candidates, end your response with exactly this block: choose the\n'
+    printf 'highest-ranked candidate that is NOT a duplicate as "selected", using the\n'
+    printf 'literal value "none" only if every candidate is a duplicate of existing work.\n\n'
+    printf -- '---IDEATE-STATUS---\n'
+    printf 'selected: candidate-<N> | none\n'
+    printf 'reason: <one line>\n\n'
+    printf 'Context:\n\n'
+    cat "$facts_file"
+  } > "$prompt_file"
+}
+
+ideate_status_field() {
+  local field="$1" in_block=0 line value
+  while IFS= read -r line; do
+    if [[ "$line" == "---IDEATE-STATUS---" ]]; then
+      in_block=1
+      continue
+    fi
+    if [[ $in_block -eq 1 && "$line" == "${field}: "* ]]; then
+      value="${line#"${field}: "}"
+      printf '%s' "$value"
+      return 0
+    fi
+  done
+  return 1
+}
+
+write_candidates_markdown() {
+  local selected="$1" reason="$2" facts_file="$3" response_file="$4" candidates_file="$5"
+  {
+    printf -- '---\n'
+    printf 'selected: %s\n' "$selected"
+    printf 'reason: %s\n' "$reason"
+    printf -- '---\n\n'
+    printf '# Candidates\n\n'
+    printf '## Dedup Context\n\n'
+    cat "$facts_file"
+    printf '\n## Proposed Candidates\n\n'
+    cat "$response_file"
+    printf '\n'
+  } > "$candidates_file"
+}
+
+ideate_stage() {
+  local repo="$1" run_id="$2" run_dir config_file findings_file facts_file prompt_file
+  local provider provider_script provider_output provider_status provider_error
+  local candidates_file selected reason
+  ensure_git_repo "$repo"
+  config_file="$(config_path_for_repo "$repo")"
+  validate_config_file "$config_file"
+  run_dir="$(runs_dir_for_repo "$repo")/$run_id"
+  mkdir -p "$run_dir"
+
+  findings_file="$run_dir/findings.md"
+  [[ -f "$findings_file" ]] || die "ideate requires findings.md for run $run_id; run discover first"
+
+  facts_file="$run_dir/ideate-facts.md"
+  prompt_file="$run_dir/ideate-prompt.md"
+  candidates_file="$run_dir/candidates.md"
+
+  build_ideate_facts_markdown "$repo" "$run_dir" "$run_id" "$facts_file"
+  build_ideate_prompt "$facts_file" "$prompt_file"
+
+  provider="$(config_value "$config_file" '.providers.ideate')"
+  provider_script="$REPO_ROOT/lib/providers/$provider"
+  [[ -x "$provider_script" ]] || die "ideate provider script missing or not executable: $provider_script"
+
+  set +e
+  provider_output="$(E3D_PILOT_DRY_RUN=0 "$provider_script" "$prompt_file" 2>"$run_dir/ideate-provider.stderr")"
+  provider_status=$?
+  set -e
+  if [[ $provider_status -ne 0 ]]; then
+    provider_error=""
+    if [[ -s "$run_dir/ideate-provider.stderr" ]]; then
+      provider_error="$(<"$run_dir/ideate-provider.stderr")"
+    fi
+    if [[ $provider_status -eq "$PROVIDER_EXIT_UNAVAILABLE" ]]; then
+      die "ideate provider unavailable: ${provider_error:-$provider}"
+    fi
+    die "ideate provider failed: ${provider_error:-$provider}"
+  fi
+
+  printf '%s\n' "$provider_output" > "$run_dir/ideate-response.md"
+
+  selected="$(ideate_status_field "selected" <<<"$provider_output" || true)"
+  reason="$(ideate_status_field "reason" <<<"$provider_output" || true)"
+  [[ -n "$selected" ]] || die "ideate provider response missing ---IDEATE-STATUS--- selected field"
+
+  write_candidates_markdown "$selected" "$reason" "$facts_file" "$run_dir/ideate-response.md" "$candidates_file"
+  printf '%s\n' "$run_id"
+}
+
+candidates_selected_field() {
+  local file="$1"
+  awk -F': ' '/^selected: / { print $2; exit }' "$file"
+}
+
 json_type_check() {
   local file="$1" filter="$2" message="$3"
   if ! jq -e "$filter" "$file" >/dev/null; then
@@ -445,7 +636,10 @@ run_single_stage() {
     discover)
       discover_stage "$repo" "$run_id"
       ;;
-    ideate|draft|negotiate|execute|review|publish)
+    ideate)
+      ideate_stage "$repo" "$run_id"
+      ;;
+    draft|negotiate|execute|review|publish)
       stage_stub "$stage" "$repo" "$run_id" "$run_dir"
       ;;
     all)
@@ -453,6 +647,16 @@ run_single_stage() {
       local current
       for current in "${ordered[@]}"; do
         run_single_stage "$current" "$repo" "$run_id"
+        if [[ "$current" == "ideate" ]]; then
+          local candidates_file="$run_dir/candidates.md" selected
+          if [[ -f "$candidates_file" ]]; then
+            selected="$(candidates_selected_field "$candidates_file")"
+            if [[ "$selected" == "none" ]]; then
+              printf 'ideate: nothing to do (all candidates duplicate existing work); stopping before draft\n'
+              return 0
+            fi
+          fi
+        fi
       done
       ;;
     *)
