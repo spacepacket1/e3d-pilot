@@ -1,0 +1,251 @@
+<svg viewBox="0 0 1200 630" xmlns="http://www.w3.org/2000/svg" font-family="Segoe UI, Helvetica, Arial, sans-serif" role="img" aria-label="e3d-pilot autonomous agentic loop: discover, ideate, draft, negotiate, execute, review, publish">
+  <defs>
+    <radialGradient id="bgGrad" cx="50%" cy="30%" r="85%">
+      <stop offset="0%" stop-color="#1a1240"/>
+      <stop offset="45%" stop-color="#0b0d2e"/>
+      <stop offset="100%" stop-color="#020208"/>
+    </radialGradient>
+    <radialGradient id="nebulaCyan" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#37e6ff" stop-opacity="0.35"/>
+      <stop offset="100%" stop-color="#37e6ff" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="nebulaMagenta" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#c14bff" stop-opacity="0.30"/>
+      <stop offset="100%" stop-color="#c14bff" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="ringGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#37e6ff"/>
+      <stop offset="30%" stop-color="#7d7bff"/>
+      <stop offset="55%" stop-color="#ff5ec4"/>
+      <stop offset="80%" stop-color="#7d7bff"/>
+      <stop offset="100%" stop-color="#37e6ff"/>
+    </linearGradient>
+    <radialGradient id="nodeCyan" cx="35%" cy="30%" r="70%">
+      <stop offset="0%" stop-color="#d6fbff"/>
+      <stop offset="35%" stop-color="#37e6ff"/>
+      <stop offset="100%" stop-color="#0c6b8a"/>
+    </radialGradient>
+    <radialGradient id="nodeMagenta" cx="35%" cy="30%" r="70%">
+      <stop offset="0%" stop-color="#ffe0f6"/>
+      <stop offset="35%" stop-color="#ff5ec4"/>
+      <stop offset="100%" stop-color="#7a1e63"/>
+    </radialGradient>
+    <radialGradient id="coreGlow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#ffffff"/>
+      <stop offset="40%" stop-color="#8be9ff"/>
+      <stop offset="100%" stop-color="#8be9ff" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="glow" x="-120%" y="-120%" width="340%" height="340%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="6" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <filter id="softBlur" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="18"/>
+    </filter>
+    <filter id="ringBlur" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="5"/>
+    </filter>
+
+    <!-- reusable node icon glyphs, drawn in a local -12..12 coordinate space -->
+    <g id="icon-search">
+      <circle cx="-2" cy="-2" r="6.2" fill="none" stroke="#04222b" stroke-width="2.1"/>
+      <line x1="2.6" y1="2.6" x2="7.5" y2="7.5" stroke="#04222b" stroke-width="2.3" stroke-linecap="round"/>
+    </g>
+    <g id="icon-bulb">
+      <circle cx="0" cy="-3" r="5.6" fill="none" stroke="#3a1230" stroke-width="2"/>
+      <line x1="-2.6" y1="2.2" x2="2.6" y2="2.2" stroke="#3a1230" stroke-width="2" stroke-linecap="round"/>
+      <line x1="-1.8" y1="5" x2="1.8" y2="5" stroke="#3a1230" stroke-width="2" stroke-linecap="round"/>
+      <line x1="0" y1="-9.2" x2="0" y2="-11.6" stroke="#3a1230" stroke-width="1.6" stroke-linecap="round"/>
+      <line x1="-4.6" y1="-6.8" x2="-6.4" y2="-8.4" stroke="#3a1230" stroke-width="1.6" stroke-linecap="round"/>
+      <line x1="4.6" y1="-6.8" x2="6.4" y2="-8.4" stroke="#3a1230" stroke-width="1.6" stroke-linecap="round"/>
+    </g>
+    <g id="icon-pencil">
+      <line x1="-6" y1="6" x2="5" y2="-5" stroke="#04222b" stroke-width="2.3" stroke-linecap="round"/>
+      <path d="M 5 -5 L 8.6 -3.4 L 6.4 -0.8 Z" fill="#04222b"/>
+      <line x1="-7.2" y1="7.2" x2="-6" y2="6" stroke="#04222b" stroke-width="2.3" stroke-linecap="round"/>
+    </g>
+    <g id="icon-venn">
+      <circle cx="-3.2" cy="0" r="6" fill="none" stroke="#3a1230" stroke-width="2"/>
+      <circle cx="3.2" cy="0" r="6" fill="none" stroke="#3a1230" stroke-width="2"/>
+    </g>
+    <g id="icon-gear">
+      <polygon points="0,-8 6.9,-4 6.9,4 0,8 -6.9,4 -6.9,-4" fill="none" stroke="#04222b" stroke-width="2"/>
+      <circle cx="0" cy="0" r="2.6" fill="#04222b"/>
+    </g>
+    <g id="icon-eye">
+      <path d="M -9 0 C -5 -6.5 5 -6.5 9 0 C 5 6.5 -5 6.5 -9 0 Z" fill="none" stroke="#3a1230" stroke-width="2"/>
+      <circle cx="0" cy="0" r="2.8" fill="#3a1230"/>
+    </g>
+    <g id="icon-publish">
+      <line x1="0" y1="7" x2="0" y2="-6" stroke="#04222b" stroke-width="2.3" stroke-linecap="round"/>
+      <path d="M -4.6 -1.6 L 0 -8.2 L 4.6 -1.6 Z" fill="#04222b"/>
+      <line x1="-6.6" y1="8.6" x2="6.6" y2="8.6" stroke="#04222b" stroke-width="2" stroke-linecap="round"/>
+    </g>
+    <g id="icon-lock">
+      <path d="M -3.8 -1 v -2.6 a 3.8 3.8 0 0 1 7.6 0 v 2.6" fill="none" stroke="#3a2a02" stroke-width="2"/>
+      <rect x="-5.4" y="-1" width="10.8" height="8" rx="1.6" fill="#ffd166" stroke="#3a2a02" stroke-width="1"/>
+    </g>
+
+    <marker id="arrowHead" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#8be9ff"/>
+    </marker>
+  </defs>
+
+  <!-- scene backdrop -->
+  <rect x="0" y="0" width="1200" height="630" fill="url(#bgGrad)"/>
+  <circle cx="260" cy="150" r="260" fill="url(#nebulaMagenta)"/>
+  <circle cx="960" cy="120" r="300" fill="url(#nebulaCyan)"/>
+
+  <!-- starfield -->
+  <g>
+    <circle cx="395.6" cy="76.1" r="1.5" fill="#cfe9ff" opacity="0.3"/>
+    <circle cx="641.6" cy="163.1" r="0.7" fill="#cfe9ff" opacity="0.58"/>
+    <circle cx="63.5" cy="190.6" r="0.7" fill="#cfe9ff" opacity="0.31"/>
+    <circle cx="512.4" cy="349.9" r="0.8" fill="#cfe9ff" opacity="0.4"/>
+    <circle cx="747.8" cy="398.8" r="1.4" fill="#cfe9ff" opacity="0.51"/>
+    <circle cx="1152.5" cy="33.9" r="1.8" fill="#cfe9ff" opacity="0.44"/>
+    <circle cx="187.3" cy="62.7" r="1.0" fill="#cfe9ff" opacity="0.78"/>
+    <circle cx="229.6" cy="250.5" r="1.5" fill="#cfe9ff" opacity="0.49"/>
+    <circle cx="655.4" cy="40.4" r="0.7" fill="#cfe9ff" opacity="0.38"/>
+    <circle cx="809.3" cy="188.2" r="1.0" fill="#cfe9ff" opacity="0.63"/>
+    <circle cx="545.7" cy="136.4" r="1.7" fill="#cfe9ff" opacity="0.7"/>
+    <circle cx="303.2" cy="247.6" r="1.3" fill="#cfe9ff" opacity="0.82"/>
+    <circle cx="866.2" cy="131.6" r="2.0" fill="#cfe9ff" opacity="0.33"/>
+    <circle cx="505.0" cy="321.6" r="0.8" fill="#cfe9ff" opacity="0.57"/>
+    <circle cx="65.5" cy="285.6" r="1.7" fill="#cfe9ff" opacity="0.62"/>
+    <circle cx="1035.6" cy="142.1" r="1.6" fill="#cfe9ff" opacity="0.64"/>
+    <circle cx="692.7" cy="199.8" r="1.8" fill="#cfe9ff" opacity="0.86"/>
+    <circle cx="570.0" cy="284.0" r="0.7" fill="#cfe9ff" opacity="0.71"/>
+    <circle cx="770.7" cy="417.2" r="1.8" fill="#cfe9ff" opacity="0.43"/>
+    <circle cx="467.5" cy="285.8" r="0.6" fill="#cfe9ff" opacity="0.55"/>
+    <circle cx="214.9" cy="62.4" r="0.7" fill="#cfe9ff" opacity="0.75"/>
+    <circle cx="170.0" cy="115.3" r="1.2" fill="#cfe9ff" opacity="0.82"/>
+    <circle cx="113.5" cy="196.9" r="1.4" fill="#cfe9ff" opacity="0.82"/>
+    <circle cx="970.4" cy="364.9" r="1.0" fill="#cfe9ff" opacity="0.52"/>
+    <circle cx="436.2" cy="373.1" r="1.9" fill="#cfe9ff" opacity="0.35"/>
+    <circle cx="703.4" cy="121.4" r="0.6" fill="#cfe9ff" opacity="0.52"/>
+    <circle cx="448.3" cy="244.4" r="1.9" fill="#cfe9ff" opacity="0.7"/>
+    <circle cx="618.0" cy="265.1" r="1.6" fill="#cfe9ff" opacity="0.29"/>
+    <circle cx="1063.5" cy="330.9" r="1.8" fill="#cfe9ff" opacity="0.77"/>
+    <circle cx="92.2" cy="42.3" r="0.9" fill="#cfe9ff" opacity="0.36"/>
+    <circle cx="414.5" cy="36.3" r="0.6" fill="#cfe9ff" opacity="0.35"/>
+    <circle cx="732.3" cy="75.2" r="1.0" fill="#cfe9ff" opacity="0.48"/>
+    <circle cx="442.4" cy="64.8" r="1.8" fill="#cfe9ff" opacity="0.9"/>
+    <circle cx="46.8" cy="400.1" r="1.3" fill="#cfe9ff" opacity="0.35"/>
+    <circle cx="650.1" cy="26.0" r="1.3" fill="#cfe9ff" opacity="0.89"/>
+    <circle cx="1021.5" cy="297.0" r="1.0" fill="#cfe9ff" opacity="0.49"/>
+    <circle cx="213.8" cy="327.6" r="1.4" fill="#cfe9ff" opacity="0.76"/>
+    <circle cx="1129.6" cy="196.1" r="1.9" fill="#cfe9ff" opacity="0.89"/>
+    <circle cx="248.2" cy="97.8" r="1.5" fill="#cfe9ff" opacity="0.84"/>
+    <circle cx="994.9" cy="209.2" r="1.5" fill="#cfe9ff" opacity="0.77"/>
+    <circle cx="118.3" cy="282.5" r="1.9" fill="#cfe9ff" opacity="0.76"/>
+    <circle cx="890.2" cy="208.6" r="0.9" fill="#cfe9ff" opacity="0.76"/>
+    <circle cx="167.4" cy="76.2" r="1.9" fill="#cfe9ff" opacity="0.77"/>
+  </g>
+
+  <!-- perspective horizon grid, a Tron-style floor beneath the loop -->
+  <g stroke="#37e6ff" fill="none">
+    <g opacity="0.16" stroke-width="1">
+      <line x1="600" y1="560" x2="30" y2="628"/>
+      <line x1="600" y1="560" x2="230" y2="628"/>
+      <line x1="600" y1="560" x2="430" y2="628"/>
+      <line x1="600" y1="560" x2="600" y2="628"/>
+      <line x1="600" y1="560" x2="770" y2="628"/>
+      <line x1="600" y1="560" x2="970" y2="628"/>
+      <line x1="600" y1="560" x2="1170" y2="628"/>
+    </g>
+    <g opacity="0.2" stroke-width="1">
+      <path d="M 210 628 Q 600 592 990 628"/>
+      <path d="M 340 628 Q 600 605 860 628"/>
+      <path d="M 460 628 Q 600 616 740 628"/>
+    </g>
+  </g>
+
+  <!-- HUD corner brackets -->
+  <g stroke="#8be9ff" stroke-width="2.5" fill="none" opacity="0.65">
+    <polyline points="26,70 26,26 70,26"/>
+    <polyline points="1130,26 1174,26 1174,70"/>
+    <polyline points="26,560 26,604 70,604"/>
+    <polyline points="1130,604 1174,604 1174,560"/>
+  </g>
+
+  <!-- soft halo behind the whole loop -->
+  <ellipse cx="600" cy="300" rx="430" ry="195" fill="none" stroke="#37e6ff" stroke-width="26" opacity="0.10" filter="url(#softBlur)"/>
+
+  <!-- the loop ring itself -->
+  <ellipse cx="600" cy="300" rx="430" ry="195" fill="none" stroke="url(#ringGrad)" stroke-width="3.5" opacity="0.55" filter="url(#ringBlur)"/>
+  <ellipse cx="600" cy="300" rx="430" ry="195" fill="none" stroke="url(#ringGrad)" stroke-width="1.6" opacity="0.95"/>
+
+  <!-- directional flow arrows along the ring -->
+  <g filter="url(#glow)">
+    <path d="M 786.57 124.31 l 9 8 l -12 3 z" fill="#8be9ff" transform="rotate(12.32 786.57 124.31)"/>
+    <path d="M 1019.22 256.61 l 9 8 l -12 3 z" fill="#ff8fdd" transform="rotate(63.28 1019.22 256.61)"/>
+    <path d="M 936.19 421.58 l 9 8 l -12 3 z" fill="#8be9ff" transform="rotate(150.37 936.19 421.58)"/>
+    <path d="M 600 495 l 9 8 l -12 3 z" fill="#ff8fdd" transform="rotate(180 600 495)"/>
+  </g>
+
+  <!-- safety-gate arrows: execute's ceiling check, and review's verify gate before publish -->
+  <g filter="url(#glow)">
+    <path d="M 263.81 421.58 l 9 8 l -12 3 z" fill="#ffd166" transform="rotate(-150.37 263.81 421.58)"/>
+    <use href="#icon-lock" transform="translate(263.81 421.58) scale(1.7)"/>
+  </g>
+  <g filter="url(#glow)">
+    <path d="M 180.78 256.61 l 9 8 l -12 3 z" fill="#ffd166" transform="rotate(-63.28 180.78 256.61)"/>
+    <use href="#icon-lock" transform="translate(180.78 256.61) scale(1.7)"/>
+  </g>
+
+  <!-- dashed return arc: publish closes the loop by seeding the next run's discover -->
+  <path d="M 413.43 124.31 l 9 8 l -12 3 z" fill="#8be9ff" opacity="0.55" transform="rotate(-12.32 413.43 124.31)"/>
+
+  <!-- central autonomous pilot core, tethered to every stage -->
+  <g opacity="0.35" stroke="#8be9ff" stroke-width="1">
+    <line x1="600" y1="300" x2="600" y2="105"/>
+    <line x1="600" y1="300" x2="936.19" y2="178.42"/>
+    <line x1="600" y1="300" x2="1019.22" y2="343.39"/>
+    <line x1="600" y1="300" x2="786.57" y2="475.69"/>
+    <line x1="600" y1="300" x2="413.43" y2="475.69"/>
+    <line x1="600" y1="300" x2="180.78" y2="343.39"/>
+    <line x1="600" y1="300" x2="263.81" y2="178.42"/>
+  </g>
+  <circle cx="600" cy="300" r="46" fill="url(#coreGlow)" opacity="0.9"/>
+  <g filter="url(#glow)">
+    <polygon points="600,278 618,300 600,322 582,300" fill="#eafcff" stroke="#37e6ff" stroke-width="2"/>
+    <circle cx="600" cy="300" r="5.5" fill="#0b0d2e"/>
+  </g>
+
+  <!-- the seven pipeline stage nodes -->
+  <g filter="url(#glow)">
+    <circle cx="600.00" cy="105.00" r="34" fill="url(#nodeCyan)" stroke="#eafcff" stroke-width="1.5"/>
+    <circle cx="936.19" cy="178.42" r="34" fill="url(#nodeMagenta)" stroke="#fff0fb" stroke-width="1.5"/>
+    <circle cx="1019.22" cy="343.39" r="34" fill="url(#nodeCyan)" stroke="#eafcff" stroke-width="1.5"/>
+    <circle cx="786.57" cy="475.69" r="34" fill="url(#nodeMagenta)" stroke="#fff0fb" stroke-width="1.5"/>
+    <circle cx="413.43" cy="475.69" r="34" fill="url(#nodeCyan)" stroke="#eafcff" stroke-width="1.5"/>
+    <circle cx="180.78" cy="343.39" r="34" fill="url(#nodeMagenta)" stroke="#fff0fb" stroke-width="1.5"/>
+    <circle cx="263.81" cy="178.42" r="34" fill="url(#nodeCyan)" stroke="#eafcff" stroke-width="1.5"/>
+  </g>
+
+  <use href="#icon-search" transform="translate(600.00 105.00) scale(1.5)"/>
+  <use href="#icon-bulb"   transform="translate(936.19 178.42) scale(1.5)"/>
+  <use href="#icon-pencil" transform="translate(1019.22 343.39) scale(1.5)"/>
+  <use href="#icon-venn"   transform="translate(786.57 475.69) scale(1.5)"/>
+  <use href="#icon-gear"   transform="translate(413.43 475.69) scale(1.5)"/>
+  <use href="#icon-eye"    transform="translate(180.78 343.39) scale(1.5)"/>
+  <use href="#icon-publish" transform="translate(263.81 178.42) scale(1.5)"/>
+
+  <!-- stage labels -->
+  <g font-size="21" font-weight="700" letter-spacing="1.5" fill="#eafcff">
+    <text x="600.00" y="55.00" text-anchor="middle">DISCOVER</text>
+    <text x="989.35" y="147.24" text-anchor="start">IDEATE</text>
+    <text x="1085.51" y="354.52" text-anchor="start">DRAFT</text>
+    <text x="816.07" y="520.74" text-anchor="start">NEGOTIATE</text>
+    <text x="383.93" y="520.74" text-anchor="end">EXECUTE</text>
+    <text x="114.49" y="354.52" text-anchor="end">REVIEW</text>
+    <text x="210.65" y="147.24" text-anchor="end">PUBLISH</text>
+  </g>
+
+  <!-- caption -->
+  <text x="600" y="605" text-anchor="middle" font-size="15" letter-spacing="3" fill="#8be9ff" opacity="0.75">AUTONOMOUS &#183; MULTI-MODEL VERIFIED &#183; NEVER MERGES</text>
+</svg>

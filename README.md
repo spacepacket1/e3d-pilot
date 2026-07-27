@@ -2,6 +2,8 @@
 
 **e3d-pilot decides what a codebase should work on next, and drives that idea safely to a reviewable branch — unattended, but never unsupervised.**
 
+![e3d-pilot's autonomous agentic loop: discover, ideate, draft, negotiate, execute, review, publish, orbiting a central autonomous pilot core, with gold safety gates before the diff-ceiling check and before publish](docs/images/agentic-loop.svg)
+
 It is a repo-agnostic, Bash-first agentic loop: research a repository, propose an idea, check it hasn't already been done, get independent models to agree the plan is ready, hand execution to [codex-spec-runner](https://github.com/spacepacket1/codex-spec-runner) (csr), verify the result, and stop at a draft PR or a local review branch. It never merges anything itself.
 
 ## Why we built this
