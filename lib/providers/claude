@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=./common.sh
+source "$SCRIPT_DIR/common.sh"
+
+CLAUDE_BIN="${CLAUDE_BIN:-claude}"
+CLAUDE_MODEL="${CLAUDE_MODEL:-sonnet}"
+CLAUDE_PERMISSION_MODE="${CLAUDE_PERMISSION_MODE:-default}"
+
+if [[ "${E3D_PILOT_CHECK:-0}" == "1" ]]; then
+  if provider_binary_available "$CLAUDE_BIN"; then
+    printf 'available (%s)\n' "$CLAUDE_BIN"
+    exit "$PROVIDER_EXIT_OK"
+  fi
+  printf 'unavailable: claude binary not found (%s); set CLAUDE_BIN to override\n' "$CLAUDE_BIN"
+  exit "$PROVIDER_EXIT_UNAVAILABLE"
+fi
+
+PROMPT_FILE="${1:-}"
+provider_require_prompt_file "$PROMPT_FILE"
+
+claude_args=(
+  --print
+  --model "$CLAUDE_MODEL"
+  --permission-mode "$CLAUDE_PERMISSION_MODE"
+  --no-session-persistence
+)
+
+if [[ "${E3D_PILOT_DRY_RUN:-0}" == "1" ]]; then
+  printf '%q ' "$CLAUDE_BIN" "${claude_args[@]}"
+  printf '< %q\n' "$PROMPT_FILE"
+  exit "$PROVIDER_EXIT_OK"
+fi
+
+if ! provider_binary_available "$CLAUDE_BIN"; then
+  echo "error: claude binary not found: $CLAUDE_BIN" >&2
+  exit "$PROVIDER_EXIT_FAILURE"
+fi
+
+exec "$CLAUDE_BIN" "${claude_args[@]}" < "$PROMPT_FILE"

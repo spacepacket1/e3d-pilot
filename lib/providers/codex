@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=./common.sh
+source "$SCRIPT_DIR/common.sh"
+
+CODEX_BIN="${CODEX_BIN:-codex}"
+CODEX_MODEL="${CODEX_MODEL:-}"
+# e3d-pilot's own stages (discover/ideate/draft/negotiate/review) reason and
+# write files under .e3d-pilot/, never the target repo's tracked source, so
+# codex is sandboxed read-only/non-interactive by default here. Only the
+# execute stage (via csr) touches tracked source, with csr's own defaults.
+CODEX_SANDBOX_MODE="${CODEX_SANDBOX_MODE:-read-only}"
+CODEX_APPROVAL_POLICY="${CODEX_APPROVAL_POLICY:-never}"
+CODEX_CD="${CODEX_CD:-$PWD}"
+
+if [[ "${E3D_PILOT_CHECK:-0}" == "1" ]]; then
+  if provider_binary_available "$CODEX_BIN"; then
+    printf 'available (%s)\n' "$CODEX_BIN"
+    exit "$PROVIDER_EXIT_OK"
+  fi
+  printf 'unavailable: codex binary not found (%s); set CODEX_BIN to override\n' "$CODEX_BIN"
+  exit "$PROVIDER_EXIT_UNAVAILABLE"
+fi
+
+PROMPT_FILE="${1:-}"
+provider_require_prompt_file "$PROMPT_FILE"
+
+codex_args=(
+  --ask-for-approval "$CODEX_APPROVAL_POLICY"
+  exec
+  --sandbox "$CODEX_SANDBOX_MODE"
+  --cd "$CODEX_CD"
+)
+if [[ -n "$CODEX_MODEL" ]]; then
+  codex_args+=(--model "$CODEX_MODEL")
+fi
+codex_args+=(-)
+
+if [[ "${E3D_PILOT_DRY_RUN:-0}" == "1" ]]; then
+  printf '%q ' "$CODEX_BIN" "${codex_args[@]}"
+  printf '< %q\n' "$PROMPT_FILE"
+  exit "$PROVIDER_EXIT_OK"
+fi
+
+if ! provider_binary_available "$CODEX_BIN"; then
+  echo "error: codex binary not found: $CODEX_BIN" >&2
+  exit "$PROVIDER_EXIT_FAILURE"
+fi
+
+exec "$CODEX_BIN" "${codex_args[@]}" < "$PROMPT_FILE"

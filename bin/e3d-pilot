@@ -31,8 +31,9 @@ Run stages:
   publish
   all
 
-Current phase implements the CLI skeleton, config validation, and run-id
-plumbing. Later-stage commands are documented here now and will be filled in by
+Current phase implements the CLI skeleton, config validation, run-id
+plumbing, and the provider adapter contract (lib/providers/*, `providers
+list`). Later-stage commands are documented here now and will be filled in by
 subsequent phases.
 EOF
 }
@@ -261,11 +262,33 @@ cmd_run() {
   run_single_stage "$stage" "$repo" "$run_id"
 }
 
+# Reports availability for the fixed provider set by delegating the actual
+# check to each lib/providers/<name> script (E3D_PILOT_CHECK=1); no
+# provider-specific logic lives here, so adding a fourth provider later only
+# means adding its name to this list and its script under lib/providers/.
+providers_list() {
+  local provider script output status exit_code
+  for provider in claude codex local; do
+    script="$REPO_ROOT/lib/providers/$provider"
+    [[ -x "$script" ]] || die "provider script missing or not executable: $script"
+    set +e
+    output="$(E3D_PILOT_CHECK=1 "$script" 2>&1)"
+    exit_code=$?
+    set -e
+    if [[ $exit_code -eq 0 ]]; then
+      status="available"
+    else
+      status="unavailable"
+    fi
+    printf '%-8s %-12s %s\n' "$provider" "$status" "$output"
+  done
+}
+
 cmd_providers() {
   local subcommand="${1:-}"
   case "$subcommand" in
     list)
-      die "providers list is not yet implemented"
+      providers_list
       ;;
     ""|-h|--help)
       usage

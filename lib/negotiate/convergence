@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# Pure convergence rule for the negotiate loop (docs/build-e3d-pilot.md,
+# Phase 2 / Phase 6): a round converges only if every reviewer status passed
+# in is "approved". This is a function of the array length only, so a
+# 2-reviewer and a 3+-reviewer `negotiate` config exercise the same code path.
+#
+# Usage: convergence <status1> [status2] ... [statusN]
+#   statuses must each be "approved" or "revise"
+# Exit: 0 if converged (all approved), 1 if not converged (any revise),
+#       2 on invalid input (no statuses, or an unrecognized status value).
+set -euo pipefail
+
+if [[ $# -eq 0 ]]; then
+  echo "error: at least one reviewer status is required" >&2
+  exit 2
+fi
+
+for status in "$@"; do
+  case "$status" in
+    approved)
+      ;;
+    revise)
+      printf 'not-converged\n'
+      exit 1
+      ;;
+    *)
+      echo "error: invalid status value: $status (expected approved or revise)" >&2
+      exit 2
+      ;;
+  esac
+done
+
+printf 'converged\n'
+exit 0

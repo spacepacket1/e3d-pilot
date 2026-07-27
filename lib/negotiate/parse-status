@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# Parses a single reviewer's raw stdout for the negotiate status contract
+# (docs/build-e3d-pilot.md, Phase 2). The three status lines and the fenced
+# ```spec replacement block are located by direct regex match anywhere in the
+# raw text, whether or not a provider happens to wrap them in an extra
+# Markdown fence.
+#
+# Usage: parse-status <response-file> [field]
+#   field: status | reason | spec | all (default: all, prints JSON)
+set -euo pipefail
+
+response_file="${1:?usage: parse-status <response-file> [status|reason|spec|all]}"
+field="${2:-all}"
+
+[[ -f "$response_file" ]] || { echo "error: response file not found: $response_file" >&2; exit 1; }
+
+grep -qE '^---STATUS---$' "$response_file" || {
+  echo "error: missing ---STATUS--- marker in response" >&2
+  exit 1
+}
+
+status="$(grep -m1 -E '^status: (approved|revise)$' "$response_file" | sed -E 's/^status: //')"
+reason="$(grep -m1 -E '^reason: .+$' "$response_file" | sed -E 's/^reason: //')"
+
+[[ -n "$status" ]] || { echo "error: missing or invalid status line (expected 'status: approved' or 'status: revise')" >&2; exit 1; }
+[[ -n "$reason" ]] || { echo "error: missing reason line (expected 'reason: <one line>')" >&2; exit 1; }
+
+spec_block=""
+if [[ "$status" == "revise" ]]; then
+  spec_block="$(awk '
+    /^```spec[[:space:]]*$/ { capture=1; next }
+    capture && /^```[[:space:]]*$/ { capture=0; next }
+    capture { print }
+  ' "$response_file")"
+  [[ -n "$spec_block" ]] || {
+    echo "error: status: revise requires a fenced \`\`\`spec replacement block" >&2
+    exit 1
+  }
+fi
+
+case "$field" in
+  status)
+    printf '%s\n' "$status"
+    ;;
+  reason)
+    printf '%s\n' "$reason"
+    ;;
+  spec)
+    printf '%s\n' "$spec_block"
+    ;;
+  all)
+    jq -n --arg status "$status" --arg reason "$reason" --arg spec "$spec_block" \
+      '{status: $status, reason: $reason, spec: (if $spec == "" then null else $spec end)}'
+    ;;
+  *)
+    echo "error: unknown field: $field (expected status, reason, spec, or all)" >&2
+    exit 1
+    ;;
+esac

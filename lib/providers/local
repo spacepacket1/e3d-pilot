@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=./common.sh
+source "$SCRIPT_DIR/common.sh"
+
+LOCAL_MODEL_NAME="${LOCAL_MODEL_NAME:-local-model}"
+
+if [[ "${E3D_PILOT_CHECK:-0}" == "1" ]]; then
+  if ! local_endpoint_configured; then
+    printf 'unavailable: LOCAL_MODEL_ENDPOINT is not set\n'
+    exit "$PROVIDER_EXIT_UNAVAILABLE"
+  fi
+  if local_endpoint_reachable; then
+    printf 'available (%s)\n' "$LOCAL_MODEL_ENDPOINT"
+    exit "$PROVIDER_EXIT_OK"
+  fi
+  printf 'unavailable: endpoint not reachable (%s)\n' "$LOCAL_MODEL_ENDPOINT"
+  exit "$PROVIDER_EXIT_UNAVAILABLE"
+fi
+
+if ! local_endpoint_configured; then
+  echo "error: LOCAL_MODEL_ENDPOINT is not set; local provider unavailable" >&2
+  exit "$PROVIDER_EXIT_UNAVAILABLE"
+fi
+
+PROMPT_FILE="${1:-}"
+provider_require_prompt_file "$PROMPT_FILE"
+
+ENDPOINT="${LOCAL_MODEL_ENDPOINT%/}"
+
+if [[ "${E3D_PILOT_DRY_RUN:-0}" == "1" ]]; then
+  printf 'curl -fsS -X POST %q/chat/completions -H %q -d @- (model=%s) < %q\n' \
+    "$ENDPOINT" "Content-Type: application/json" "$LOCAL_MODEL_NAME" "$PROMPT_FILE"
+  exit "$PROVIDER_EXIT_OK"
+fi
+
+PROMPT_CONTENT="$(cat "$PROMPT_FILE")"
+PAYLOAD="$(jq -n --arg model "$LOCAL_MODEL_NAME" --arg content "$PROMPT_CONTENT" \
+  '{model: $model, messages: [{role: "user", content: $content}]}')"
+
+if ! RESPONSE="$(printf '%s' "$PAYLOAD" | curl -fsS -m "${LOCAL_MODEL_TIMEOUT:-120}" \
+  -H 'Content-Type: application/json' -d @- "$ENDPOINT/chat/completions")"; then
+  echo "error: local model endpoint request failed: $ENDPOINT" >&2
+  exit "$PROVIDER_EXIT_FAILURE"
+fi
+
+printf '%s' "$RESPONSE" | jq -r '.choices[0].message.content // empty'
