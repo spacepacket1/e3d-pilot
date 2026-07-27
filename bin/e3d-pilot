@@ -7,6 +7,7 @@ SCHEMA_FILE="$REPO_ROOT/config.schema.json"
 DISCOVER_PREVIOUS_RUN_ID=""
 NEGOTIATE_EXIT_NEEDS_HUMAN=3
 EXECUTE_EXIT_NEEDS_HUMAN=4
+REVIEW_EXIT_VERIFY_FAILED=5
 
 # shellcheck source=lib/providers/common.sh
 source "$REPO_ROOT/lib/providers/common.sh"
@@ -903,6 +904,98 @@ execute_stage() {
   printf 'execute: completed csr run on %s with diff_files=%s diff_lines=%s\n' "$branch" "$diff_files" "$diff_lines"
 }
 
+execute_worktree_fields() {
+  local run_dir="$1" file="$run_dir/execute-worktree.txt"
+  [[ -f "$file" ]] || die "missing execute worktree metadata: $file"
+  cat "$file"
+}
+
+auto_verify_commands() {
+  local worktree="$1"
+  if [[ -f "$worktree/package.json" ]]; then printf 'npm test\n'
+  elif [[ -f "$worktree/requirements.txt" ]]; then printf 'python3 -m pytest\n'
+  elif [[ -f "$worktree/Makefile" ]]; then printf 'make test\n'
+  fi
+}
+
+review_stage() {
+  local repo="$1" run_id="$2" run_dir config_file metadata branch worktree verify_log command status
+  local provider provider_script prompt response diff_text
+  run_dir="$(runs_dir_for_repo "$repo")/$run_id"; config_file="$(config_path_for_repo "$repo")"
+  validate_config_file "$config_file"
+  metadata="$(execute_worktree_fields "$run_dir")"; branch="${metadata%%$'\t'*}"; worktree="${metadata#*$'\t'}"
+  [[ -d "$worktree" ]] || die "execute worktree no longer exists: $worktree"
+  verify_log="$run_dir/review-verify.log"; : > "$verify_log"
+  mapfile -t commands < <(jq -r '.verify[]?' "$config_file")
+  if [[ ${#commands[@]} -eq 0 ]]; then mapfile -t commands < <(auto_verify_commands "$worktree"); fi
+  for command in "${commands[@]}"; do
+    printf '$ %s\n' "$command" >> "$verify_log"
+    set +e; (cd "$worktree" && bash -lc "$command") >> "$verify_log" 2>&1; status=$?; set -e
+    if [[ $status -ne 0 ]]; then
+      printf 'failed\n' > "$run_dir/review-status"
+      printf 'review: verify command failed: %s\n' "$command" >&2
+      return 1
+    fi
+  done
+  diff_text="$run_dir/review-diff.patch"; git -C "$worktree" diff --no-ext-diff --binary > "$diff_text"
+  prompt="$run_dir/review-prompt.md"; response="$run_dir/review-response.md"
+  { printf 'Review this git diff for correctness, scope creep, and safety. Return concise Markdown.\n\n```diff\n'; cat "$diff_text"; printf '\n```\n'; } > "$prompt"
+  provider="$(config_value "$config_file" '.providers.review')"; provider_script="$REPO_ROOT/lib/providers/$provider"
+  [[ -x "$provider_script" ]] || die "review provider script missing or not executable: $provider_script"
+  if ! E3D_PILOT_DRY_RUN=0 "$provider_script" "$prompt" > "$response" 2> "$run_dir/review-provider.stderr"; then
+    printf 'failed\n' > "$run_dir/review-status"; die "review provider failed: $provider"
+  fi
+  printf 'passed\n' > "$run_dir/review-status"
+  printf 'review: verification and independent review passed for %s\n' "$branch"
+}
+
+prepare_publish_audit() {
+  local run_dir="$1" worktree="$2" run_id="$3" dest="$worktree/.e3d-pilot/runs/$run_id" name source
+  mkdir -p "$dest"
+  for name in findings.md candidates.md negotiation-log.md spec-final.md; do
+    source="$run_dir/$name"; [[ -f "$source" ]] || die "publish requires audit artifact: $source"
+    cp "$source" "$dest/$name"
+  done
+  source="$run_dir/csr-state/manifest.tsv"; [[ -f "$source" ]] || die "publish requires csr manifest: $source"
+  cp "$source" "$dest/csr-manifest.tsv"
+  printf '%s' "$dest"
+}
+
+build_publish_summary() {
+  local run_dir="$1" run_id="$2" summary="$3" audit_base=".e3d-pilot/runs/$run_id"
+  {
+    printf '# e3d-pilot run %s\n\n' "$run_id"
+    printf '## Findings\n\n'; sed -n '1,40p' "$run_dir/findings.md"
+    printf '\n## Candidate and dedup rationale\n\n'; sed -n '1,60p' "$run_dir/candidates.md"
+    printf '\n## Negotiation\n\n'; tail -40 "$run_dir/negotiation-log.md"
+    printf '\n## Audit artifacts\n\n'
+    for name in findings.md candidates.md negotiation-log.md spec-final.md csr-manifest.tsv; do printf -- '- [%s](%s/%s)\n' "$name" "$audit_base" "$name"; done
+  } > "$summary"
+}
+
+publish_backend_for_repo() {
+  local repo="$1" configured="$2" remote_url
+  if [[ "$configured" != auto ]]; then printf '%s' "$configured"; return; fi
+  remote_url="$(git -C "$repo" remote get-url origin 2>/dev/null || true)"
+  if [[ "$remote_url" == *github.com* ]]; then printf github; else printf local; fi
+}
+
+publish_stage() {
+  local repo="$1" run_id="$2" run_dir config_file metadata branch worktree audit_dir summary backend backend_script base labels
+  run_dir="$(runs_dir_for_repo "$repo")/$run_id"; config_file="$(config_path_for_repo "$repo")"
+  [[ "$(cat "$run_dir/review-status" 2>/dev/null || true)" == passed ]] || die "publish refused: review verification has not passed"
+  metadata="$(execute_worktree_fields "$run_dir")"; branch="${metadata%%$'\t'*}"; worktree="${metadata#*$'\t'}"
+  audit_dir="$(prepare_publish_audit "$run_dir" "$worktree" "$run_id")"
+  summary="$run_dir/publish-summary.md"; build_publish_summary "$run_dir" "$run_id" "$summary"
+  git -C "$worktree" add -A -- . ':!.codex-spec-runner'
+  git -C "$worktree" add -f "$audit_dir/findings.md" "$audit_dir/candidates.md" "$audit_dir/negotiation-log.md" "$audit_dir/spec-final.md" "$audit_dir/csr-manifest.tsv"
+  if ! git -C "$worktree" diff --cached --quiet; then git -C "$worktree" commit -m "e3d-pilot: $run_id" >/dev/null; fi
+  backend="$(publish_backend_for_repo "$repo" "$(config_value "$config_file" '.pr.backend')")"
+  backend_script="$REPO_ROOT/lib/publish/$backend"; [[ -x "$backend_script" ]] || die "publish backend unavailable: $backend"
+  base="$(config_value "$config_file" '.pr.base_branch')"; labels="$(jq -r '.pr.labels | join(",")' "$config_file")"
+  "$backend_script" "$repo" "$worktree" "$branch" "$base" "$summary" "$run_dir" "$labels"
+}
+
 draft_stage() {
   local repo="$1" run_id="$2" run_dir config_file candidates_file selected
   ensure_git_repo "$repo"
@@ -1258,8 +1351,11 @@ run_single_stage() {
     execute)
       execute_stage "$repo" "$run_id"
       ;;
-    review|publish)
-      stage_stub "$stage" "$repo" "$run_id" "$run_dir"
+    review)
+      review_stage "$repo" "$run_id"
+      ;;
+    publish)
+      publish_stage "$repo" "$run_id"
       ;;
     all)
       local ordered=(discover ideate draft negotiate execute review publish)

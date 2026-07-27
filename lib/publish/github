@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -euo pipefail
+repo="$1"; worktree="$2"; branch="$3"; base="$4"; summary="$5"; run_dir="$6"; labels="${7:-}"
+command -v gh >/dev/null || { echo 'error: gh CLI unavailable' >&2; exit 1; }
+args=(pr create --draft --base "$base" --head "$branch" --title "e3d-pilot: $branch" --body-file "$summary")
+[[ -z "$labels" ]] || args+=(--label "$labels")
+if [[ "${E3D_PILOT_PUBLISH_DRY_RUN:-0}" == 1 ]]; then
+  printf 'git -C %q push -u origin %q\n' "$worktree" "$branch"
+  printf 'gh'; printf ' %q' "${args[@]}"; printf '\n'
+  printf 'outcome: published-dry-run\n' > "$run_dir/publish-outcome.txt"
+  exit 0
+fi
+git -C "$worktree" push -u origin "$branch"
+(cd "$worktree" && gh "${args[@]}")
+printf 'outcome: published\n' > "$run_dir/publish-outcome.txt"

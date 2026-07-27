@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+set -euo pipefail
+repo="$1"; worktree="$2"; branch="$3"; base="$4"; summary="$5"; run_dir="$6"
+[[ -d "$worktree" && -f "$summary" ]]
+printf 'outcome: published-local\nbranch: %s\nsummary: %s\n' "$branch" "$summary" > "$run_dir/publish-outcome.txt"
+printf 'publish: local branch %s committed; summary: %s\n' "$branch" "$summary"
