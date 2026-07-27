@@ -4,6 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 SCHEMA_FILE="$REPO_ROOT/config.schema.json"
+DISCOVER_PREVIOUS_RUN_ID=""
 
 die() {
   printf 'error: %s\n' "$*" >&2
@@ -119,6 +120,247 @@ resolve_run_id() {
   printf '%s\n' "$run_id"
 }
 
+ensure_git_repo() {
+  local repo="$1"
+  git -C "$repo" rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "not a git repository: $repo"
+}
+
+repo_head_sha() {
+  local repo="$1"
+  git -C "$repo" rev-parse HEAD 2>/dev/null || die "repository has no HEAD commit: $repo"
+}
+
+config_value() {
+  local file="$1" filter="$2"
+  jq -r "$filter" "$file"
+}
+
+findings_head_sha() {
+  local file="$1"
+  awk -F': ' '/^head_sha: / { print $2; exit }' "$file"
+}
+
+read_repo_text_file() {
+  local file="$1"
+  [[ -f "$file" ]] || return 1
+  cat "$file"
+}
+
+load_repo_docs_content() {
+  local repo="$1" config_file="$2" docs_path doc candidate
+  docs_path="$(config_value "$config_file" '.docs // empty')"
+  if [[ -n "$docs_path" && "$docs_path" != "null" ]]; then
+    if [[ -f "$repo/$docs_path" ]]; then
+      printf '### %s\n' "$docs_path"
+      printf '```text\n'
+      read_repo_text_file "$repo/$docs_path"
+      printf '\n```\n'
+    else
+      printf '### %s\n- skipped: configured docs file not found\n' "$docs_path"
+    fi
+    return 0
+  fi
+
+  for candidate in AGENTS.md CLAUDE.md README.md; do
+    doc="$repo/$candidate"
+    if [[ -f "$doc" ]]; then
+      printf '### %s\n' "$candidate"
+      printf '```text\n'
+      read_repo_text_file "$doc"
+      printf '\n```\n'
+    fi
+  done
+}
+
+load_repo_todo_fixes() {
+  local repo="$1" matches
+  matches="$(grep -rn --exclude-dir=.git --exclude-dir=.e3d-pilot -e 'TODO' -e 'FIXME' "$repo" 2>/dev/null || true)"
+  if [[ -n "$matches" ]]; then
+    printf '```text\n%s\n```\n' "$matches"
+  else
+    printf -- '- none found\n'
+  fi
+}
+
+load_git_branch_summary() {
+  local repo="$1" branches
+  branches="$(git -C "$repo" branch --all --no-color --verbose 2>/dev/null || true)"
+  if [[ -n "$branches" ]]; then
+    printf '```text\n%s\n```\n' "$branches"
+  else
+    printf -- '- none found\n'
+  fi
+}
+
+load_git_log_summary() {
+  local repo="$1" previous_findings="$2" lookback="$3" head_sha previous_sha range_desc log_output
+  head_sha="$(repo_head_sha "$repo")"
+  if [[ -n "$previous_findings" && -f "$previous_findings" ]]; then
+    previous_sha="$(findings_head_sha "$previous_findings")"
+    if [[ -n "$previous_sha" ]]; then
+      range_desc="${previous_sha}..HEAD"
+      log_output="$(git -C "$repo" log --format='%h %s' "$range_desc" 2>/dev/null || true)"
+      if [[ -n "$log_output" ]]; then
+        printf 'range: `%s`\n' "$range_desc"
+        printf '```text\n%s\n```\n' "$log_output"
+        return 0
+      fi
+    fi
+  fi
+
+  range_desc="last ${lookback} commits"
+  log_output="$(git -C "$repo" log --format='%h %s' -n "$lookback" 2>/dev/null || true)"
+  printf 'range: %s\n' "$range_desc"
+  if [[ -n "$log_output" ]]; then
+    printf '```text\n%s\n```\n' "$log_output"
+  else
+    printf -- '- no commits found\n'
+  fi
+}
+
+repo_has_remote() {
+  local repo="$1"
+  git -C "$repo" remote | grep -q '.'
+}
+
+gh_local_facts() {
+  local repo="$1" output issues prs
+  if ! repo_has_remote "$repo"; then
+    printf 'skipped: no git remote configured\n'
+    return 0
+  fi
+  if ! command -v gh >/dev/null 2>&1; then
+    printf 'skipped: gh CLI not available\n'
+    return 0
+  fi
+  if ! gh auth status >/dev/null 2>&1; then
+    printf 'skipped: gh is not authenticated\n'
+    return 0
+  fi
+  if ! (cd "$repo" && gh repo view >/dev/null 2>&1); then
+    printf 'skipped: git remote is not recognized by gh\n'
+    return 0
+  fi
+
+  issues="$(cd "$repo" && gh issue list --limit 20 2>/dev/null || true)"
+  prs="$(cd "$repo" && gh pr list --limit 20 2>/dev/null || true)"
+  printf '### gh issue list\n'
+  if [[ -n "$issues" ]]; then
+    printf '```text\n%s\n```\n' "$issues"
+  else
+    printf -- '- none found\n'
+  fi
+  printf '### gh pr list\n'
+  if [[ -n "$prs" ]]; then
+    printf '```text\n%s\n```\n' "$prs"
+  else
+    printf -- '- none found\n'
+  fi
+}
+
+discover_previous_run_findings_path() {
+  local repo="$1" previous_run_id="${DISCOVER_PREVIOUS_RUN_ID:-}"
+  [[ -n "$previous_run_id" ]] || return 1
+  local path
+  path="$(runs_dir_for_repo "$repo")/$previous_run_id/findings.md"
+  [[ -f "$path" ]] || return 1
+  printf '%s' "$path"
+}
+
+build_discover_facts_markdown() {
+  local repo="$1" config_file="$2" facts_file="$3" previous_findings="$4"
+  local head_sha research_topics
+  head_sha="$(repo_head_sha "$repo")"
+  research_topics="$(config_value "$config_file" '.research_topics')"
+  {
+    printf 'Repo head sha: %s\n\n' "$head_sha"
+    printf 'Research topics: %s\n\n' "$research_topics"
+    printf '## Git history\n'
+    load_git_log_summary "$repo" "$previous_findings" "${HISTORY_LOOKBACK_COMMITS:-20}"
+    printf '\n## Branches\n'
+    load_git_branch_summary "$repo"
+    printf '\n## GH issues and PRs\n'
+    gh_local_facts "$repo"
+    printf '\n## Repo docs\n'
+    load_repo_docs_content "$repo" "$config_file"
+    printf '\n## TODO/FIXME matches\n'
+    load_repo_todo_fixes "$repo"
+  } > "$facts_file"
+}
+
+build_discover_prompt() {
+  local facts_file="$1" prompt_file="$2"
+  {
+    printf 'You are producing the "External Context" section of a repo findings report.\n'
+    printf 'Keep it short and focused on the current state of the art relevant to the repo.\n\n'
+    printf 'Return markdown bullet points or short paragraphs only.\n\n'
+    printf 'Local facts:\n\n'
+    cat "$facts_file"
+  } > "$prompt_file"
+}
+
+write_findings_markdown() {
+  local head_sha="$1" facts_file="$2" external_context_file="$3" findings_file="$4"
+  {
+    printf -- '---\n'
+    printf 'head_sha: %s\n' "$head_sha"
+    printf -- '---\n\n'
+    printf '# Findings\n\n'
+    printf '## Local State\n\n'
+    cat "$facts_file"
+    printf '\n## External Context\n\n'
+    cat "$external_context_file"
+    printf '\n'
+  } > "$findings_file"
+}
+
+discover_stage() {
+  local repo="$1" run_id="$2" run_dir config_file head_sha facts_file prompt_file external_context_file findings_file previous_findings provider provider_script provider_output provider_status provider_error
+  ensure_git_repo "$repo"
+  config_file="$(config_path_for_repo "$repo")"
+  validate_config_file "$config_file"
+  run_dir="$(runs_dir_for_repo "$repo")/$run_id"
+  mkdir -p "$run_dir"
+  head_sha="$(repo_head_sha "$repo")"
+  previous_findings=""
+  if previous_findings="$(discover_previous_run_findings_path "$repo" 2>/dev/null)"; then
+    :
+  else
+    previous_findings=""
+  fi
+
+  facts_file="$run_dir/discover-local-state.md"
+  prompt_file="$run_dir/discover-prompt.md"
+  external_context_file="$run_dir/discover-external-context.md"
+  findings_file="$run_dir/findings.md"
+
+  build_discover_facts_markdown "$repo" "$config_file" "$facts_file" "$previous_findings"
+  build_discover_prompt "$facts_file" "$prompt_file"
+
+  provider="$(config_value "$config_file" '.providers.discover')"
+  provider_script="$REPO_ROOT/lib/providers/$provider"
+  [[ -x "$provider_script" ]] || die "discover provider script missing or not executable: $provider_script"
+
+  set +e
+  provider_output="$(E3D_PILOT_DRY_RUN=0 "$provider_script" "$prompt_file" 2>"$run_dir/discover-provider.stderr")"
+  provider_status=$?
+  set -e
+  if [[ $provider_status -ne 0 ]]; then
+    provider_error=""
+    if [[ -s "$run_dir/discover-provider.stderr" ]]; then
+      provider_error="$(<"$run_dir/discover-provider.stderr")"
+    fi
+    if [[ $provider_status -eq "$PROVIDER_EXIT_UNAVAILABLE" ]]; then
+      die "discover provider unavailable: ${provider_error:-$provider}"
+    fi
+    die "discover provider failed: ${provider_error:-$provider}"
+  fi
+
+  printf '%s\n' "$provider_output" > "$external_context_file"
+  write_findings_markdown "$head_sha" "$facts_file" "$external_context_file" "$findings_file"
+  printf '%s\n' "$run_id"
+}
+
 json_type_check() {
   local file="$1" filter="$2" message="$3"
   if ! jq -e "$filter" "$file" >/dev/null; then
@@ -201,7 +443,7 @@ run_single_stage() {
   mkdir -p "$run_dir"
   case "$stage" in
     discover)
-      printf '%s\n' "$run_id"
+      discover_stage "$repo" "$run_id"
       ;;
     ideate|draft|negotiate|execute|review|publish)
       stage_stub "$stage" "$repo" "$run_id" "$run_dir"
@@ -250,10 +492,16 @@ cmd_run() {
 
   if [[ "$stage" == "discover" || "$stage" == "all" ]]; then
     if [[ -z "$run_id" ]]; then
+      if [[ -f "$(latest_run_path_for_repo "$repo")" ]]; then
+        DISCOVER_PREVIOUS_RUN_ID="$(<"$(latest_run_path_for_repo "$repo")")"
+      else
+        DISCOVER_PREVIOUS_RUN_ID=""
+      fi
       run_id="$(start_new_run "$repo")"
     else
       mkdir -p "$(runs_dir_for_repo "$repo")/$run_id"
       write_latest_run "$repo" "$run_id"
+      DISCOVER_PREVIOUS_RUN_ID=""
     fi
   else
     run_id="$(resolve_run_id "$repo" "$run_id")"

@@ -20,6 +20,34 @@ make_repo() {
   printf '%s\n' "$repo"
 }
 
+# Phase 3's discover_stage requires a valid .e3d-pilot/config.json (to pick a
+# provider and research_topics) and at least one commit (to have a HEAD sha).
+# Bare make_repo() is intentionally still used by the config-validation tests
+# above, which specifically exercise the *absence* of a config file.
+make_repo_with_config() {
+  local repo
+  repo="$(mktemp -d)"
+  git init -q "$repo"
+  git -C "$repo" config user.email "test@example.com"
+  git -C "$repo" config user.name "Test User"
+  git -C "$repo" commit -q --allow-empty -m "initial commit"
+  mkdir -p "$repo/.e3d-pilot"
+  cp "$SAMPLE_CONFIG" "$repo/.e3d-pilot/config.json"
+  printf '%s' "$repo"
+}
+
+make_fake_claude_bin() {
+  local bin_dir="$1"
+  mkdir -p "$bin_dir"
+  cat > "$bin_dir/claude" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+cat >/dev/null
+printf 'stubbed external context\n'
+EOF
+  chmod +x "$bin_dir/claude"
+}
+
 validate_missing_config() {
   local repo out
   repo="$(make_repo)"
@@ -49,38 +77,47 @@ help_lists_commands() {
 }
 
 discover_creates_distinct_runs() {
-  local repo first second
-  repo="$(make_repo)"
-  "$BIN" run --repo "$repo" --stage discover >/dev/null
+  local repo bin_dir first second
+  repo="$(make_repo_with_config)"
+  bin_dir="$(mktemp -d)"
+  make_fake_claude_bin "$bin_dir"
+  PATH="$bin_dir:$PATH" "$BIN" run --repo "$repo" --stage discover >/dev/null
   first="$(cat "$repo/.e3d-pilot/latest-run")"
   [[ -d "$repo/.e3d-pilot/runs/$first" ]]
-  "$BIN" run --repo "$repo" --stage discover >/dev/null
+  PATH="$bin_dir:$PATH" "$BIN" run --repo "$repo" --stage discover >/dev/null
   second="$(cat "$repo/.e3d-pilot/latest-run")"
   [[ -d "$repo/.e3d-pilot/runs/$second" ]]
   [[ "$first" != "$second" ]]
+  rm -rf "$bin_dir"
 }
 
 explicit_run_id_resolves_latest() {
-  local repo older newer after
-  repo="$(make_repo)"
-  "$BIN" run --repo "$repo" --stage discover >/dev/null
+  local repo bin_dir older newer after
+  repo="$(make_repo_with_config)"
+  bin_dir="$(mktemp -d)"
+  make_fake_claude_bin "$bin_dir"
+  PATH="$bin_dir:$PATH" "$BIN" run --repo "$repo" --stage discover >/dev/null
   older="$(cat "$repo/.e3d-pilot/latest-run")"
-  "$BIN" run --repo "$repo" --stage discover >/dev/null
+  PATH="$bin_dir:$PATH" "$BIN" run --repo "$repo" --stage discover >/dev/null
   newer="$(cat "$repo/.e3d-pilot/latest-run")"
   "$BIN" run --repo "$repo" --stage ideate --run-id "$older" >/dev/null
   after="$(cat "$repo/.e3d-pilot/latest-run")"
   [[ "$after" == "$newer" ]]
   [[ -d "$repo/.e3d-pilot/runs/$older" ]]
+  rm -rf "$bin_dir"
 }
 
 explicit_run_id_on_new_discover_updates_latest() {
-  local repo chosen_id after
-  repo="$(make_repo)"
+  local repo bin_dir chosen_id after
+  repo="$(make_repo_with_config)"
+  bin_dir="$(mktemp -d)"
+  make_fake_claude_bin "$bin_dir"
   chosen_id="custom-run-id"
-  "$BIN" run --repo "$repo" --stage discover --run-id "$chosen_id" >/dev/null
+  PATH="$bin_dir:$PATH" "$BIN" run --repo "$repo" --stage discover --run-id "$chosen_id" >/dev/null
   after="$(cat "$repo/.e3d-pilot/latest-run")"
   [[ "$after" == "$chosen_id" ]]
   [[ -d "$repo/.e3d-pilot/runs/$chosen_id" ]]
+  rm -rf "$bin_dir"
 }
 
 main() {
