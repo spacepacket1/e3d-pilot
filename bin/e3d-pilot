@@ -466,22 +466,6 @@ build_ideate_prompt() {
   } > "$prompt_file"
 }
 
-ideate_status_field() {
-  local field="$1" in_block=0 line value
-  while IFS= read -r line; do
-    if [[ "$line" == "---IDEATE-STATUS---" ]]; then
-      in_block=1
-      continue
-    fi
-    if [[ $in_block -eq 1 && "$line" == "${field}: "* ]]; then
-      value="${line#"${field}: "}"
-      printf '%s' "$value"
-      return 0
-    fi
-  done
-  return 1
-}
-
 write_candidates_markdown() {
   local selected="$1" reason="$2" facts_file="$3" response_file="$4" candidates_file="$5"
   {
@@ -550,6 +534,313 @@ ideate_stage() {
 candidates_selected_field() {
   local file="$1"
   awk -F': ' '/^selected: / { print $2; exit }' "$file"
+}
+
+status_block_field() {
+  local marker="$1" field="$2" in_block=0 line value
+  while IFS= read -r line; do
+    if [[ "$line" == "$marker" ]]; then
+      in_block=1
+      continue
+    fi
+    if [[ $in_block -eq 1 && "$line" == "${field}: "* ]]; then
+      value="${line#"${field}: "}"
+      printf '%s' "$value"
+      return 0
+    fi
+  done
+  return 1
+}
+
+ideate_status_field() {
+  status_block_field "---IDEATE-STATUS---" "$1"
+}
+
+draft_status_field() {
+  status_block_field "---DRAFT-STATUS---" "$1"
+}
+
+extract_spec_fence() {
+  local response_file="$1"
+  awk '
+    /^```spec[[:space:]]*$/ { capture=1; next }
+    capture && /^```[[:space:]]*$/ { capture=0; next }
+    capture { print }
+  ' "$response_file"
+}
+
+load_repo_structure() {
+  local repo="$1" tracked
+  tracked="$(git -C "$repo" ls-files 2>/dev/null | head -300 || true)"
+  if [[ -n "$tracked" ]]; then
+    printf '```text\n%s\n```\n' "$tracked"
+  else
+    printf -- '- no tracked files found\n'
+  fi
+}
+
+build_draft_facts_markdown() {
+  local repo="$1" config_file="$2" candidates_file="$3" facts_file="$4"
+  {
+    printf '## Selected Candidate (candidates.md)\n\n```text\n'
+    cat "$candidates_file"
+    printf '\n```\n'
+    printf '\n## Target Repo Tracked Files (truncated to 300)\n'
+    load_repo_structure "$repo"
+    printf '\n## Repo Docs\n'
+    load_repo_docs_content "$repo" "$config_file"
+  } > "$facts_file"
+}
+
+build_draft_prompt() {
+  local facts_file="$1" prompt_file="$2" conventions_file="$3" protected_paths_list="$4" max_diff_files="$5" max_diff_lines="$6"
+  {
+    printf 'You are the draft stage of an autonomous repo-improvement pipeline.\n'
+    printf 'Turn the selected candidate below into a complete, csr-shaped phased\n'
+    printf 'Markdown spec that codex-spec-runner (csr) can run without any hand-editing.\n\n'
+    printf 'Follow these csr spec conventions exactly:\n\n'
+    cat "$conventions_file"
+    printf '\nHard requirements for your output:\n'
+    printf -- '- Start with a "# <Title>" heading, then "## Overview", "## Goals",\n'
+    printf '  "## Non-Goals", "## Existing Files", and "## Shared Constraints" sections.\n'
+    printf -- '- Follow those with one or more numbered "## Phase N - Title" sections,\n'
+    printf '  starting at Phase 1, each with "### Requirements" and\n'
+    printf '  "### Acceptance Criteria" subsections.\n'
+    printf -- '- Immediately under each phase heading, include exactly one\n'
+    printf '  "<!-- runner:model=PROVIDER:MODEL -->" annotation where PROVIDER is\n'
+    printf '  literally "codex" or "claude" (never "local", never anything else, and\n'
+    printf '  never omitted).\n'
+    printf -- '- Also under each phase heading, include one or more\n'
+    printf '  "<!-- pilot:touches=<glob> -->" annotations (one per line, one glob per\n'
+    printf '  annotation) naming every file/path glob that phase'"'"'s Requirements will\n'
+    printf '  touch. Every phase must have at least one.\n'
+    printf -- '- Add "<!-- runner:read=... -->" / "<!-- runner:verify=... -->"\n'
+    printf '  annotations where useful, per the conventions above.\n'
+    printf -- '- None of the pilot:touches globs for any phase may match any of these\n'
+    printf '  protected paths -- never propose modifying them:\n'
+    printf '%s\n' "$protected_paths_list"
+    printf -- '- Keep the whole spec scoped to plausibly fit within %s changed files and\n' "$max_diff_files"
+    printf '  %s changed lines total across all phases.\n\n' "$max_diff_lines"
+    printf 'Respond in exactly this shape:\n\n'
+    printf 'If, and only if, you can scope this candidate to satisfy every hard\n'
+    printf 'requirement above, wrap the complete spec Markdown in a fenced block\n'
+    printf 'starting with ```spec and ending with ```, then follow it with exactly:\n\n'
+    printf -- '---DRAFT-STATUS---\n'
+    printf 'status: ok\n'
+    printf 'reason: <one line>\n\n'
+    printf 'If you cannot scope it that small, or it would require touching a\n'
+    printf 'protected path, do NOT emit a ```spec block at all: respond with only\n'
+    printf 'exactly:\n\n'
+    printf -- '---DRAFT-STATUS---\n'
+    printf 'status: too-large\n'
+    printf 'reason: <one line explaining why it cannot be scoped>\n\n'
+    printf 'Context:\n\n'
+    cat "$facts_file"
+  } > "$prompt_file"
+}
+
+draft_phase_pairs() {
+  local spec_file="$1"
+  awk '
+    /^#{1,6}[[:space:]]+.*[Pp]hase[[:space:]]+[0-9]+/ {
+      line = $0
+      if (match(line, /[Pp]hase[[:space:]]+([0-9]+)/)) {
+        rest = substr(line, RSTART, RLENGTH)
+        gsub(/[^0-9]/, "", rest)
+        print rest "\t" NR
+      }
+    }
+  ' "$spec_file" | sort -n -k1,1
+}
+
+draft_phase_body() {
+  local spec_file="$1" start="$2" end="$3"
+  if [[ -n "$end" ]]; then
+    sed -n "${start},$((end - 1))p" "$spec_file"
+  else
+    sed -n "${start},\$p" "$spec_file"
+  fi
+}
+
+touches_glob_conflicts_with_protected() {
+  local touches="$1" protected="$2"
+  [[ "$touches" == $protected ]] && return 0
+  [[ "$protected" == $touches ]] && return 0
+  return 1
+}
+
+draft_validate_spec() {
+  local spec_file="$1" config_file="$2" violations_file="$3"
+  local protected_paths=() line
+
+  while IFS= read -r line; do
+    [[ -n "$line" ]] && protected_paths+=("$line")
+  done < <(jq -r '.protected_paths[]' "$config_file")
+
+  : > "$violations_file"
+
+  local pairs total_phases
+  pairs="$(draft_phase_pairs "$spec_file")"
+  if [[ -z "$pairs" ]]; then
+    printf 'no "## Phase N - Title" headings found in drafted spec\n' >> "$violations_file"
+    [[ ! -s "$violations_file" ]]
+    return
+  fi
+  total_phases="$(printf '%s\n' "$pairs" | wc -l | tr -d '[:space:]')"
+
+  local index=0 phase_number start_line
+  while IFS=$'\t' read -r phase_number start_line; do
+    index=$((index + 1))
+    local end_line=""
+    if [[ $index -lt $total_phases ]]; then
+      end_line="$(printf '%s\n' "$pairs" | sed -n "$((index + 1))p" | cut -f2)"
+    fi
+
+    local body
+    body="$(draft_phase_body "$spec_file" "$start_line" "$end_line")"
+
+    local touches_lines model_lines
+    touches_lines="$(printf '%s\n' "$body" | grep -oE '<!--[[:space:]]*pilot:touches=[^ ]+[[:space:]]*-->' || true)"
+    if [[ -z "$touches_lines" ]]; then
+      printf 'Phase %s: missing a pilot:touches annotation\n' "$phase_number" >> "$violations_file"
+    fi
+
+    model_lines="$(printf '%s\n' "$body" | grep -oE '<!--[[:space:]]*runner:model=[^ ]+[[:space:]]*-->' || true)"
+    if [[ -n "$model_lines" ]]; then
+      local model_line value
+      while IFS= read -r model_line; do
+        [[ -n "$model_line" ]] || continue
+        value="$(printf '%s\n' "$model_line" | sed -E 's/^<!--[[:space:]]*runner:model=([^ ]+)[[:space:]]*-->$/\1/')"
+        if [[ "$value" == "local" || "$value" == local:* ]]; then
+          printf 'Phase %s: runner:model references unsupported provider "local" (csr only dispatches codex/claude)\n' "$phase_number" >> "$violations_file"
+        fi
+      done <<< "$model_lines"
+    fi
+
+    if [[ -n "$touches_lines" && ${#protected_paths[@]} -gt 0 ]]; then
+      local touch_line glob protected
+      while IFS= read -r touch_line; do
+        [[ -n "$touch_line" ]] || continue
+        glob="$(printf '%s\n' "$touch_line" | sed -E 's/^<!--[[:space:]]*pilot:touches=([^ ]+)[[:space:]]*-->$/\1/')"
+        for protected in "${protected_paths[@]}"; do
+          if touches_glob_conflicts_with_protected "$glob" "$protected"; then
+            printf 'Phase %s: pilot:touches "%s" matches protected_paths entry "%s"\n' "$phase_number" "$glob" "$protected" >> "$violations_file"
+          fi
+        done
+      done <<< "$touches_lines"
+    fi
+  done <<< "$pairs"
+
+  [[ ! -s "$violations_file" ]]
+}
+
+draft_stage() {
+  local repo="$1" run_id="$2" run_dir config_file candidates_file selected
+  ensure_git_repo "$repo"
+  config_file="$(config_path_for_repo "$repo")"
+  validate_config_file "$config_file"
+  run_dir="$(runs_dir_for_repo "$repo")/$run_id"
+  mkdir -p "$run_dir"
+
+  candidates_file="$run_dir/candidates.md"
+  [[ -f "$candidates_file" ]] || die "draft requires candidates.md for run $run_id; run ideate first"
+
+  selected="$(candidates_selected_field "$candidates_file")"
+  [[ -n "$selected" && "$selected" != "none" ]] || die "draft requires a selected candidate in candidates.md (got '${selected:-<empty>}'); run ideate first"
+
+  local facts_file="$run_dir/draft-facts.md"
+  local prompt_file="$run_dir/draft-prompt.md"
+  local response_file="$run_dir/draft-response.md"
+  local spec_file="$run_dir/spec-draft.md"
+  local rejected_file="$run_dir/draft-rejected.md"
+  local conventions_file="${CSR_SPEC_CONVENTIONS_FILE:-$REPO_ROOT/lib/draft/csr-spec-conventions.md}"
+  [[ -s "$conventions_file" ]] || die "missing csr spec conventions file: $conventions_file"
+
+  local protected_paths_list max_diff_files max_diff_lines
+  protected_paths_list="$(jq -r '.protected_paths[] | "- " + .' "$config_file")"
+  [[ -n "$protected_paths_list" ]] || protected_paths_list="- (none configured)"
+  max_diff_files="$(config_value "$config_file" '.max_diff_files')"
+  max_diff_lines="$(config_value "$config_file" '.max_diff_lines')"
+
+  build_draft_facts_markdown "$repo" "$config_file" "$candidates_file" "$facts_file"
+  build_draft_prompt "$facts_file" "$prompt_file" "$conventions_file" "$protected_paths_list" "$max_diff_files" "$max_diff_lines"
+
+  local provider provider_script provider_output provider_status provider_error
+  provider="$(config_value "$config_file" '.providers.draft')"
+  provider_script="$REPO_ROOT/lib/providers/$provider"
+  [[ -x "$provider_script" ]] || die "draft provider script missing or not executable: $provider_script"
+
+  set +e
+  provider_output="$(E3D_PILOT_DRY_RUN=0 "$provider_script" "$prompt_file" 2>"$run_dir/draft-provider.stderr")"
+  provider_status=$?
+  set -e
+  if [[ $provider_status -ne 0 ]]; then
+    provider_error=""
+    if [[ -s "$run_dir/draft-provider.stderr" ]]; then
+      provider_error="$(<"$run_dir/draft-provider.stderr")"
+    fi
+    if [[ $provider_status -eq "$PROVIDER_EXIT_UNAVAILABLE" ]]; then
+      die "draft provider unavailable: ${provider_error:-$provider}"
+    fi
+    die "draft provider failed: ${provider_error:-$provider}"
+  fi
+
+  printf '%s\n' "$provider_output" > "$response_file"
+
+  local status reason
+  status="$(draft_status_field "status" <<<"$provider_output" || true)"
+  reason="$(draft_status_field "reason" <<<"$provider_output" || true)"
+  [[ -n "$status" ]] || die "draft provider response missing ---DRAFT-STATUS--- status field"
+
+  if [[ "$status" == "too-large" ]]; then
+    {
+      printf -- '---\n'
+      printf 'status: too-large\n'
+      printf 'reason: %s\n' "${reason:-not specified}"
+      printf -- '---\n\n'
+      printf '# Draft Rejected\n\n'
+      printf 'The draft provider judged candidate "%s" could not be scoped within\n' "$selected"
+      printf 'max_diff_files=%s / max_diff_lines=%s. No spec-draft.md was written.\n\n' "$max_diff_files" "$max_diff_lines"
+      printf '## Raw response\n\n```text\n%s\n```\n' "$provider_output"
+    } > "$rejected_file"
+    printf 'draft: candidate cannot be scoped within configured limits (%s); no spec-draft.md written\n' "${reason:-not specified}"
+    return 0
+  fi
+
+  [[ "$status" == "ok" ]] || die "draft provider response has unrecognized status: $status (expected ok or too-large)"
+
+  local spec_block
+  spec_block="$(extract_spec_fence "$response_file")"
+  [[ -n "$spec_block" ]] || die "draft provider reported status: ok but response is missing a fenced \`\`\`spec block"
+
+  local candidate_spec_file="$run_dir/.spec-draft.candidate.md"
+  printf '%s\n' "$spec_block" > "$candidate_spec_file"
+
+  local violations_file="$run_dir/draft-violations.txt"
+  if ! draft_validate_spec "$candidate_spec_file" "$config_file" "$violations_file"; then
+    {
+      printf -- '---\n'
+      printf 'status: protected-path-conflict\n'
+      printf 'reason: drafted spec failed protected_paths / annotation validation\n'
+      printf -- '---\n\n'
+      printf '# Draft Rejected\n\n'
+      printf 'The drafted spec was rejected before being written because it violates\n'
+      printf 'configured constraints:\n\n'
+      cat "$violations_file"
+      printf '\n## Rejected spec (not written as spec-draft.md)\n\n```text\n%s\n```\n' "$spec_block"
+    } > "$rejected_file"
+    rm -f "$candidate_spec_file"
+    printf 'draft: rejected drafted spec (see %s)\n' "$rejected_file"
+    while IFS= read -r line; do
+      printf '  - %s\n' "$line"
+    done < "$violations_file"
+    return 0
+  fi
+
+  rm -f "$violations_file"
+  mv "$candidate_spec_file" "$spec_file"
+  rm -f "$rejected_file" 2>/dev/null || true
+  printf '%s\n' "$run_id"
 }
 
 json_type_check() {
@@ -639,7 +930,10 @@ run_single_stage() {
     ideate)
       ideate_stage "$repo" "$run_id"
       ;;
-    draft|negotiate|execute|review|publish)
+    draft)
+      draft_stage "$repo" "$run_id"
+      ;;
+    negotiate|execute|review|publish)
       stage_stub "$stage" "$repo" "$run_id" "$run_dir"
       ;;
     all)
@@ -655,6 +949,13 @@ run_single_stage() {
               printf 'ideate: nothing to do (all candidates duplicate existing work); stopping before draft\n'
               return 0
             fi
+          fi
+        fi
+        if [[ "$current" == "draft" ]]; then
+          local spec_draft_file="$run_dir/spec-draft.md"
+          if [[ ! -f "$spec_draft_file" ]]; then
+            printf 'draft: no spec-draft.md produced; stopping before negotiate\n'
+            return 0
           fi
         fi
       done
