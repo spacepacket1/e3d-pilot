@@ -1,0 +1,10 @@
+{
+  "name": "e3d-pilot",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Repo-agnostic orchestrator scaffold",
+  "bin": {
+    "e3d-pilot": "bin/e3d-pilot"
+  }
+}
+

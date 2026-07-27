@@ -1,0 +1,315 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+SCHEMA_FILE="$REPO_ROOT/config.schema.json"
+
+die() {
+  printf 'error: %s\n' "$*" >&2
+  exit 1
+}
+
+usage() {
+  cat <<'EOF'
+e3d-pilot
+
+Usage:
+  e3d-pilot --help
+  e3d-pilot config validate <repo>
+  e3d-pilot run --repo <path> --stage <name> [--run-id <id>]
+  e3d-pilot providers list
+  e3d-pilot fleet <repos.json>
+
+Run stages:
+  discover
+  ideate
+  draft
+  negotiate
+  execute
+  review
+  publish
+  all
+
+Current phase implements the CLI skeleton, config validation, and run-id
+plumbing. Later-stage commands are documented here now and will be filled in by
+subsequent phases.
+EOF
+}
+
+slugify() {
+  local input="$1"
+  input="${input,,}"
+  input="${input//[^a-z0-9._-]/-}"
+  input="${input//--/-}"
+  input="${input##[-.]}"
+  input="${input%%[-.]}"
+  if [[ -z "$input" ]]; then
+    printf 'repo'
+  else
+    printf '%s' "$input"
+  fi
+}
+
+repo_abs_path() {
+  local repo="$1"
+  [[ -d "$repo" ]] || die "repository not found: $repo"
+  (cd "$repo" && pwd -P)
+}
+
+config_path_for_repo() {
+  printf '%s/.e3d-pilot/config.json' "$1"
+}
+
+latest_run_path_for_repo() {
+  printf '%s/.e3d-pilot/latest-run' "$1"
+}
+
+runs_dir_for_repo() {
+  printf '%s/.e3d-pilot/runs' "$1"
+}
+
+repo_slug() {
+  slugify "$(basename "$1")"
+}
+
+new_run_id() {
+  local repo="$1"
+  local base candidate counter runs_dir
+  runs_dir="$(runs_dir_for_repo "$repo")"
+  base="$(date +%Y-%m-%d)-$(repo_slug "$repo")"
+  candidate="$base"
+  counter=2
+  while [[ -e "$runs_dir/$candidate" ]]; do
+    candidate="${base}-${counter}"
+    counter=$((counter + 1))
+  done
+  printf '%s' "$candidate"
+}
+
+write_latest_run() {
+  local repo="$1" run_id="$2"
+  mkdir -p "$(dirname "$(latest_run_path_for_repo "$repo")")"
+  printf '%s\n' "$run_id" > "$(latest_run_path_for_repo "$repo")"
+}
+
+start_new_run() {
+  local repo="$1" run_id run_dir
+  run_id="$(new_run_id "$repo")"
+  run_dir="$(runs_dir_for_repo "$repo")/$run_id"
+  mkdir -p "$run_dir"
+  write_latest_run "$repo" "$run_id"
+  printf '%s\n' "$run_id"
+}
+
+resolve_run_id() {
+  local repo="$1" requested="${2:-}"
+  if [[ -n "$requested" ]]; then
+    mkdir -p "$(runs_dir_for_repo "$repo")/$requested"
+    printf '%s\n' "$requested"
+    return 0
+  fi
+  local latest_file
+  latest_file="$(latest_run_path_for_repo "$repo")"
+  [[ -f "$latest_file" ]] || die "no latest run recorded at $latest_file"
+  local run_id
+  run_id="$(<"$latest_file")"
+  [[ -n "$run_id" ]] || die "latest run file is empty: $latest_file"
+  printf '%s\n' "$run_id"
+}
+
+json_type_check() {
+  local file="$1" filter="$2" message="$3"
+  if ! jq -e "$filter" "$file" >/dev/null; then
+    die "$message"
+  fi
+}
+
+validate_config_file() {
+  local file="$1"
+  [[ -f "$file" ]] || die "missing config file: $file"
+  [[ -s "$SCHEMA_FILE" ]] || die "missing schema file: $SCHEMA_FILE"
+  jq -e . "$file" >/dev/null || die "invalid JSON: $file"
+
+  json_type_check "$file" 'type == "object"' "config must be a JSON object: $file"
+  json_type_check "$file" 'has("verify")' "config.verify is required"
+  json_type_check "$file" '.verify | type == "array"' "config.verify must be an array"
+  json_type_check "$file" '.verify | all(.[]; type == "string")' "config.verify must be an array of strings"
+  json_type_check "$file" 'has("protected_paths")' "config.protected_paths is required"
+  json_type_check "$file" '.protected_paths | type == "array"' "config.protected_paths must be an array"
+  json_type_check "$file" '.protected_paths | all(.[]; type == "string")' "config.protected_paths must be an array of strings"
+  json_type_check "$file" 'has("research_topics")' "config.research_topics is required"
+  json_type_check "$file" '.research_topics | type == "string"' "config.research_topics must be a string"
+  json_type_check "$file" 'has("pr")' "config.pr is required"
+  json_type_check "$file" '.pr | type == "object"' "config.pr must be an object"
+  json_type_check "$file" '.pr | has("base_branch") and has("draft") and has("labels") and has("backend")' "config.pr must include base_branch, draft, labels, and backend"
+  json_type_check "$file" '.pr.base_branch | type == "string"' "config.pr.base_branch must be a string"
+  json_type_check "$file" '.pr.draft | type == "boolean"' "config.pr.draft must be a boolean"
+  json_type_check "$file" '.pr.labels | type == "array"' "config.pr.labels must be an array"
+  json_type_check "$file" '.pr.labels | all(.[]; type == "string")' "config.pr.labels must be an array of strings"
+  json_type_check "$file" '.pr.backend | type == "string"' "config.pr.backend must be a string"
+  json_type_check "$file" '.pr.backend == "auto" or .pr.backend == "github" or .pr.backend == "local"' "config.pr.backend must be auto, github, or local"
+  json_type_check "$file" 'has("providers")' "config.providers is required"
+  json_type_check "$file" '.providers | type == "object"' "config.providers must be an object"
+  json_type_check "$file" '.providers | has("discover") and has("ideate") and has("draft") and has("negotiate") and has("review")' "config.providers must include discover, ideate, draft, negotiate, and review"
+  json_type_check "$file" '.providers.discover | type == "string"' "config.providers.discover must be a string"
+  json_type_check "$file" '.providers.ideate | type == "string"' "config.providers.ideate must be a string"
+  json_type_check "$file" '.providers.draft | type == "string"' "config.providers.draft must be a string"
+  json_type_check "$file" '.providers.negotiate | type == "array"' "config.providers.negotiate must be an array"
+  json_type_check "$file" '.providers.negotiate | length >= 1' "config.providers.negotiate must be a non-empty array"
+  json_type_check "$file" '.providers.negotiate | all(.[]; type == "string")' "config.providers.negotiate must be a non-empty array of strings"
+  json_type_check "$file" '.providers.review | type == "string"' "config.providers.review must be a string"
+  json_type_check "$file" '.max_diff_files | type == "number"' "config.max_diff_files must be a number"
+  json_type_check "$file" '.max_diff_files == (.max_diff_files | floor)' "config.max_diff_files must be an integer value"
+  json_type_check "$file" '.max_diff_files >= 0' "config.max_diff_files must be a non-negative integer"
+  json_type_check "$file" '.max_diff_lines | type == "number"' "config.max_diff_lines must be a number"
+  json_type_check "$file" '.max_diff_lines == (.max_diff_lines | floor)' "config.max_diff_lines must be an integer value"
+  json_type_check "$file" '.max_diff_lines >= 0' "config.max_diff_lines must be a non-negative integer"
+  json_type_check "$file" 'if has("docs") then (.docs | type == "string") else true end' "config.docs must be a string when provided"
+  printf 'config valid: %s\n' "$file"
+}
+
+cmd_config() {
+  local subcommand="${1:-}"
+  shift || true
+  case "$subcommand" in
+    validate)
+      [[ $# -eq 1 ]] || die "usage: e3d-pilot config validate <repo>"
+      local repo
+      repo="$(repo_abs_path "$1")"
+      validate_config_file "$(config_path_for_repo "$repo")"
+      ;;
+    ""|-h|--help)
+      usage
+      ;;
+    *)
+      die "unknown config subcommand: $subcommand"
+      ;;
+  esac
+}
+
+stage_stub() {
+  local stage="$1" repo="$2" run_id="$3" run_dir="$4"
+  printf '%s: not yet implemented for run %s (%s)\n' "$stage" "$run_id" "$run_dir"
+}
+
+run_single_stage() {
+  local stage="$1" repo="$2" run_id="$3"
+  local run_dir
+  run_dir="$(runs_dir_for_repo "$repo")/$run_id"
+  mkdir -p "$run_dir"
+  case "$stage" in
+    discover)
+      printf '%s\n' "$run_id"
+      ;;
+    ideate|draft|negotiate|execute|review|publish)
+      stage_stub "$stage" "$repo" "$run_id" "$run_dir"
+      ;;
+    all)
+      local ordered=(discover ideate draft negotiate execute review publish)
+      local current
+      for current in "${ordered[@]}"; do
+        run_single_stage "$current" "$repo" "$run_id"
+      done
+      ;;
+    *)
+      die "unknown stage: $stage"
+      ;;
+  esac
+}
+
+cmd_run() {
+  local repo="" stage="" run_id=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --repo)
+        repo="${2:-}"
+        shift 2
+        ;;
+      --stage)
+        stage="${2:-}"
+        shift 2
+        ;;
+      --run-id)
+        run_id="${2:-}"
+        shift 2
+        ;;
+      -h|--help)
+        usage
+        return 0
+        ;;
+      *)
+        die "unknown run argument: $1"
+        ;;
+    esac
+  done
+  [[ -n "$repo" ]] || die "--repo is required"
+  [[ -n "$stage" ]] || die "--stage is required"
+  repo="$(repo_abs_path "$repo")"
+
+  if [[ "$stage" == "discover" || "$stage" == "all" ]]; then
+    if [[ -z "$run_id" ]]; then
+      run_id="$(start_new_run "$repo")"
+    else
+      mkdir -p "$(runs_dir_for_repo "$repo")/$run_id"
+      write_latest_run "$repo" "$run_id"
+    fi
+  else
+    run_id="$(resolve_run_id "$repo" "$run_id")"
+  fi
+
+  run_single_stage "$stage" "$repo" "$run_id"
+}
+
+cmd_providers() {
+  local subcommand="${1:-}"
+  case "$subcommand" in
+    list)
+      die "providers list is not yet implemented"
+      ;;
+    ""|-h|--help)
+      usage
+      ;;
+    *)
+      die "unknown providers subcommand: $subcommand"
+      ;;
+  esac
+}
+
+cmd_fleet() {
+  if [[ "${1:-}" == "-h" || "${1:-}" == "--help" || $# -eq 0 ]]; then
+    usage
+    return 0
+  fi
+  die "fleet is not yet implemented"
+}
+
+main() {
+  local command="${1:-}"
+  case "$command" in
+    ""|-h|--help)
+      usage
+      ;;
+    config)
+      shift
+      cmd_config "$@"
+      ;;
+    run)
+      shift
+      cmd_run "$@"
+      ;;
+    providers)
+      shift
+      cmd_providers "$@"
+      ;;
+    fleet)
+      shift
+      cmd_fleet "$@"
+      ;;
+    *)
+      die "unknown command: $command"
+      ;;
+  esac
+}
+
+main "$@"

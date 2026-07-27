@@ -1,0 +1,28 @@
+{
+  "verify": [
+    "npm test"
+  ],
+  "protected_paths": [
+    ".github/workflows/**",
+    "deploy/**",
+    "secrets/**"
+  ],
+  "research_topics": "AI video generation, wallet-paid APIs",
+  "pr": {
+    "base_branch": "main",
+    "draft": true,
+    "labels": ["e3d-pilot"],
+    "backend": "auto"
+  },
+  "providers": {
+    "discover": "claude",
+    "ideate": "claude",
+    "draft": "codex",
+    "negotiate": ["claude", "codex"],
+    "review": "claude"
+  },
+  "max_diff_files": 25,
+  "max_diff_lines": 600,
+  "docs": "AGENTS.md"
+}
+

@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.com/e3d-pilot.config.schema.json",
+  "title": "e3d-pilot target repo config",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "verify",
+    "protected_paths",
+    "research_topics",
+    "pr",
+    "providers",
+    "max_diff_files",
+    "max_diff_lines"
+  ],
+  "properties": {
+    "verify": {
+      "type": "array",
+      "items": { "type": "string" },
+      "default": []
+    },
+    "protected_paths": {
+      "type": "array",
+      "items": { "type": "string" },
+      "default": []
+    },
+    "research_topics": {
+      "type": "string"
+    },
+    "pr": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["base_branch", "draft", "labels", "backend"],
+      "properties": {
+        "base_branch": { "type": "string" },
+        "draft": { "type": "boolean" },
+        "labels": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": []
+        },
+        "backend": {
+          "type": "string",
+          "enum": ["auto", "github", "local"]
+        }
+      }
+    },
+    "providers": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["discover", "ideate", "draft", "negotiate", "review"],
+      "properties": {
+        "discover": { "type": "string" },
+        "ideate": { "type": "string" },
+        "draft": { "type": "string" },
+        "negotiate": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string" }
+        },
+        "review": { "type": "string" }
+      }
+    },
+    "max_diff_files": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "max_diff_lines": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "docs": {
+      "type": "string"
+    }
+  }
+}
+
