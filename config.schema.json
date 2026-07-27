@@ -71,7 +71,16 @@
     },
     "docs": {
       "type": "string"
+    },
+    "live_verify": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["command"],
+      "properties": {
+        "command": {
+          "type": "string"
+        }
+      }
     }
   }
 }
-

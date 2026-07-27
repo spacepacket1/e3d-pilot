@@ -1,15 +1,36 @@
 #!/usr/bin/env bash
 set -euo pipefail
-repo="$1"; worktree="$2"; branch="$3"; base="$4"; summary="$5"; run_dir="$6"; labels="${7:-}"
-command -v gh >/dev/null || { echo 'error: gh CLI unavailable' >&2; exit 1; }
-args=(pr create --draft --base "$base" --head "$branch" --title "e3d-pilot: $branch" --body-file "$summary")
-[[ -z "$labels" ]] || args+=(--label "$labels")
-if [[ "${E3D_PILOT_PUBLISH_DRY_RUN:-0}" == 1 ]]; then
-  printf 'git -C %q push -u origin %q\n' "$worktree" "$branch"
-  printf 'gh'; printf ' %q' "${args[@]}"; printf '\n'
-  printf 'outcome: published-dry-run\n' > "$run_dir/publish-outcome.txt"
+
+repo="${1:-}"
+run_id="${2:-}"
+branch="${3:-}"
+summary="${4:-}"
+worktree="${5:-}"
+base="${6:-}"
+
+[[ -n "$repo" && -n "$run_id" && -n "$branch" && -n "$summary" && -n "$worktree" && -n "$base" ]] || {
+  echo "error: usage: github <repo> <run-id> <branch> <summary> <worktree> <base>" >&2
+  exit 1
+}
+
+title="e3d-pilot: ${branch}"
+args=(pr create --draft --base "$base" --head "$branch" --title "$title" --body-file "$summary")
+
+if [[ "${E3D_PILOT_GITHUB_DRY_RUN:-0}" == "1" || "${E3D_PILOT_PUBLISH_DRY_RUN:-0}" == "1" ]]; then
+  printf 'outcome: published\n'
+  printf 'mode: dry-run\n'
+  printf 'push_command: git -C %q push -u origin %q\n' "$worktree" "$branch"
+  printf 'gh_command: gh'
+  printf ' %q' "${args[@]}"
+  printf '\n'
   exit 0
 fi
+
+command -v gh >/dev/null 2>&1 || { echo "error: gh CLI unavailable" >&2; exit 1; }
+
 git -C "$worktree" push -u origin "$branch"
 (cd "$worktree" && gh "${args[@]}")
-printf 'outcome: published\n' > "$run_dir/publish-outcome.txt"
+
+printf 'outcome: published\n'
+printf 'mode: github\n'
+printf 'branch: %s\n' "$branch"

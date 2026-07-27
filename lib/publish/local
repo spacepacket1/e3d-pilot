@@ -1,6 +1,24 @@
 #!/usr/bin/env bash
 set -euo pipefail
-repo="$1"; worktree="$2"; branch="$3"; base="$4"; summary="$5"; run_dir="$6"
-[[ -d "$worktree" && -f "$summary" ]]
-printf 'outcome: published-local\nbranch: %s\nsummary: %s\n' "$branch" "$summary" > "$run_dir/publish-outcome.txt"
-printf 'publish: local branch %s committed; summary: %s\n' "$branch" "$summary"
+
+repo="${1:-}"
+run_id="${2:-}"
+branch="${3:-}"
+summary="${4:-}"
+worktree="${5:-}"
+base="${6:-}"
+
+[[ -n "$repo" && -n "$run_id" && -n "$branch" && -n "$summary" && -n "$worktree" && -n "$base" ]] || {
+  echo "error: usage: local <repo> <run-id> <branch> <summary> <worktree> <base>" >&2
+  exit 1
+}
+[[ -f "$summary" ]] || { echo "error: summary file not found: $summary" >&2; exit 1; }
+[[ -d "$worktree" ]] || { echo "error: worktree not found: $worktree" >&2; exit 1; }
+
+output_file="$repo/.e3d-pilot/runs/$run_id/publish-summary.md"
+if [[ "$summary" != "$output_file" ]]; then cp "$summary" "$output_file"; fi
+
+printf 'outcome: needs-attention\n'
+printf 'mode: local\n'
+printf 'branch: %s\n' "$branch"
+printf 'summary: %s\n' "$output_file"

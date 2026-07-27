@@ -38,10 +38,8 @@ Run stages:
   publish
   all
 
-Current phase implements the CLI skeleton, config validation, run-id
-plumbing, and the provider adapter contract (lib/providers/*, `providers
-list`). Later-stage commands are documented here now and will be filled in by
-subsequent phases.
+Runs are isolated, negotiated, verified, and published through a configured
+forge backend. Use `fleet` to process multiple repositories independently.
 EOF
 }
 
@@ -912,88 +910,250 @@ execute_worktree_fields() {
 
 auto_verify_commands() {
   local worktree="$1"
-  if [[ -f "$worktree/package.json" ]]; then printf 'npm test\n'
-  elif [[ -f "$worktree/requirements.txt" ]]; then printf 'python3 -m pytest\n'
-  elif [[ -f "$worktree/Makefile" ]]; then printf 'make test\n'
+  if [[ -f "$worktree/package.json" ]]; then
+    if jq -e '.scripts.verify? | type == "string"' "$worktree/package.json" >/dev/null 2>&1; then
+      printf 'npm run verify\n'
+      return 0
+    fi
+    if jq -e '.scripts.test? | type == "string"' "$worktree/package.json" >/dev/null 2>&1; then
+      printf 'npm test\n'
+      return 0
+    fi
   fi
+  if [[ -f "$worktree/Makefile" || -f "$worktree/makefile" ]]; then
+    if grep -Eq '^verify:' "$worktree"/Makefile 2>/dev/null || grep -Eq '^verify:' "$worktree"/makefile 2>/dev/null; then
+      printf 'make verify\n'
+      return 0
+    fi
+    if grep -Eq '^test:' "$worktree"/Makefile 2>/dev/null || grep -Eq '^test:' "$worktree"/makefile 2>/dev/null; then
+      printf 'make test\n'
+      return 0
+    fi
+  fi
+  if [[ -f "$worktree/requirements.txt" || -f "$worktree/pyproject.toml" ]]; then
+    printf 'pytest\n'
+    return 0
+  fi
+  return 1
+}
+
+live_verify_command() {
+  jq -r '.live_verify.command // empty' "$1"
+}
+
+repo_docs_mention_e3d_paid_api() {
+  local repo="$1" config_file="$2" content
+  content="$(load_repo_docs_content "$repo" "$config_file" || true)"
+  grep -Eiq '(e3d-pod2vid|pod2vid).*(render|revise)|(render|revise).*(e3d-pod2vid|pod2vid)|e3d[[:space:]-]*maps' <<< "$content"
+}
+
+e3d_agent_available_for_command() {
+  local command_text="$1"
+  if [[ "$command_text" == npx\ e3d-agent* ]]; then command -v npx >/dev/null 2>&1
+  else command -v e3d-agent >/dev/null 2>&1; fi
+}
+
+review_status_value() {
+  local file="$1" field="$2"
+  awk -F': ' -v key="$field" '$1 == key { print $2; exit }' "$file"
+}
+
+selected_candidate_excerpt() {
+  local candidates_file="$1"
+  awk '
+    /^### Candidate / && seen == 0 { seen=1; print; next }
+    seen == 1 && /^### Candidate / { exit }
+    seen == 1 { print }
+  ' "$candidates_file"
+}
+
+negotiation_outcome_excerpt() {
+  local log_file="$1"
+  awk '
+    /^## Final Outcome/ { capture=1 }
+    capture { print }
+  ' "$log_file"
+}
+
+run_verify_command_in_worktree() {
+  local worktree="$1" command_text="$2" stdout_file="$3" stderr_file="$4"
+  (cd "$worktree" && bash -lc "$command_text") >"$stdout_file" 2>"$stderr_file"
+}
+
+build_review_prompt() {
+  local diff_file="$1" prompt_file="$2"
+  {
+    printf 'You are the review stage of an autonomous repo-improvement pipeline.\n'
+    printf 'Read the executed diff below and comment on correctness, regressions,\n'
+    printf 'and scope-creep. Keep the response concise and actionable.\n\n'
+    printf 'Executed diff:\n\n```diff\n'
+    cat "$diff_file"
+    printf '\n```\n'
+  } > "$prompt_file"
+}
+
+manifest_copy_name() {
+  local manifest_source="$1"
+  case "$(basename "$manifest_source")" in
+    manifest.jsonl) printf 'csr-manifest-rows.jsonl' ;;
+    manifest.json) printf 'csr-manifest-rows.json' ;;
+    manifest.tsv) printf 'csr-manifest-rows.tsv' ;;
+    *) printf 'csr-manifest-rows.txt' ;;
+  esac
+}
+
+audit_artifact_relative_paths() {
+  local run_id="$1" manifest_name="$2"
+  printf '.e3d-pilot/runs/%s/findings.md\n' "$run_id"
+  printf '.e3d-pilot/runs/%s/candidates.md\n' "$run_id"
+  printf '.e3d-pilot/runs/%s/negotiation-log.md\n' "$run_id"
+  printf '.e3d-pilot/runs/%s/spec-final.md\n' "$run_id"
+  printf '.e3d-pilot/runs/%s/%s\n' "$run_id" "$manifest_name"
 }
 
 review_stage() {
-  local repo="$1" run_id="$2" run_dir config_file metadata branch worktree verify_log command status
-  local provider provider_script prompt response diff_text
+  local repo="$1" run_id="$2" run_dir config_file metadata branch worktree verify_summary review_status_file
+  local provider provider_script prompt response diff_text command status command_index live_command live_reason
+  local include_live_verify=0
   run_dir="$(runs_dir_for_repo "$repo")/$run_id"; config_file="$(config_path_for_repo "$repo")"
+  ensure_git_repo "$repo"
   validate_config_file "$config_file"
   metadata="$(execute_worktree_fields "$run_dir")"; branch="${metadata%%$'\t'*}"; worktree="${metadata#*$'\t'}"
   [[ -d "$worktree" ]] || die "execute worktree no longer exists: $worktree"
-  verify_log="$run_dir/review-verify.log"; : > "$verify_log"
+  verify_summary="$run_dir/review-verify-summary.md"
+  review_status_file="$run_dir/review-status.txt"
+  {
+    printf '# Verify Summary\n\n'
+    printf 'Branch: `%s`\n\n' "$branch"
+    printf 'Worktree: `%s`\n\n' "$worktree"
+  } > "$verify_summary"
   mapfile -t commands < <(jq -r '.verify[]?' "$config_file")
   if [[ ${#commands[@]} -eq 0 ]]; then mapfile -t commands < <(auto_verify_commands "$worktree"); fi
+  [[ ${#commands[@]} -gt 0 ]] || die "review could not determine any verify commands; configure .verify or add a detectable test command"
+  live_command="$(live_verify_command "$config_file")"
+  if [[ -n "$live_command" ]]; then
+    if repo_docs_mention_e3d_paid_api "$repo" "$config_file" && e3d_agent_available_for_command "$live_command"; then
+      commands+=("$live_command")
+      include_live_verify=1
+      live_reason="included"
+    elif ! repo_docs_mention_e3d_paid_api "$repo" "$config_file"; then
+      live_reason="skipped: repo docs do not mention E3D paid-API surfaces"
+    else
+      live_reason="skipped: e3d-agent is not available"
+    fi
+  else
+    live_reason="not configured"
+  fi
+  command_index=0
   for command in "${commands[@]}"; do
-    printf '$ %s\n' "$command" >> "$verify_log"
-    set +e; (cd "$worktree" && bash -lc "$command") >> "$verify_log" 2>&1; status=$?; set -e
+    command_index=$((command_index + 1))
+    printf '## Command %s\n\nCommand: `%s`\n\n' "$command_index" "$command" >> "$verify_summary"
+    set +e
+    run_verify_command_in_worktree "$worktree" "$command" "$run_dir/review-verify-${command_index}.stdout" "$run_dir/review-verify-${command_index}.stderr"
+    status=$?
+    set -e
+    printf 'Exit Status: `%s`\n\n' "$status" >> "$verify_summary"
     if [[ $status -ne 0 ]]; then
-      printf 'failed\n' > "$run_dir/review-status"
-      printf 'review: verify command failed: %s\n' "$command" >&2
-      return 1
+      printf 'verify_status: failed\nbranch: %s\nworktree: %s\nlive_verify: %s\n' "$branch" "$worktree" "$live_reason" > "$review_status_file"
+      printf 'review: verify failed for command %s: %s\n' "$command_index" "$command"
+      return "$REVIEW_EXIT_VERIFY_FAILED"
     fi
   done
   diff_text="$run_dir/review-diff.patch"; git -C "$worktree" diff --no-ext-diff --binary > "$diff_text"
-  prompt="$run_dir/review-prompt.md"; response="$run_dir/review-response.md"
-  { printf 'Review this git diff for correctness, scope creep, and safety. Return concise Markdown.\n\n```diff\n'; cat "$diff_text"; printf '\n```\n'; } > "$prompt"
+  prompt="$run_dir/review-prompt.md"; response="$run_dir/review-comment.md"
+  build_review_prompt "$diff_text" "$prompt"
   provider="$(config_value "$config_file" '.providers.review')"; provider_script="$REPO_ROOT/lib/providers/$provider"
   [[ -x "$provider_script" ]] || die "review provider script missing or not executable: $provider_script"
   if ! E3D_PILOT_DRY_RUN=0 "$provider_script" "$prompt" > "$response" 2> "$run_dir/review-provider.stderr"; then
-    printf 'failed\n' > "$run_dir/review-status"; die "review provider failed: $provider"
+    printf 'verify_status: failed\nbranch: %s\nworktree: %s\nlive_verify: %s\n' "$branch" "$worktree" "$live_reason" > "$review_status_file"
+    die "review provider failed: $provider"
   fi
-  printf 'passed\n' > "$run_dir/review-status"
-  printf 'review: verification and independent review passed for %s\n' "$branch"
+  printf 'verify_status: passed\nbranch: %s\nworktree: %s\nlive_verify: %s\n' "$branch" "$worktree" "$live_reason" > "$review_status_file"
+  if (( include_live_verify )); then
+    printf 'review: verify passed on %s, including live verification, and wrote review-comment.md\n' "$branch"
+  else
+    printf 'review: verification and independent review passed for %s\n' "$branch"
+  fi
 }
 
 prepare_publish_audit() {
-  local run_dir="$1" worktree="$2" run_id="$3" dest="$worktree/.e3d-pilot/runs/$run_id" name source
+  local run_dir="$1" worktree="$2" run_id="$3" dest="$worktree/.e3d-pilot/runs/$run_id" name source manifest_source manifest_name
   mkdir -p "$dest"
   for name in findings.md candidates.md negotiation-log.md spec-final.md; do
     source="$run_dir/$name"; [[ -f "$source" ]] || die "publish requires audit artifact: $source"
     cp "$source" "$dest/$name"
   done
-  source="$run_dir/csr-state/manifest.tsv"; [[ -f "$source" ]] || die "publish requires csr manifest: $source"
-  cp "$source" "$dest/csr-manifest.tsv"
-  printf '%s' "$dest"
+  manifest_source=""
+  if [[ -f "$run_dir/csr-state/manifest.jsonl" ]]; then
+    manifest_source="$run_dir/csr-state/manifest.jsonl"
+  elif [[ -f "$run_dir/csr-state/manifest.json" ]]; then
+    manifest_source="$run_dir/csr-state/manifest.json"
+  elif [[ -f "$run_dir/csr-state/manifest.tsv" ]]; then
+    manifest_source="$run_dir/csr-state/manifest.tsv"
+  fi
+  [[ -n "$manifest_source" ]] || die "publish requires csr manifest copy under $run_dir/csr-state"
+  manifest_name="$(manifest_copy_name "$manifest_source")"
+  cp "$manifest_source" "$dest/$manifest_name"
+  printf '%s\t%s\n' "$dest" "$manifest_name"
 }
 
 build_publish_summary() {
-  local run_dir="$1" run_id="$2" summary="$3" audit_base=".e3d-pilot/runs/$run_id"
+  local run_dir="$1" run_id="$2" branch="$3" manifest_name="$4" summary="$5"
   {
-    printf '# e3d-pilot run %s\n\n' "$run_id"
-    printf '## Findings\n\n'; sed -n '1,40p' "$run_dir/findings.md"
-    printf '\n## Candidate and dedup rationale\n\n'; sed -n '1,60p' "$run_dir/candidates.md"
-    printf '\n## Negotiation\n\n'; tail -40 "$run_dir/negotiation-log.md"
-    printf '\n## Audit artifacts\n\n'
-    for name in findings.md candidates.md negotiation-log.md spec-final.md csr-manifest.tsv; do printf -- '- [%s](%s/%s)\n' "$name" "$audit_base" "$name"; done
+    printf '# e3d-pilot Publish Summary\n\n'
+    printf 'Branch: `%s`\n\n' "$branch"
+    printf '## Findings\n\n'; sed -n '1,24p' "$run_dir/findings.md"
+    printf '\n## Selected Candidate\n\n'; selected_candidate_excerpt "$run_dir/candidates.md"
+    printf '\n## Negotiation Outcome\n\n'; negotiation_outcome_excerpt "$run_dir/negotiation-log.md"
+    printf '\n## Approved Spec\n\nSpec ready at `.e3d-pilot/runs/%s/spec-final.md`.\n' "$run_id"
+    printf '\n## Audit Artifacts\n\n'
+    while IFS= read -r rel; do
+      [[ -n "$rel" ]] || continue
+      printf -- '- [%s](%s)\n' "$rel" "$rel"
+    done < <(audit_artifact_relative_paths "$run_id" "$manifest_name")
   } > "$summary"
 }
 
 publish_backend_for_repo() {
-  local repo="$1" configured="$2" remote_url
+  local repo="$1" configured="$2" remote_name remote_url
   if [[ "$configured" != auto ]]; then printf '%s' "$configured"; return; fi
-  remote_url="$(git -C "$repo" remote get-url origin 2>/dev/null || true)"
+  if ! repo_has_remote "$repo"; then printf local; return; fi
+  remote_name="$(git -C "$repo" remote | head -n1)"
+  remote_url="$(git -C "$repo" remote get-url "$remote_name" 2>/dev/null || true)"
   if [[ "$remote_url" == *github.com* ]]; then printf github; else printf local; fi
 }
 
 publish_stage() {
-  local repo="$1" run_id="$2" run_dir config_file metadata branch worktree audit_dir summary backend backend_script base labels
+  local repo="$1" run_id="$2" run_dir config_file metadata branch worktree audit_info audit_dir manifest_name summary backend backend_script base output backend_status
   run_dir="$(runs_dir_for_repo "$repo")/$run_id"; config_file="$(config_path_for_repo "$repo")"
-  [[ "$(cat "$run_dir/review-status" 2>/dev/null || true)" == passed ]] || die "publish refused: review verification has not passed"
+  ensure_git_repo "$repo"
+  validate_config_file "$config_file"
+  [[ -f "$run_dir/review-status.txt" ]] || die "publish requires a completed review stage; missing $run_dir/review-status.txt"
+  [[ "$(review_status_value "$run_dir/review-status.txt" verify_status)" == passed ]] || die "publish refused because verify did not pass for run $run_id"
   metadata="$(execute_worktree_fields "$run_dir")"; branch="${metadata%%$'\t'*}"; worktree="${metadata#*$'\t'}"
-  audit_dir="$(prepare_publish_audit "$run_dir" "$worktree" "$run_id")"
-  summary="$run_dir/publish-summary.md"; build_publish_summary "$run_dir" "$run_id" "$summary"
-  git -C "$worktree" add -A -- . ':!.codex-spec-runner'
-  git -C "$worktree" add -f "$audit_dir/findings.md" "$audit_dir/candidates.md" "$audit_dir/negotiation-log.md" "$audit_dir/spec-final.md" "$audit_dir/csr-manifest.tsv"
-  if ! git -C "$worktree" diff --cached --quiet; then git -C "$worktree" commit -m "e3d-pilot: $run_id" >/dev/null; fi
+  base="$(config_value "$config_file" '.pr.base_branch')"
+  [[ "$branch" != "$base" ]] || die "publish refuses to operate on base branch $base"
+  audit_info="$(prepare_publish_audit "$run_dir" "$worktree" "$run_id")"
+  audit_dir="${audit_info%%$'\t'*}"
+  manifest_name="${audit_info#*$'\t'}"
+  summary="$run_dir/publish-summary.md"; build_publish_summary "$run_dir" "$run_id" "$branch" "$manifest_name" "$summary"
+  git -C "$worktree" add -A
+  while IFS= read -r rel; do
+    [[ -n "$rel" ]] || continue
+    git -C "$worktree" add -f -- "$rel"
+  done < <(audit_artifact_relative_paths "$run_id" "$manifest_name")
+  if [[ -n "$(git -C "$worktree" status --short)" ]]; then
+    git -C "$worktree" commit -q -m "e3d-pilot: apply run $run_id"
+  fi
   backend="$(publish_backend_for_repo "$repo" "$(config_value "$config_file" '.pr.backend')")"
   backend_script="$REPO_ROOT/lib/publish/$backend"; [[ -x "$backend_script" ]] || die "publish backend unavailable: $backend"
-  base="$(config_value "$config_file" '.pr.base_branch')"; labels="$(jq -r '.pr.labels | join(",")' "$config_file")"
-  "$backend_script" "$repo" "$worktree" "$branch" "$base" "$summary" "$run_dir" "$labels"
+  set +e
+  output="$("$backend_script" "$repo" "$run_id" "$branch" "$summary" "$worktree" "$base" 2>"$run_dir/publish-backend.stderr")"
+  backend_status=$?
+  set -e
+  [[ $backend_status -eq 0 ]] || die "publish backend failed: $(tr '\n' ' ' < "$run_dir/publish-backend.stderr" 2>/dev/null)"
+  printf '%s\n' "$output" > "$run_dir/publish-backend.out"
+  printf '%s\n' "$output"
 }
 
 draft_stage() {
@@ -1302,6 +1462,9 @@ validate_config_file() {
   json_type_check "$file" '.max_diff_lines == (.max_diff_lines | floor)' "config.max_diff_lines must be an integer value"
   json_type_check "$file" '.max_diff_lines >= 0' "config.max_diff_lines must be a non-negative integer"
   json_type_check "$file" 'if has("docs") then (.docs | type == "string") else true end' "config.docs must be a string when provided"
+  json_type_check "$file" 'if has("live_verify") then (.live_verify | type == "object") else true end' "config.live_verify must be an object when provided"
+  json_type_check "$file" 'if has("live_verify") then (.live_verify | has("command")) else true end' "config.live_verify.command is required when live_verify is provided"
+  json_type_check "$file" 'if has("live_verify") then (.live_verify.command | type == "string") else true end' "config.live_verify.command must be a string"
   printf 'config valid: %s\n' "$file"
 }
 
@@ -1322,11 +1485,6 @@ cmd_config() {
       die "unknown config subcommand: $subcommand"
       ;;
   esac
-}
-
-stage_stub() {
-  local stage="$1" repo="$2" run_id="$3" run_dir="$4"
-  printf '%s: not yet implemented for run %s (%s)\n' "$stage" "$run_id" "$run_dir"
 }
 
 run_single_stage() {
@@ -1371,6 +1529,10 @@ run_single_stage() {
         fi
         if [[ $current_status -eq "$EXECUTE_EXIT_NEEDS_HUMAN" ]]; then
           printf 'execute: human review required; stopping before review\n'
+          return "$current_status"
+        fi
+        if [[ $current_status -eq "$REVIEW_EXIT_VERIFY_FAILED" ]]; then
+          printf 'review: verify failed; stopping before publish\n'
           return "$current_status"
         fi
         [[ $current_status -eq 0 ]] || return "$current_status"
@@ -1490,7 +1652,18 @@ cmd_fleet() {
     usage
     return 0
   fi
-  die "fleet is not yet implemented"
+  [[ $# -eq 1 ]] || die "usage: e3d-pilot fleet <repos.json>"
+  local file="$1" repo status failures=0 total=0
+  [[ -f "$file" ]] || die "fleet file not found: $file"
+  jq -e 'type == "array" and all(.[]; type == "string")' "$file" >/dev/null || die "fleet file must be a JSON array of repo path strings"
+  while IFS= read -r repo; do
+    total=$((total + 1)); printf 'fleet: starting %s\n' "$repo"
+    set +e; "$0" run --repo "$repo" --stage all < /dev/null; status=$?; set -e
+    if [[ $status -eq 0 ]]; then printf 'fleet: PASS %s\n' "$repo"
+    else printf 'fleet: FAIL %s (exit %s)\n' "$repo" "$status"; failures=$((failures + 1)); fi
+  done < <(jq -r '.[]' "$file")
+  printf 'fleet: summary total=%s passed=%s failed=%s\n' "$total" "$((total - failures))" "$failures"
+  [[ $failures -eq 0 ]]
 }
 
 main() {

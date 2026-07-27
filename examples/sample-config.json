@@ -23,6 +23,8 @@
   },
   "max_diff_files": 25,
   "max_diff_lines": 600,
-  "docs": "AGENTS.md"
+  "docs": "AGENTS.md",
+  "live_verify": {
+    "command": "npx e3d-agent pod2vid render --transcript ./sample.txt --wait"
+  }
 }
-
