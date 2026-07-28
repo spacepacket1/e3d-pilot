@@ -66,6 +66,7 @@ Create the e3d-pilot repo skeleton and the per-target-repo config contract every
   - `providers`: per-stage provider assignment, e.g. `{ "discover": "claude", "ideate": "claude", "draft": "codex", "negotiate": ["claude", "codex"], "review": "claude" }`. `negotiate` is explicitly an array to keep the reviewer count variable.
   - `max_diff_files` / `max_diff_lines`: ceilings enforced before execute.
   - `docs`: optional explicit path to repo guidance docs (`AGENTS.md`, `CLAUDE.md`); if absent, auto-detect by filename.
+  - `live_verify`: optional `{ "command": "..." }`. Runs as one more `verify` entry in the review stage, strictly config-opt-in (see Phase 8).
   - `notify`: optional `{ "email": { "to": "...", "command": "..." } }`. When present, a successful publish sends a best-effort email; `command` overrides the default `mail` invocation (see Phase 8).
 - Write a `config.schema.json` (or equivalent inline validation function) and a `e3d-pilot config validate <repo>` subcommand that checks a target repo's config against it.
 - `bin/e3d-pilot --help` documents all subcommands this spec will add across phases, even as stubs that print "not yet implemented" for later-phase commands.
