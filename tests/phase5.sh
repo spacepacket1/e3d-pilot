@@ -329,11 +329,94 @@ EOF
   rm -rf "$bin_dir"
 }
 
+draft_line_estimate_warns_by_default_and_can_be_enforced() {
+  local repo run_id bin_dir response out spec warnings rejected i
+  repo="$(make_repo_with_commit)"
+  write_draft_config "$repo"
+  run_id="2026-07-28-repo-draft-estimate-warning"
+  write_candidates "$repo" "$run_id" "candidate-1"
+
+  bin_dir="$(mktemp -d)"
+  response="$(mktemp)"
+  {
+    cat <<'EOF'
+```spec
+# Bounded but Detailed Change
+
+## Overview
+
+Describe a bounded change with detailed acceptance coverage.
+
+## Goals
+
+- Improve the sample behavior.
+
+## Non-Goals
+
+- Do not change unrelated behavior.
+
+## Existing Files
+
+- `README.md`
+
+## Shared Constraints
+
+- Keep the actual diff under the configured ceiling.
+
+## Phase 1 - Update Readme
+
+<!-- runner:model=codex:gpt-5.4-mini -->
+<!-- pilot:touches=README.md -->
+
+### Requirements
+EOF
+    i=1
+    while [[ $i -le 31 ]]; do
+      printf -- '- Requirement %s remains a concise behavior statement.\n' "$i"
+      i=$((i + 1))
+    done
+    cat <<'EOF'
+
+### Acceptance Criteria
+
+- The actual implementation remains within the configured diff ceiling.
+```
+
+---DRAFT-STATUS---
+status: ok
+reason: detailed specification for a bounded one-file change.
+EOF
+  } > "$response"
+  make_fake_claude_bin_returning "$bin_dir" "$response"
+
+  out="$(PATH="$bin_dir:$PATH" "$BIN" run --repo "$repo" --stage draft --run-id "$run_id")"
+  spec="$repo/.e3d-pilot/runs/$run_id/spec-draft.md"
+  warnings="$repo/.e3d-pilot/runs/$run_id/draft-scope-warnings.txt"
+  [[ -f "$spec" ]] || { echo "expected advisory line estimate not to reject the spec" >&2; exit 1; }
+  [[ -s "$warnings" ]] || { echo "expected an audit warning for the line estimate" >&2; exit 1; }
+  assert_contains "$out" "scope estimate warning recorded"
+  assert_contains "$(cat "$warnings")" "advisory only"
+
+  repo="$(make_repo_with_commit)"
+  write_draft_config "$repo"
+  run_id="2026-07-28-repo-draft-estimate-enforced"
+  write_candidates "$repo" "$run_id" "candidate-1"
+  out="$(PATH="$bin_dir:$PATH" DRAFT_ENFORCE_LINE_ESTIMATE=1 "$BIN" run --repo "$repo" --stage draft --run-id "$run_id")"
+  spec="$repo/.e3d-pilot/runs/$run_id/spec-draft.md"
+  rejected="$repo/.e3d-pilot/runs/$run_id/draft-rejected.md"
+  [[ ! -f "$spec" ]] || { echo "expected enforced line estimate to reject the spec" >&2; exit 1; }
+  [[ -f "$rejected" ]] || { echo "expected enforced estimate rejection artifact" >&2; exit 1; }
+  assert_contains "$(cat "$rejected")" "exceeding max_diff_lines=600"
+
+  rm -rf "$bin_dir" "$response"
+}
+
 main() {
   draft_produces_spec_that_csr_can_list
   draft_rejects_protected_path_touch_before_writing
   draft_reports_too_large_without_writing_spec_and_stops_all
   draft_requires_a_selected_candidate
+  draft_line_estimate_warns_by_default_and_can_be_enforced
   echo "phase5: all tests passed"
 }
 

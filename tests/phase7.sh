@@ -130,9 +130,15 @@ EOF
 }
 
 execute_uses_isolated_worktree_and_copies_csr_artifacts() {
-  local repo run_id run_dir bin_dir out branch worktree spec_copy trace_line trace_file primary_readme
+  local repo run_id run_dir bin_dir out branch worktree worktree_record spec_copy trace_line trace_file primary_readme
+  local trace_pwd trace_spec trace_stage
   local primary_head_before primary_branch_before primary_head_after primary_branch_after
   repo="$(make_repo_with_commit)"
+  printf 'node_modules/\n' > "$repo/.gitignore"
+  git -C "$repo" add .gitignore
+  git -C "$repo" commit -q -m "ignore dependencies"
+  mkdir -p "$repo/node_modules/.bin"
+  printf 'installed dependency marker\n' > "$repo/node_modules/.bin/fixture-tool"
   write_phase7_config "$repo" 10 50
   run_id="2026-07-27-repo-execute-worktree"
   run_dir="$repo/.e3d-pilot/runs/$run_id"
@@ -151,21 +157,27 @@ execute_uses_isolated_worktree_and_copies_csr_artifacts() {
   primary_branch_after="$(git -C "$repo" symbolic-ref --short HEAD)"
 
   branch="$(cut -f1 "$run_dir/execute-worktree.txt")"
-  worktree="$(cut -f2 "$run_dir/execute-worktree.txt")"
-  spec_copy="$worktree/.e3d-pilot/runs/$run_id/spec-final.md"
+  worktree_record="$(cut -f2 "$run_dir/execute-worktree.txt")"
+  worktree="$(cd "$worktree_record" && pwd -P)"
+  spec_copy="$worktree_record/.e3d-pilot/runs/$run_id/spec-final.md"
   trace_line="$(cat "$trace_file")"
+  IFS='|' read -r trace_pwd trace_spec trace_stage <<<"$trace_line"
   primary_readme="$(cat "$repo/README.md")"
 
   assert_eq "$branch" "e3d-pilot/$run_id" "execute branch name"
   [[ -d "$worktree" ]] || { echo "expected execute worktree directory" >&2; exit 1; }
   [[ "$worktree" != "$repo" ]] || { echo "worktree should differ from primary repo checkout" >&2; exit 1; }
   [[ -f "$worktree/CHANGELOG.md" ]] || { echo "expected csr changes in worktree" >&2; exit 1; }
+  [[ -L "$worktree/node_modules" ]] || { echo "expected execute worktree to reuse installed root dependencies" >&2; exit 1; }
+  assert_eq "$(cd "$(readlink "$worktree/node_modules")" && pwd -P)" "$(cd "$repo/node_modules" && pwd -P)" "worktree dependency symlink target"
   [[ ! -f "$repo/CHANGELOG.md" ]] || { echo "primary checkout should remain untouched" >&2; exit 1; }
   assert_contains "$primary_readme" "# Sample Repo"
   assert_eq "$primary_head_after" "$primary_head_before" "primary checkout HEAD sha should be unchanged"
   assert_eq "$primary_branch_after" "$primary_branch_before" "primary checkout should remain on its original branch"
   [[ "$primary_branch_after" != "e3d-pilot/$run_id" ]] || { echo "primary checkout should never be switched onto the execute branch" >&2; exit 1; }
-  assert_contains "$trace_line" "$worktree|$spec_copy|all"
+  assert_eq "$(cd "$trace_pwd" && pwd -P)" "$worktree" "csr working directory"
+  assert_eq "$(cd "$(dirname "$trace_spec")" && pwd -P)/$(basename "$trace_spec")" "$(cd "$(dirname "$spec_copy")" && pwd -P)/$(basename "$spec_copy")" "csr spec path"
+  assert_eq "$trace_stage" "all" "csr stage"
   assert_contains "$(cat "$run_dir/execute-csr.command")" "$spec_copy"
   [[ -f "$run_dir/csr-state/manifest.json" ]] || { echo "expected csr manifest copy in run dir" >&2; exit 1; }
   [[ -f "$run_dir/csr-state/summary.md" ]] || { echo "expected csr summary copy in run dir" >&2; exit 1; }
@@ -197,6 +209,27 @@ execute_rejects_protected_path_before_invoking_csr() {
   [[ ! -s "$trace_file" ]] || { echo "csr should not have been invoked" >&2; exit 1; }
 
   rm -rf "$bin_dir" "$trace_file"
+}
+
+execute_does_not_link_unignored_dependencies() {
+  local repo run_id run_dir bin_dir out worktree
+  repo="$(make_repo_with_commit)"
+  mkdir -p "$repo/node_modules/.bin"
+  printf 'unignored dependency marker\n' > "$repo/node_modules/.bin/fixture-tool"
+  write_phase7_config "$repo" 10 50
+  run_id="2026-07-27-repo-execute-unignored-dependencies"
+  run_dir="$repo/.e3d-pilot/runs/$run_id"
+  write_phase7_spec_final "$repo" "$run_id" "README.md"
+
+  bin_dir="$(mktemp -d)"
+  make_fake_csr_bin "$bin_dir"
+  out="$(PATH="$bin_dir:$PATH" FAKE_CSR_MODE="small-diff" "$BIN" run --repo "$repo" --stage execute --run-id "$run_id")"
+  worktree="$(cut -f2 "$run_dir/execute-worktree.txt")"
+
+  [[ ! -e "$worktree/node_modules" ]] || { echo "unignored dependencies must not be linked into the execute diff" >&2; exit 1; }
+  assert_contains "$out" "execute: completed csr run"
+
+  rm -rf "$bin_dir"
 }
 
 execute_stops_when_diff_exceeds_ceiling() {
@@ -361,6 +394,7 @@ execute_oversized_diff_halts_stage_all_before_review_and_publish() {
 
 main() {
   execute_uses_isolated_worktree_and_copies_csr_artifacts
+  execute_does_not_link_unignored_dependencies
   execute_rejects_protected_path_before_invoking_csr
   execute_stops_when_diff_exceeds_ceiling
   execute_respects_paused_file

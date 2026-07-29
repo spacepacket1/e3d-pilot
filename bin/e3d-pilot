@@ -193,7 +193,15 @@ load_repo_docs_content() {
 
 load_repo_todo_fixes() {
   local repo="$1" matches
-  matches="$(grep -rn --exclude-dir=.git --exclude-dir=.e3d-pilot -e 'TODO' -e 'FIXME' "$repo" 2>/dev/null || true)"
+  matches="$(grep -rn \
+    --exclude-dir=.git --exclude-dir=.e3d-pilot \
+    --exclude-dir=node_modules --exclude-dir=build --exclude-dir=dist \
+    --exclude-dir=.next --exclude-dir=out --exclude-dir=coverage \
+    --exclude-dir=vendor --exclude-dir=target \
+    --exclude-dir=.venv --exclude-dir=venv --exclude-dir=__pycache__ \
+    -e 'TODO' -e 'FIXME' "$repo" 2>/dev/null \
+    | awk '{ if (length($0) > 300) print substr($0, 1, 300) " ... [truncated]"; else print }' \
+    | head -n 200 || true)"
   if [[ -n "$matches" ]]; then
     printf '```text\n%s\n```\n' "$matches"
   else
@@ -399,7 +407,7 @@ discover_stage() {
   [[ -x "$provider_script" ]] || die "discover provider script missing or not executable: $provider_script"
 
   set +e
-  provider_output="$(E3D_PILOT_DRY_RUN=0 "$provider_script" "$prompt_file" 2>"$run_dir/discover-provider.stderr")"
+  provider_output="$(cd "$repo" && E3D_PILOT_DRY_RUN=0 "$provider_script" "$prompt_file" 2>"$run_dir/discover-provider.stderr")"
   provider_status=$?
   set -e
   if [[ $provider_status -ne 0 ]]; then
@@ -643,7 +651,7 @@ ideate_stage() {
   [[ -x "$provider_script" ]] || die "ideate provider script missing or not executable: $provider_script"
 
   set +e
-  provider_output="$(E3D_PILOT_DRY_RUN=0 "$provider_script" "$prompt_file" 2>"$run_dir/ideate-provider.stderr")"
+  provider_output="$(cd "$repo" && E3D_PILOT_DRY_RUN=0 "$provider_script" "$prompt_file" 2>"$run_dir/ideate-provider.stderr")"
   provider_status=$?
   set -e
   if [[ $provider_status -ne 0 ]]; then
@@ -733,6 +741,12 @@ build_draft_facts_markdown() {
     load_repo_structure "$repo"
     printf '\n## Repo Docs\n'
     load_repo_docs_content "$repo" "$config_file"
+    printf '\n## Configured Verification Commands\n\n'
+    if jq -e '.verify | length > 0' "$config_file" >/dev/null 2>&1; then
+      jq -r '.verify[] | "- `" + . + "`"' "$config_file"
+    else
+      printf -- '- none configured; use a focused check that is demonstrably supported by the tracked repository\n'
+    fi
   } > "$facts_file"
 }
 
@@ -760,6 +774,9 @@ build_draft_prompt() {
     printf '  touch. Every phase must have at least one.\n'
     printf -- '- Add "<!-- runner:read=... -->" / "<!-- runner:verify=... -->"\n'
     printf '  annotations where useful, per the conventions above.\n'
+    printf -- '- When configured verification commands are listed in Context, use those\n'
+    printf '  commands for runner:verify annotations; do not invent a broader package\n'
+    printf '  script that may already be broken on the unchanged repository.\n'
     printf -- '- None of the pilot:touches globs for any phase may match any of these\n'
     printf '  protected paths -- never propose modifying them:\n'
     printf '%s\n' "$protected_paths_list"
@@ -934,18 +951,28 @@ draft_validate_spec() {
 # is no real diff yet, so this estimates scope from the drafted spec itself
 # (distinct pilot:touches paths as a file-count proxy, Requirements/Acceptance
 # Criteria bullet count x a configurable per-bullet line estimate as a
-# line-count proxy) rather than leaving the ceiling entirely up to the model's
-# own self-reported status. Intentionally NOT reused by execute_spec_guard:
+# line-count signal) rather than leaving scope entirely up to the model's own
+# self-reported status. The file-count proxy is enforced here because declared
+# touches map directly to files. The line estimate is advisory by default: a
+# prose bullet is not a reliable predictor of implementation size, and the
+# real diff ceiling below is authoritative. Set DRAFT_ENFORCE_LINE_ESTIMATE=1
+# to restore hard rejection from the estimate. Intentionally NOT reused by
+# execute_spec_guard:
 # that guard re-checks protected_paths against the final spec exactly, while
 # the real max_diff_files/max_diff_lines ceiling is enforced by execute_stage
 # after csr runs, against the actual git diff -- this is only a pre-execution
 # estimate to catch an obviously-too-big candidate before negotiate/execute.
 draft_check_scope_ceiling() {
-  local spec_file="$1" config_file="$2" violations_file="$3"
-  local max_diff_files max_diff_lines lines_per_bullet
+  local spec_file="$1" config_file="$2" violations_file="$3" warnings_file="${4:-}"
+  local max_diff_files max_diff_lines lines_per_bullet enforce_line_estimate
   max_diff_files="$(config_value "$config_file" '.max_diff_files')"
   max_diff_lines="$(config_value "$config_file" '.max_diff_lines')"
   lines_per_bullet="${DRAFT_LINES_PER_REQUIREMENT_BULLET:-20}"
+  enforce_line_estimate="${DRAFT_ENFORCE_LINE_ESTIMATE:-0}"
+
+  [[ "$lines_per_bullet" =~ ^[0-9]+$ ]] || die "DRAFT_LINES_PER_REQUIREMENT_BULLET must be a non-negative integer"
+  [[ "$enforce_line_estimate" == "0" || "$enforce_line_estimate" == "1" ]] \
+    || die "DRAFT_ENFORCE_LINE_ESTIMATE must be 0 or 1"
 
   local pairs total_phases
   pairs="$(draft_phase_pairs "$spec_file")"
@@ -981,8 +1008,14 @@ draft_check_scope_ceiling() {
 
   local estimated_lines=$(( requirement_bullet_count * lines_per_bullet ))
   if [[ "$max_diff_lines" =~ ^[0-9]+$ ]] && (( estimated_lines > max_diff_lines )); then
-    printf 'Drafted spec has an estimated ~%s changed lines (%s requirement/acceptance bullets x %s lines/bullet), exceeding max_diff_lines=%s\n' \
-      "$estimated_lines" "$requirement_bullet_count" "$lines_per_bullet" "$max_diff_lines" >> "$violations_file"
+    local estimate_message
+    estimate_message="Drafted spec has an estimated ~$estimated_lines changed lines ($requirement_bullet_count requirement/acceptance bullets x $lines_per_bullet lines/bullet), exceeding max_diff_lines=$max_diff_lines"
+    if [[ "$enforce_line_estimate" == "1" ]]; then
+      printf '%s\n' "$estimate_message" >> "$violations_file"
+    elif [[ -n "$warnings_file" ]]; then
+      printf '%s; advisory only (the actual post-execution diff ceiling remains enforced)\n' \
+        "$estimate_message" >> "$warnings_file"
+    fi
   fi
 
   [[ ! -s "$violations_file" ]]
@@ -1002,6 +1035,15 @@ ensure_worktree() {
   if ! git -C "$repo" worktree add -b "$branch" "$worktree_dir" "$start_ref" >/dev/null 2>&1; then
     rm -rf "$worktree_dir"
     die "failed to create execute worktree for branch $branch"
+  fi
+
+  # Git worktrees intentionally omit ignored dependency directories. Reuse a
+  # dependency installation already prepared in the primary clone so csr's
+  # phase-level verification can run without downloading packages on every
+  # autonomous execution. The ignored symlink never enters the branch diff.
+  if [[ -d "$repo/node_modules" && ! -e "$worktree_dir/node_modules" ]] \
+    && git -C "$repo" check-ignore -q node_modules; then
+    ln -s "$repo/node_modules" "$worktree_dir/node_modules"
   fi
 
   printf '%s\t%s\n' "$branch" "$worktree_dir" > "$run_dir/execute-worktree.txt"
@@ -1367,7 +1409,7 @@ review_stage() {
   build_review_prompt "$diff_text" "$prompt"
   provider="$(config_value "$config_file" '.providers.review')"; provider_script="$REPO_ROOT/lib/providers/$provider"
   [[ -x "$provider_script" ]] || die "review provider script missing or not executable: $provider_script"
-  if ! E3D_PILOT_DRY_RUN=0 "$provider_script" "$prompt" > "$response" 2> "$run_dir/review-provider.stderr"; then
+  if ! (cd "$worktree" && E3D_PILOT_DRY_RUN=0 "$provider_script" "$prompt" > "$response" 2> "$run_dir/review-provider.stderr"); then
     printf 'verify_status: failed\nbranch: %s\nworktree: %s\nlive_verify: %s\n' "$branch" "$worktree" "$live_reason" > "$review_status_file"
     die "review provider failed: $provider"
   fi
@@ -1507,7 +1549,7 @@ draft_stage() {
   [[ -x "$provider_script" ]] || die "draft provider script missing or not executable: $provider_script"
 
   set +e
-  provider_output="$(E3D_PILOT_DRY_RUN=0 "$provider_script" "$prompt_file" 2>"$run_dir/draft-provider.stderr")"
+  provider_output="$(cd "$repo" && E3D_PILOT_DRY_RUN=0 "$provider_script" "$prompt_file" 2>"$run_dir/draft-provider.stderr")"
   provider_status=$?
   set -e
   if [[ $provider_status -ne 0 ]]; then
@@ -1553,8 +1595,10 @@ draft_stage() {
   printf '%s\n' "$spec_block" > "$candidate_spec_file"
 
   local violations_file="$run_dir/draft-violations.txt"
+  local warnings_file="$run_dir/draft-scope-warnings.txt"
   draft_validate_spec "$candidate_spec_file" "$config_file" "$violations_file" || true
-  draft_check_scope_ceiling "$candidate_spec_file" "$config_file" "$violations_file" || true
+  : > "$warnings_file"
+  draft_check_scope_ceiling "$candidate_spec_file" "$config_file" "$violations_file" "$warnings_file" || true
   if [[ -s "$violations_file" ]]; then
     {
       printf -- '---\n'
@@ -1576,6 +1620,11 @@ draft_stage() {
   fi
 
   rm -f "$violations_file"
+  if [[ -s "$warnings_file" ]]; then
+    printf 'draft: scope estimate warning recorded in %s; continuing to negotiation (actual diff ceiling remains enforced)\n' "$warnings_file"
+  else
+    rm -f "$warnings_file"
+  fi
   mv "$candidate_spec_file" "$spec_file"
   rm -f "$rejected_file" 2>/dev/null || true
   printf '%s\n' "$run_id"
@@ -1585,10 +1634,18 @@ build_negotiate_prompt() {
   local reviewer="$1" round="$2" draft_file="$3" prompt_file="$4"
   {
     printf 'You are reviewer %s in round %s of the negotiate loop.\n' "$reviewer" "$round"
-    printf 'Read the current draft below as the only source of truth.\n'
-    printf 'If it is ready, respond with the Phase 2 status block and status: approved.\n'
-    printf 'If it needs changes, respond with the Phase 2 status block, status: revise,\n'
-    printf 'and include a fenced ```spec block containing the full replacement spec.\n\n'
+    printf 'Read the current draft below as the only source of truth.\n\n'
+    printf 'Respond using exactly this format, with no other text before or after it,\n'
+    printf 'no markdown heading, comment, or bold syntax around any of these lines:\n\n'
+    printf -- '---STATUS---\n'
+    printf 'status: approved\n'
+    printf 'reason: <one-line reason>\n\n'
+    printf 'Use "status: revise" in place of "status: approved" if the draft needs changes.\n'
+    printf 'When status is revise, put a fenced ```spec block directly after the reason line,\n'
+    printf 'containing the full replacement spec (not a diff or a summary of changes), then\n'
+    printf 'nothing else.\n\n'
+    printf 'The line "---STATUS---" must appear verbatim and on its own line; it is a fixed\n'
+    printf 'parser marker, not a section title to be reworded or restyled.\n\n'
     printf 'Current draft:\n\n'
     cat "$draft_file"
     printf '\n'
@@ -1616,6 +1673,7 @@ negotiate_stage() {
   local repo="$1" run_id="$2" run_dir config_file spec_draft_file negotiation_log_file max_rounds
   local provider provider_script availability_output provider_status round reviewer_index
   local round_log_file round_prompt_file round_response_file provider_output status reason replacement_spec
+  local parse_rc attempt attempt_suffix parse_failed provider_stderr_file
   local -a providers statuses
 
   ensure_git_repo "$repo"
@@ -1663,32 +1721,65 @@ negotiate_stage() {
     for provider in "${providers[@]}"; do
       reviewer_index=$((reviewer_index + 1))
       provider_script="$REPO_ROOT/lib/providers/$provider"
-      round_prompt_file="$run_dir/negotiate-round-${round}-reviewer-${reviewer_index}-${provider}-prompt.md"
-      round_response_file="$run_dir/negotiate-round-${round}-reviewer-${reviewer_index}-${provider}-response.md"
 
-      build_negotiate_prompt "$provider" "$round" "$spec_draft_file" "$round_prompt_file"
+      for attempt in 1 2; do
+        attempt_suffix=""
+        [[ $attempt -eq 1 ]] || attempt_suffix="-attempt${attempt}"
+        round_prompt_file="$run_dir/negotiate-round-${round}-reviewer-${reviewer_index}-${provider}${attempt_suffix}-prompt.md"
+        round_response_file="$run_dir/negotiate-round-${round}-reviewer-${reviewer_index}-${provider}${attempt_suffix}-response.md"
+        provider_stderr_file="$run_dir/negotiate-round-${round}-reviewer-${reviewer_index}-${provider}${attempt_suffix}.stderr"
 
-      set +e
-      provider_output="$(E3D_PILOT_DRY_RUN=0 "$provider_script" "$round_prompt_file" 2>"$run_dir/negotiate-round-${round}-reviewer-${reviewer_index}-${provider}.stderr")"
-      provider_status=$?
-      set -e
-      if [[ $provider_status -ne 0 ]]; then
-        local provider_error=""
-        if [[ -s "$run_dir/negotiate-round-${round}-reviewer-${reviewer_index}-${provider}.stderr" ]]; then
-          provider_error="$(<"$run_dir/negotiate-round-${round}-reviewer-${reviewer_index}-${provider}.stderr")"
+        build_negotiate_prompt "$provider" "$round" "$spec_draft_file" "$round_prompt_file"
+
+        set +e
+        provider_output="$(cd "$repo" && E3D_PILOT_DRY_RUN=0 "$provider_script" "$round_prompt_file" 2>"$provider_stderr_file")"
+        provider_status=$?
+        set -e
+        if [[ $provider_status -ne 0 ]]; then
+          local provider_error=""
+          if [[ -s "$provider_stderr_file" ]]; then
+            provider_error="$(<"$provider_stderr_file")"
+          fi
+          if [[ $provider_status -eq "$PROVIDER_EXIT_UNAVAILABLE" ]]; then
+            die "negotiate reviewer \"$provider\" became unavailable mid-round: ${provider_error:-no availability details}"
+          fi
+          die "negotiate reviewer \"$provider\" failed: ${provider_error:-no stderr captured}"
         fi
-        if [[ $provider_status -eq "$PROVIDER_EXIT_UNAVAILABLE" ]]; then
-          die "negotiate reviewer \"$provider\" became unavailable mid-round: ${provider_error:-no availability details}"
-        fi
-        die "negotiate reviewer \"$provider\" failed: ${provider_error:-no stderr captured}"
-      fi
 
-      printf '%s\n' "$provider_output" > "$round_response_file"
-      status="$("$REPO_ROOT/lib/negotiate/parse-status" "$round_response_file" status)"
-      reason="$("$REPO_ROOT/lib/negotiate/parse-status" "$round_response_file" reason)"
-      replacement_spec=""
+        printf '%s\n' "$provider_output" > "$round_response_file"
+
+        parse_failed=0
+        set +e
+        status="$("$REPO_ROOT/lib/negotiate/parse-status" "$round_response_file" status)"
+        parse_rc=$?
+        set -e
+        [[ $parse_rc -eq 0 ]] || parse_failed=1
+
+        if [[ $parse_failed -eq 0 ]]; then
+          set +e
+          reason="$("$REPO_ROOT/lib/negotiate/parse-status" "$round_response_file" reason)"
+          parse_rc=$?
+          set -e
+          [[ $parse_rc -eq 0 ]] || parse_failed=1
+        fi
+
+        replacement_spec=""
+        if [[ $parse_failed -eq 0 && "$status" == "revise" ]]; then
+          set +e
+          replacement_spec="$("$REPO_ROOT/lib/negotiate/parse-status" "$round_response_file" spec)"
+          parse_rc=$?
+          set -e
+          [[ $parse_rc -eq 0 ]] || parse_failed=1
+        fi
+
+        [[ $parse_failed -eq 0 ]] && break
+        if [[ $attempt -eq 2 ]]; then
+          die "negotiate reviewer \"$provider\" (round $round) response failed to parse as a status block after a retry; see $round_response_file"
+        fi
+        printf 'negotiate: reviewer "%s" (round %s) response failed to parse; retrying once\n' "$provider" "$round" >&2
+      done
+
       if [[ "$status" == "revise" ]]; then
-        replacement_spec="$("$REPO_ROOT/lib/negotiate/parse-status" "$round_response_file" spec)"
         printf '%s\n' "$replacement_spec" > "$spec_draft_file"
       fi
       statuses+=("$status")

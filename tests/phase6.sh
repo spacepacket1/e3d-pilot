@@ -123,6 +123,9 @@ if [[ -n "${NEGOTIATE_TRACE_FILE:-}" ]]; then
   marker="$(grep -o 'phase6-replacement-[ab]' "$prompt_file" | tail -n1 || true)"
   printf '%s|%s\n' '__NAME__' "${marker:-initial}" >> "$NEGOTIATE_TRACE_FILE"
 fi
+if [[ -n "${NEGOTIATE_PWD_TRACE_FILE:-}" ]]; then
+  printf '%s\n' "$PWD" >> "$NEGOTIATE_PWD_TRACE_FILE"
+fi
 
 prompt="$(cat "$prompt_file")"
 case '__MODE__' in
@@ -206,6 +209,17 @@ OUT
 status: approved
 reason: guard provider should never be called
 OUT
+    ;;
+  malformed-once)
+    if [[ "$prompt_file" == *-attempt2-prompt.md ]]; then
+      cat <<'OUT'
+---STATUS---
+status: approved
+reason: retry returned the required status block
+OUT
+    else
+      printf 'approved, but missing the required parser marker\n'
+    fi
     ;;
   *)
     echo "error: unknown phase6 stub mode: __MODE__" >&2
@@ -325,6 +339,33 @@ negotiate_three_reviewers_apply_replacements_in_order() {
   rm -f "$trace"
 }
 
+negotiate_retries_one_malformed_response_from_repo_cwd() {
+  local repo run_id trace pwd_trace out spec_final response retry_response
+  repo="$(make_repo_with_commit)"
+  run_id="2026-07-27-repo-negotiate-parse-retry"
+  write_phase6_config "$repo" '["phase6-malformed-once"]'
+  write_phase6_draft "$repo" "$run_id"
+  make_phase6_provider "phase6-malformed-once" "malformed-once"
+
+  trace="$(mktemp)"
+  pwd_trace="$(mktemp)"
+  out="$(NEGOTIATE_TRACE_FILE="$trace" NEGOTIATE_PWD_TRACE_FILE="$pwd_trace" "$BIN" run --repo "$repo" --stage negotiate --run-id "$run_id" 2>&1)"
+
+  spec_final="$repo/.e3d-pilot/runs/$run_id/spec-final.md"
+  response="$repo/.e3d-pilot/runs/$run_id/negotiate-round-1-reviewer-1-phase6-malformed-once-response.md"
+  retry_response="$repo/.e3d-pilot/runs/$run_id/negotiate-round-1-reviewer-1-phase6-malformed-once-attempt2-response.md"
+  [[ -f "$spec_final" ]] || { echo "expected retry to converge and write spec-final.md" >&2; exit 1; }
+  [[ -f "$response" && -f "$retry_response" ]] || { echo "expected both negotiation response artifacts" >&2; exit 1; }
+  assert_contains "$out" "response failed to parse; retrying once"
+  assert_contains "$out" "converged in round 1"
+  assert_eq "$(wc -l < "$trace" | tr -d '[:space:]')" "2" "malformed response should be retried exactly once"
+  while IFS= read -r provider_pwd; do
+    assert_eq "$(cd "$provider_pwd" && pwd -P)" "$(cd "$repo" && pwd -P)" "negotiate provider cwd"
+  done < "$pwd_trace"
+
+  rm -f "$trace" "$pwd_trace"
+}
+
 
 # Same test body run at two different reviewer-array arities, to directly
 # confirm (per this phase's acceptance criteria) that the convergence code
@@ -369,6 +410,7 @@ main() {
   negotiate_unavailable_reviewer_fails_before_round_one_requests
   negotiate_always_revise_hits_max_rounds_and_needs_human
   negotiate_three_reviewers_apply_replacements_in_order
+  negotiate_retries_one_malformed_response_from_repo_cwd
   negotiate_all_approve_converges_at_arity 2
   negotiate_all_approve_converges_at_arity 3
   echo "phase6: all tests passed"
