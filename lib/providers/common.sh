@@ -46,3 +46,36 @@ local_endpoint_reachable() {
   [[ -n "$endpoint" ]] || return 1
   curl -s -o /dev/null -m "${LOCAL_MODEL_CHECK_TIMEOUT:-3}" "$endpoint"
 }
+
+# Machine-wide mutex around the local provider's real model call. The local
+# adapter typically points at a shared, memory-resident inference process
+# (e.g. a single Qwen instance also serving other repos' agents); running two
+# calls against it at once is a real OOM risk, not just a slowdown, so every
+# e3d-pilot invocation on the box -- regardless of which target repo or run
+# started it -- serializes through this one lock rather than each provider
+# call managing its own concurrency.
+LOCAL_MODEL_LOCK_DIR="${LOCAL_MODEL_LOCK_DIR:-${TMPDIR:-/tmp}/e3d-pilot-qwen.lock}"
+LOCAL_MODEL_LOCK_TIMEOUT="${LOCAL_MODEL_LOCK_TIMEOUT:-900}"
+
+local_model_lock_acquire() {
+  local waited=0 holder_pid
+  while ! mkdir "$LOCAL_MODEL_LOCK_DIR" 2>/dev/null; do
+    holder_pid="$(cat "$LOCAL_MODEL_LOCK_DIR/pid" 2>/dev/null || true)"
+    if [[ -n "$holder_pid" ]] && ! kill -0 "$holder_pid" 2>/dev/null; then
+      # Lock holder is gone (crashed/killed) -- reclaim rather than deadlock.
+      rm -rf "$LOCAL_MODEL_LOCK_DIR"
+      continue
+    fi
+    if (( waited >= LOCAL_MODEL_LOCK_TIMEOUT )); then
+      echo "error: timed out after ${LOCAL_MODEL_LOCK_TIMEOUT}s waiting for the local-model lock ($LOCAL_MODEL_LOCK_DIR) -- another e3d-pilot run appears to be using the local endpoint" >&2
+      return 1
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+  printf '%s' "$$" > "$LOCAL_MODEL_LOCK_DIR/pid"
+}
+
+local_model_lock_release() {
+  rm -rf "$LOCAL_MODEL_LOCK_DIR"
+}

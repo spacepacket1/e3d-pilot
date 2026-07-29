@@ -40,6 +40,11 @@ PROMPT_CONTENT="$(cat "$PROMPT_FILE")"
 PAYLOAD="$(jq -n --arg model "$LOCAL_MODEL_NAME" --arg content "$PROMPT_CONTENT" \
   '{model: $model, messages: [{role: "user", content: $content}]}')"
 
+if ! local_model_lock_acquire; then
+  exit "$PROVIDER_EXIT_FAILURE"
+fi
+trap local_model_lock_release EXIT
+
 if ! RESPONSE="$(printf '%s' "$PAYLOAD" | curl -fsS -m "${LOCAL_MODEL_TIMEOUT:-120}" \
   -H 'Content-Type: application/json' -d @- "$ENDPOINT/chat/completions")"; then
   echo "error: local model endpoint request failed: $ENDPOINT" >&2

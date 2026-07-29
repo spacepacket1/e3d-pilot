@@ -136,6 +136,74 @@ local_provider_reports_unavailable_exit_code_when_unset() {
   rm -f "$prompt_file"
 }
 
+local_provider_serializes_concurrent_calls_via_lock() {
+  local dir port endpoint server_pid attempt prompt1 prompt2 lockdir
+  local start end elapsed pid1 pid2
+
+  dir="$(mktemp -d)"
+  port=$(( (RANDOM % 5000) + 30000 ))
+  endpoint="http://127.0.0.1:$port/"
+  lockdir="$(mktemp -u)-qwen-lock"
+
+  # A threaded stub so two concurrent requests genuinely run in parallel
+  # server-side unless the client-side lock serializes them first.
+  (cd "$dir" && exec python3 - "$port" <<'PY'
+import sys, time, json
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+class Handler(BaseHTTPRequestHandler):
+    def do_POST(self):
+        time.sleep(2)
+        body = json.dumps({"choices": [{"message": {"content": "ok"}}]}).encode()
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Content-Length', str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *args):
+        pass
+
+ThreadingHTTPServer(('127.0.0.1', int(sys.argv[1])), Handler).serve_forever()
+PY
+  ) >/dev/null 2>&1 &
+  server_pid=$!
+
+  attempt=0
+  until curl -s -o /dev/null -m 1 "$endpoint" || [[ $attempt -ge 50 ]]; do
+    attempt=$((attempt + 1))
+    sleep 0.1
+  done
+  if [[ $attempt -ge 50 ]]; then
+    kill "$server_pid" 2>/dev/null || true
+    rm -rf "$dir"
+    echo "threaded HTTP stub never became reachable" >&2
+    exit 1
+  fi
+
+  prompt1="$(make_prompt_file)"
+  prompt2="$(make_prompt_file)"
+
+  start="$(date +%s)"
+  (LOCAL_MODEL_ENDPOINT="$endpoint" LOCAL_MODEL_LOCK_DIR="$lockdir" "$PROVIDERS_DIR/local" "$prompt1" >/dev/null 2>&1) &
+  pid1=$!
+  (LOCAL_MODEL_ENDPOINT="$endpoint" LOCAL_MODEL_LOCK_DIR="$lockdir" "$PROVIDERS_DIR/local" "$prompt2" >/dev/null 2>&1) &
+  pid2=$!
+  wait "$pid1" "$pid2"
+  end="$(date +%s)"
+  elapsed=$(( end - start ))
+
+  kill "$server_pid" 2>/dev/null || true
+  wait "$server_pid" 2>/dev/null || true
+  rm -rf "$dir" "$lockdir"
+  rm -f "$prompt1" "$prompt2"
+
+  (( elapsed >= 3 )) || {
+    echo "expected two concurrent local-provider calls to serialize (>=3s for two 2s calls), took ${elapsed}s -- lock did not prevent concurrent Qwen requests" >&2
+    exit 1
+  }
+}
+
 # --- lib/negotiate/parse-status ----------------------------------------
 
 parse_status_extracts_approved_without_spec() {
@@ -242,6 +310,7 @@ main() {
   codex_provider_dry_run_prints_safe_defaults
   codex_provider_dry_run_respects_overrides
   local_provider_reports_unavailable_exit_code_when_unset
+  local_provider_serializes_concurrent_calls_via_lock
   parse_status_extracts_approved_without_spec
   parse_status_extracts_revise_and_spec_block_even_when_fenced
   parse_status_fails_on_missing_status_block
