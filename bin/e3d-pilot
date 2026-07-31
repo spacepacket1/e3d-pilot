@@ -5,6 +5,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 SCHEMA_FILE="$REPO_ROOT/config.schema.json"
 DISCOVER_PREVIOUS_RUN_ID=""
+PILOT_FOCUS=""
+FOCUS_DEFAULT="default"
 NEGOTIATE_EXIT_NEEDS_HUMAN=3
 EXECUTE_EXIT_NEEDS_HUMAN=4
 REVIEW_EXIT_VERIFY_FAILED=5
@@ -24,9 +26,10 @@ e3d-pilot
 Usage:
   e3d-pilot --help
   e3d-pilot config validate <repo>
-  e3d-pilot run --repo <path> --stage <name> [--run-id <id>]
+  e3d-pilot run --repo <path> --stage <name> [--run-id <id>] [--focus default|revenue]
   e3d-pilot providers list
   e3d-pilot fleet <repos.json>
+  e3d-pilot fleet discover <repos.json> [--run-id <id>] [--focus default|revenue] [--config <path>]
 
 Run stages:
   discover
@@ -40,6 +43,19 @@ Run stages:
 
 Runs are isolated, negotiated, verified, and published through a configured
 forge backend. Use `fleet` to process multiple repositories independently.
+
+--focus revenue switches discover/ideate to a revenue-first pass: discover
+adds a Monetization Signals subsection, ideate ranks candidates by Revenue
+potential first (Attraction/Retention as tiebreak only, Revenue required).
+Defaults to "default" (attraction/retention-first) and is inherited by later
+stages of the same run unless passed again explicitly.
+
+`fleet discover <repos.json>` is a portfolio-level pass across every repo in
+the fleet file at once, looking specifically for ideas that require 2+ of
+those repos together. It needs its own config (providers.discover/ideate) at
+<dir of repos.json>/.e3d-pilot-fleet/config.json, or pass --config <path>.
+State is written under .e3d-pilot-fleet/runs/<run-id>/ next to the fleet
+file. This is discover+ideate only -- no draft/negotiate/execute/publish.
 EOF
 }
 
@@ -137,6 +153,41 @@ resolve_run_id() {
   run_id="$(<"$latest_file")"
   [[ -n "$run_id" ]] || die "latest run file is empty: $latest_file"
   printf '%s\n' "$run_id"
+}
+
+validate_focus_value() {
+  local focus="$1"
+  case "$focus" in
+    default|revenue) return 0 ;;
+    *) die "invalid --focus value: $focus (expected: default or revenue)" ;;
+  esac
+}
+
+focus_file_for_run_dir() {
+  printf '%s/focus' "$1"
+}
+
+# Focus is per-run, not per-invocation: a run's focus is decided once (by
+# whichever stage runs first for that run-id, normally discover) and every
+# later stage of the same run -- even invoked from a separate CLI call, e.g.
+# a standalone `--stage ideate` -- inherits it silently unless --focus is
+# passed again explicitly, in which case it overwrites what's on disk.
+resolve_focus() {
+  local run_dir="$1" requested="${2:-}" focus_file
+  mkdir -p "$run_dir"
+  focus_file="$(focus_file_for_run_dir "$run_dir")"
+  if [[ -n "$requested" ]]; then
+    validate_focus_value "$requested"
+    printf '%s\n' "$requested" > "$focus_file"
+    printf '%s' "$requested"
+    return 0
+  fi
+  if [[ -f "$focus_file" ]]; then
+    printf '%s' "$(<"$focus_file")"
+    return 0
+  fi
+  printf '%s\n' "$FOCUS_DEFAULT" > "$focus_file"
+  printf '%s' "$FOCUS_DEFAULT"
 }
 
 ensure_git_repo() {
@@ -348,7 +399,7 @@ build_discover_facts_markdown() {
 }
 
 build_discover_prompt() {
-  local facts_file="$1" prompt_file="$2"
+  local facts_file="$1" prompt_file="$2" focus="${3:-$FOCUS_DEFAULT}"
   {
     printf 'You are producing the "External Context" section of a repo findings report.\n'
     printf 'Keep it short and focused on the current state of the art relevant to the repo.\n\n'
@@ -359,16 +410,26 @@ build_discover_prompt() {
     printf 'domain, the mechanic being borrowed, and one concrete sentence on how it\n'
     printf 'could apply here. The goal is to seed ideation with cross-domain metaphors,\n'
     printf 'not just incremental extensions of what the repo already does.\n\n'
+    if [[ "$focus" == "revenue" ]]; then
+      printf 'This is a revenue-focused discover pass: also include a distinct\n'
+      printf '"### Monetization Signals" subsection covering (a) any monetization\n'
+      printf 'mechanisms already visible in this repo'"'"'s code, config, or docs (payment\n'
+      printf 'flows, pricing tiers, credits, subscriptions, tokens, fees) and (b) 2-3\n'
+      printf 'monetization models from adjacent industries that could extend or combine\n'
+      printf 'with what already exists here. Be concrete about the mechanism, not generic\n'
+      printf '("freemium") -- name how it would actually plug into this repo.\n\n'
+    fi
     printf 'Local facts:\n\n'
     cat "$facts_file"
   } > "$prompt_file"
 }
 
 write_findings_markdown() {
-  local head_sha="$1" facts_file="$2" external_context_file="$3" findings_file="$4"
+  local head_sha="$1" facts_file="$2" external_context_file="$3" findings_file="$4" focus="${5:-$FOCUS_DEFAULT}"
   {
     printf -- '---\n'
     printf 'head_sha: %s\n' "$head_sha"
+    printf 'focus: %s\n' "$focus"
     printf -- '---\n\n'
     printf '# Findings\n\n'
     printf '## Local State\n\n'
@@ -380,7 +441,7 @@ write_findings_markdown() {
 }
 
 discover_stage() {
-  local repo="$1" run_id="$2" run_dir config_file head_sha facts_file prompt_file external_context_file findings_file previous_findings provider provider_script provider_output provider_status provider_error
+  local repo="$1" run_id="$2" run_dir config_file head_sha facts_file prompt_file external_context_file findings_file previous_findings provider provider_script provider_output provider_status provider_error focus
   ensure_git_repo "$repo"
   config_file="$(config_path_for_repo "$repo")"
   validate_config_file "$config_file"
@@ -393,6 +454,7 @@ discover_stage() {
   else
     previous_findings=""
   fi
+  focus="$(resolve_focus "$run_dir" "${PILOT_FOCUS:-}")"
 
   facts_file="$run_dir/discover-local-state.md"
   prompt_file="$run_dir/discover-prompt.md"
@@ -400,7 +462,7 @@ discover_stage() {
   findings_file="$run_dir/findings.md"
 
   build_discover_facts_markdown "$repo" "$config_file" "$facts_file" "$previous_findings"
-  build_discover_prompt "$facts_file" "$prompt_file"
+  build_discover_prompt "$facts_file" "$prompt_file" "$focus"
 
   provider="$(config_value "$config_file" '.providers.discover')"
   provider_script="$REPO_ROOT/lib/providers/$provider"
@@ -422,7 +484,7 @@ discover_stage() {
   fi
 
   printf '%s\n' "$provider_output" > "$external_context_file"
-  write_findings_markdown "$head_sha" "$facts_file" "$external_context_file" "$findings_file"
+  write_findings_markdown "$head_sha" "$facts_file" "$external_context_file" "$findings_file" "$focus"
   printf '%s\n' "$run_id"
 }
 
@@ -504,7 +566,7 @@ build_ideate_facts_markdown() {
 }
 
 build_ideate_prompt() {
-  local facts_file="$1" prompt_file="$2"
+  local facts_file="$1" prompt_file="$2" focus="${3:-$FOCUS_DEFAULT}"
   {
     printf 'You are the ideate stage of an autonomous repo-improvement pipeline.\n'
     printf 'Propose 3-5 ranked candidate ideas (most valuable first) for what this repo\n'
@@ -512,12 +574,20 @@ build_ideate_prompt() {
     printf 'For EACH candidate you must explicitly check it against the git branches, the\n'
     printf 'PR list (when available), and past runs candidates/specs listed below, and\n'
     printf 'state plainly whether it duplicates something that already exists.\n\n'
-    printf 'This project'"'"'s primary goal is attracting and retaining users; revenue is\n'
-    printf 'secondary. Draw on the findings'"'"' "Analogous Patterns" subsection where it\n'
-    printf 'applies, and consider ideas spanning multiple categories (data usefulness,\n'
-    printf 'workflow-in-UI, social, gamification, testing, marketing, selling) when good\n'
-    printf 'ones exist for each -- but never force a weak or duplicate idea into a\n'
-    printf 'category just for coverage.\n\n'
+    if [[ "$focus" == "revenue" ]]; then
+      printf 'This ideate run is explicitly focused on revenue-generating ideas. Draw on\n'
+      printf 'the findings'"'"' "Analogous Patterns" and (when present) "Monetization\n'
+      printf 'Signals" subsections where they apply. Candidates may be net-new\n'
+      printf 'monetization surfaces as well as extensions of existing functionality --\n'
+      printf 'both are valid, and duplicate-checking still applies equally to either kind.\n\n'
+    else
+      printf 'This project'"'"'s primary goal is attracting and retaining users; revenue is\n'
+      printf 'secondary. Draw on the findings'"'"' "Analogous Patterns" subsection where it\n'
+      printf 'applies, and consider ideas spanning multiple categories (data usefulness,\n'
+      printf 'workflow-in-UI, social, gamification, testing, marketing, selling) when good\n'
+      printf 'ones exist for each -- but never force a weak or duplicate idea into a\n'
+      printf 'category just for coverage.\n\n'
+    fi
     printf 'Respond using exactly this format, one block per candidate:\n\n'
     printf '### Candidate <N>: <short title>\n'
     printf 'Duplicate: yes|no\n'
@@ -527,11 +597,20 @@ build_ideate_prompt() {
     printf 'Attraction (1-5): <score, new-user pull>\n'
     printf 'Retention (1-5): <score, repeat-engagement value>\n'
     printf 'Effort: low|medium|high\n'
-    printf 'Revenue (1-5|n/a): <score, secondary -- never outranks Attraction+Retention>\n'
-    printf 'Description: <what to build and why>\n\n'
-    printf 'Rank non-duplicate candidates primarily by Attraction + Retention (highest\n'
-    printf 'first); Revenue may only break ties between otherwise-equal candidates and\n'
-    printf 'must never let a lower Attraction + Retention candidate outrank a higher one.\n\n'
+    if [[ "$focus" == "revenue" ]]; then
+      printf 'Revenue (1-5): <score, primary ranking signal for this revenue-focused run -- never answer "n/a">\n'
+      printf 'Description: <what to build, the monetization mechanism, and why>\n\n'
+      printf 'Rank non-duplicate candidates primarily by Revenue (highest first);\n'
+      printf 'Attraction + Retention may only break ties between otherwise-equal Revenue\n'
+      printf 'candidates and must never let a lower-Revenue candidate outrank a higher\n'
+      printf 'one.\n\n'
+    else
+      printf 'Revenue (1-5|n/a): <score, secondary -- never outranks Attraction+Retention>\n'
+      printf 'Description: <what to build and why>\n\n'
+      printf 'Rank non-duplicate candidates primarily by Attraction + Retention (highest\n'
+      printf 'first); Revenue may only break ties between otherwise-equal candidates and\n'
+      printf 'must never let a lower Attraction + Retention candidate outrank a higher one.\n\n'
+    fi
     printf 'After all candidates, end your response with exactly this block: choose the\n'
     printf 'highest-ranked candidate that is NOT a duplicate as "selected", using the\n'
     printf 'literal value "none" only if every candidate is a duplicate of existing work.\n\n'
@@ -544,11 +623,12 @@ build_ideate_prompt() {
 }
 
 write_candidates_markdown() {
-  local selected="$1" reason="$2" facts_file="$3" response_file="$4" candidates_file="$5" warnings_file="${6:-}"
+  local selected="$1" reason="$2" facts_file="$3" response_file="$4" candidates_file="$5" warnings_file="${6:-}" focus="${7:-$FOCUS_DEFAULT}"
   {
     printf -- '---\n'
     printf 'selected: %s\n' "$selected"
     printf 'reason: %s\n' "$reason"
+    printf 'focus: %s\n' "$focus"
     printf -- '---\n\n'
     printf '# Candidates\n\n'
     if [[ -n "$warnings_file" && -s "$warnings_file" ]]; then
@@ -573,7 +653,7 @@ write_candidates_markdown() {
 # spec nor Phase 4's acceptance criteria treat this as a hard rejection like
 # Phase 5's protected_paths guard.
 ideate_validate_candidates() {
-  local response_file="$1" warnings_file="$2"
+  local response_file="$1" warnings_file="$2" focus="${3:-$FOCUS_DEFAULT}"
   : > "$warnings_file"
 
   local count
@@ -583,7 +663,7 @@ ideate_validate_candidates() {
   fi
 
   local current_num="" current_rationale=""
-  local has_category=0 has_analogy=0 has_attraction=0 has_retention=0 has_effort=0 line
+  local has_category=0 has_analogy=0 has_attraction=0 has_retention=0 has_effort=0 has_revenue=0 line
 
   while IFS= read -r line; do
     if [[ "$line" =~ ^###\ Candidate\ ([0-9]+): ]]; then
@@ -594,10 +674,13 @@ ideate_validate_candidates() {
         (( has_attraction )) || printf 'Candidate %s is missing an Attraction score\n' "$current_num" >> "$warnings_file"
         (( has_retention )) || printf 'Candidate %s is missing a Retention score\n' "$current_num" >> "$warnings_file"
         (( has_effort )) || printf 'Candidate %s is missing an Effort field\n' "$current_num" >> "$warnings_file"
+        if [[ "$focus" == "revenue" ]]; then
+          (( has_revenue )) || printf 'Candidate %s is missing a numeric Revenue score (required in a revenue-focused run)\n' "$current_num" >> "$warnings_file"
+        fi
       fi
       current_num="${BASH_REMATCH[1]}"
       current_rationale=""
-      has_category=0; has_analogy=0; has_attraction=0; has_retention=0; has_effort=0
+      has_category=0; has_analogy=0; has_attraction=0; has_retention=0; has_effort=0; has_revenue=0
     elif [[ -n "$current_num" ]]; then
       if [[ "$line" =~ ^Dedup\ rationale:[[:space:]]*(.*)$ ]]; then
         current_rationale="${BASH_REMATCH[1]}"
@@ -611,6 +694,8 @@ ideate_validate_candidates() {
         has_retention=1
       elif [[ "$line" =~ ^Effort:[[:space:]]*(.+)$ ]]; then
         has_effort=1
+      elif [[ "$line" =~ ^Revenue.*:[[:space:]]*[0-9] ]]; then
+        has_revenue=1
       fi
     fi
   done < "$response_file"
@@ -621,13 +706,16 @@ ideate_validate_candidates() {
     (( has_attraction )) || printf 'Candidate %s is missing an Attraction score\n' "$current_num" >> "$warnings_file"
     (( has_retention )) || printf 'Candidate %s is missing a Retention score\n' "$current_num" >> "$warnings_file"
     (( has_effort )) || printf 'Candidate %s is missing an Effort field\n' "$current_num" >> "$warnings_file"
+    if [[ "$focus" == "revenue" ]]; then
+      (( has_revenue )) || printf 'Candidate %s is missing a numeric Revenue score (required in a revenue-focused run)\n' "$current_num" >> "$warnings_file"
+    fi
   fi
 
   [[ ! -s "$warnings_file" ]]
 }
 
 ideate_stage() {
-  local repo="$1" run_id="$2" run_dir config_file findings_file facts_file prompt_file
+  local repo="$1" run_id="$2" run_dir config_file findings_file facts_file prompt_file focus
   local provider provider_script provider_output provider_status provider_error
   local candidates_file selected reason
   ensure_git_repo "$repo"
@@ -638,13 +726,14 @@ ideate_stage() {
 
   findings_file="$run_dir/findings.md"
   [[ -f "$findings_file" ]] || die "ideate requires findings.md for run $run_id; run discover first"
+  focus="$(resolve_focus "$run_dir" "${PILOT_FOCUS:-}")"
 
   facts_file="$run_dir/ideate-facts.md"
   prompt_file="$run_dir/ideate-prompt.md"
   candidates_file="$run_dir/candidates.md"
 
   build_ideate_facts_markdown "$repo" "$run_dir" "$run_id" "$facts_file"
-  build_ideate_prompt "$facts_file" "$prompt_file"
+  build_ideate_prompt "$facts_file" "$prompt_file" "$focus"
 
   provider="$(config_value "$config_file" '.providers.ideate')"
   provider_script="$REPO_ROOT/lib/providers/$provider"
@@ -672,14 +761,14 @@ ideate_stage() {
   [[ -n "$selected" ]] || die "ideate provider response missing ---IDEATE-STATUS--- selected field"
 
   local warnings_file="$run_dir/ideate-warnings.txt"
-  if ! ideate_validate_candidates "$run_dir/ideate-response.md" "$warnings_file"; then
+  if ! ideate_validate_candidates "$run_dir/ideate-response.md" "$warnings_file" "$focus"; then
     printf 'ideate: warning: candidate response did not fully match the expected format:\n'
     while IFS= read -r line; do
       [[ -n "$line" ]] && printf '  - %s\n' "$line"
     done < "$warnings_file"
   fi
 
-  write_candidates_markdown "$selected" "$reason" "$facts_file" "$run_dir/ideate-response.md" "$candidates_file" "$warnings_file"
+  write_candidates_markdown "$selected" "$reason" "$facts_file" "$run_dir/ideate-response.md" "$candidates_file" "$warnings_file" "$focus"
   printf '%s\n' "$run_id"
 }
 
@@ -1987,7 +2076,7 @@ run_single_stage() {
 }
 
 cmd_run() {
-  local repo="" stage="" run_id=""
+  local repo="" stage="" run_id="" focus=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --repo)
@@ -2002,6 +2091,10 @@ cmd_run() {
         run_id="${2:-}"
         shift 2
         ;;
+      --focus)
+        focus="${2:-}"
+        shift 2
+        ;;
       -h|--help)
         usage
         return 0
@@ -2013,6 +2106,8 @@ cmd_run() {
   done
   [[ -n "$repo" ]] || die "--repo is required"
   [[ -n "$stage" ]] || die "--stage is required"
+  [[ -z "$focus" ]] || validate_focus_value "$focus"
+  PILOT_FOCUS="$focus"
   repo="$(repo_abs_path "$repo")"
   if [[ "$stage" == "discover" || "$stage" == "all" ]]; then
     if [[ -z "$run_id" ]]; then
@@ -2072,7 +2167,7 @@ cmd_providers() {
   esac
 }
 
-cmd_fleet() {
+cmd_fleet_run() {
   if [[ "${1:-}" == "-h" || "${1:-}" == "--help" || $# -eq 0 ]]; then
     usage
     return 0
@@ -2089,6 +2184,436 @@ cmd_fleet() {
   done < <(jq -r '.[]' "$file")
   printf 'fleet: summary total=%s passed=%s failed=%s\n' "$total" "$((total - failures))" "$failures"
   [[ $failures -eq 0 ]]
+}
+
+# Portfolio-level ideation ("discover" and "ideate" only -- no draft/negotiate/
+# execute/publish) that looks across every repo in the fleet file at once,
+# rather than each repo independently the way `e3d-pilot fleet <file>` does.
+# Its whole point is finding ideas that only make sense because 2+ of these
+# repos exist together (e.g. repo A's data feed + repo B's payment rails),
+# which single-repo discover structurally cannot see. State lives next to the
+# fleet file itself, under .e3d-pilot-fleet/, since a cross-repo idea has no
+# single target repo to belong to.
+fleet_workspace_dir() {
+  local file="$1" dir
+  dir="$(cd "$(dirname "$file")" && pwd)"
+  printf '%s/.e3d-pilot-fleet' "$dir"
+}
+
+fleet_latest_run_path() {
+  printf '%s/latest-run' "$1"
+}
+
+new_fleet_run_id() {
+  local fleet_dir="$1" base candidate counter runs_dir
+  runs_dir="$fleet_dir/runs"
+  base="$(date +%Y-%m-%d)-fleet"
+  candidate="$base"
+  counter=2
+  while [[ -e "$runs_dir/$candidate" ]]; do
+    candidate="${base}-${counter}"
+    counter=$((counter + 1))
+  done
+  printf '%s' "$candidate"
+}
+
+validate_fleet_discover_config() {
+  local file="$1"
+  jq -e . "$file" >/dev/null || die "invalid JSON: $file"
+  json_type_check "$file" 'type == "object"' "fleet discover config must be a JSON object: $file"
+  json_type_check "$file" 'has("providers")' "fleet discover config.providers is required"
+  json_type_check "$file" '.providers | type == "object"' "fleet discover config.providers must be an object"
+  json_type_check "$file" '.providers | has("discover") and has("ideate")' "fleet discover config.providers must include discover and ideate"
+  json_type_check "$file" '.providers.discover | type == "string"' "fleet discover config.providers.discover must be a string"
+  json_type_check "$file" '.providers.ideate | type == "string"' "fleet discover config.providers.ideate must be a string"
+  json_type_check "$file" 'if has("analogy_domains") then (.analogy_domains | type == "array") else true end' "fleet discover config.analogy_domains must be an array when provided"
+  json_type_check "$file" 'if has("analogy_domains") then (.analogy_domains | all(.[]; type == "string")) else true end' "fleet discover config.analogy_domains must be an array of strings when provided"
+  json_type_check "$file" 'if has("research_topics") then (.research_topics | type == "string") else true end' "fleet discover config.research_topics must be a string when provided"
+  printf 'fleet discover config valid: %s\n' "$file"
+}
+
+# Runs a stage's provider call with the same exit-code handling (0 ok, 2
+# unavailable, else failure) that discover_stage/ideate_stage each inline
+# separately -- factored out here only because the two new fleet-* stages
+# below need the exact same call twice; the older single-repo stages are left
+# as-is rather than retrofitted onto this, to avoid touching tested behavior.
+run_stage_provider() {
+  local provider="$1" prompt_file="$2" stderr_file="$3" label="$4"
+  local script status err output
+  script="$REPO_ROOT/lib/providers/$provider"
+  [[ -x "$script" ]] || die "$label provider script missing or not executable: $script"
+  set +e
+  output="$(E3D_PILOT_DRY_RUN=0 "$script" "$prompt_file" 2>"$stderr_file")"
+  status=$?
+  set -e
+  if [[ $status -ne 0 ]]; then
+    err=""
+    [[ -s "$stderr_file" ]] && err="$(<"$stderr_file")"
+    if [[ $status -eq "$PROVIDER_EXIT_UNAVAILABLE" ]]; then
+      die "$label provider unavailable: ${err:-$provider}"
+    fi
+    die "$label provider failed: ${err:-$provider}"
+  fi
+  printf '%s' "$output"
+}
+
+fleet_repo_digest() {
+  local repo="$1" name head_sha doc found=0
+  name="$(basename "$repo")"
+  printf '### %s\n' "$name"
+  printf -- '- path: %s\n' "$repo"
+  if git -C "$repo" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    head_sha="$(git -C "$repo" rev-parse HEAD 2>/dev/null || true)"
+    [[ -n "$head_sha" ]] && printf -- '- head_sha: %s\n' "$head_sha"
+  else
+    printf -- '- not a git repository\n'
+  fi
+  for doc in README.md AGENTS.md CLAUDE.md; do
+    if [[ -f "$repo/$doc" ]]; then
+      found=1
+      printf '#### %s\n```text\n' "$doc"
+      read_repo_text_file "$repo/$doc"
+      printf '\n```\n'
+    fi
+  done
+  [[ $found -eq 1 ]] || printf -- '- no README/AGENTS/CLAUDE doc found\n'
+}
+
+build_fleet_discover_facts_markdown() {
+  local repos_file="$1" facts_file="$2" repo
+  {
+    printf 'Repositories in this portfolio pass:\n\n'
+    while IFS= read -r repo; do
+      fleet_repo_digest "$repo"
+      printf '\n'
+    done < <(jq -r '.[]' "$repos_file")
+  } > "$facts_file"
+}
+
+build_fleet_discover_prompt() {
+  local facts_file="$1" prompt_file="$2" config_file="$3" focus="${4:-$FOCUS_DEFAULT}"
+  {
+    printf 'You are the cross-repo discover stage of a portfolio-level ideation pass\n'
+    printf 'across the related repositories summarized below. Unlike a single-repo\n'
+    printf 'discover pass, your job is specifically to find opportunities that only\n'
+    printf 'make sense because these repos exist together -- not ideas that belong\n'
+    printf 'inside just one of them.\n\n'
+    printf 'Return markdown. Include a "### Cross-Repo Opportunities" section: 2-4\n'
+    printf 'entries, each naming the specific repos involved (by directory name) and\n'
+    printf 'what capability each one would contribute, plus one concrete sentence on\n'
+    printf 'the resulting opportunity. Do not propose anything that only touches one\n'
+    printf 'repo -- single-repo ideation is handled elsewhere.\n\n'
+    printf 'Also include a distinct "### Analogous Patterns" subsection: pick the 2-3\n'
+    printf 'most transferable entries from the analogy domains below across the whole\n'
+    printf 'portfolio, and name concretely how each could combine capabilities from 2+\n'
+    printf 'of these repos.\n\n'
+    printf 'Analogy domains to consider: %s\n\n' "$(analogy_domains_list "$config_file" | paste -sd ';' - | sed 's/;/; /g')"
+    if [[ "$focus" == "revenue" ]]; then
+      printf 'This is a revenue-focused pass: also include a "### Monetization Signals"\n'
+      printf 'subsection covering (a) monetization mechanisms already visible across\n'
+      printf 'these repos'"'"' docs (payment flows, pricing tiers, credits, subscriptions,\n'
+      printf 'tokens, fees) and (b) how combining 2+ of these repos could create a new\n'
+      printf 'paid surface that none of them offers alone. Be concrete about the\n'
+      printf 'mechanism.\n\n'
+    fi
+    printf 'Portfolio:\n\n'
+    cat "$facts_file"
+  } > "$prompt_file"
+}
+
+fleet_discover_stage() {
+  local repos_file="$1" run_dir="$2" config_file="$3" focus="$4"
+  local facts_file prompt_file external_context_file findings_file provider provider_output
+  facts_file="$run_dir/fleet-discover-facts.md"
+  prompt_file="$run_dir/fleet-discover-prompt.md"
+  external_context_file="$run_dir/fleet-discover-external-context.md"
+  findings_file="$run_dir/findings.md"
+
+  build_fleet_discover_facts_markdown "$repos_file" "$facts_file"
+  build_fleet_discover_prompt "$facts_file" "$prompt_file" "$config_file" "$focus"
+
+  provider="$(config_value "$config_file" '.providers.discover')"
+  provider_output="$(run_stage_provider "$provider" "$prompt_file" "$run_dir/fleet-discover-provider.stderr" "fleet discover")"
+
+  printf '%s\n' "$provider_output" > "$external_context_file"
+  {
+    printf -- '---\n'
+    printf 'focus: %s\n' "$focus"
+    printf 'repos_file: %s\n' "$repos_file"
+    printf -- '---\n\n'
+    printf '# Fleet Findings\n\n'
+    printf '## Portfolio\n\n'
+    cat "$facts_file"
+    printf '\n## Cross-Repo Context\n\n'
+    cat "$external_context_file"
+    printf '\n'
+  } > "$findings_file"
+}
+
+build_fleet_ideate_facts_markdown() {
+  local run_dir="$1" facts_file="$2" findings_file fleet_dir prior_dir prior_name found=0
+  findings_file="$run_dir/findings.md"
+  fleet_dir="$(dirname "$(dirname "$run_dir")")"
+  {
+    printf '## Current Fleet Findings\n\n```text\n'
+    cat "$findings_file"
+    printf '\n```\n'
+    printf '\n## Prior Fleet Runs (candidates.md)\n'
+    if [[ -d "$fleet_dir/runs" ]]; then
+      for prior_dir in "$fleet_dir"/runs/*/; do
+        [[ -d "$prior_dir" ]] || continue
+        prior_name="$(basename "$prior_dir")"
+        [[ "$prior_name" == "$(basename "$run_dir")" ]] && continue
+        if [[ -f "$prior_dir/candidates.md" ]]; then
+          found=1
+          printf '### %s/candidates.md\n```text\n' "$prior_name"
+          cat "$prior_dir/candidates.md"
+          printf '\n```\n'
+        fi
+      done
+    fi
+    [[ $found -eq 1 ]] || printf -- '- none found\n'
+  } > "$facts_file"
+}
+
+build_fleet_ideate_prompt() {
+  local facts_file="$1" prompt_file="$2" focus="${3:-$FOCUS_DEFAULT}"
+  {
+    printf 'You are the cross-repo ideate stage of a portfolio-level ideation pass.\n'
+    printf 'Propose 2-4 ranked candidate ideas (most valuable first), each of which\n'
+    printf 'REQUIRES touching 2 or more of the repos in the findings below -- reject\n'
+    printf 'anything that could be done inside a single repo; that belongs to\n'
+    printf 'single-repo ideation instead.\n\n'
+    printf 'For EACH candidate you must explicitly check it against the prior fleet\n'
+    printf 'runs listed below and state plainly whether it duplicates something\n'
+    printf 'already proposed in an earlier fleet-discover run.\n\n'
+    if [[ "$focus" == "revenue" ]]; then
+      printf 'This ideate run is explicitly focused on revenue-generating ideas. Score\n'
+      printf 'every candidate on Revenue potential as the primary ranking signal;\n'
+      printf 'Attraction and Retention remain required fields for context and may only\n'
+      printf 'break ties between otherwise-equal Revenue candidates. Revenue is not\n'
+      printf 'optional here: never answer "n/a".\n\n'
+    else
+      printf 'This portfolio'"'"'s primary goal is attracting and retaining users;\n'
+      printf 'revenue is secondary.\n\n'
+    fi
+    printf 'Respond using exactly this format, one block per candidate:\n\n'
+    printf '### Candidate <N>: <short title>\n'
+    printf 'Repos: <comma-separated repo directory names this candidate touches, 2 or more>\n'
+    printf 'Duplicate: yes|no\n'
+    printf 'Dedup rationale: <cite the specific prior fleet run you checked, or say why not>\n'
+    printf 'Analogy: <source domain> -- <how it transfers, or "none" if not applicable>\n'
+    printf 'Attraction (1-5): <score, new-user pull>\n'
+    printf 'Retention (1-5): <score, repeat-engagement value>\n'
+    printf 'Effort: low|medium|high\n'
+    if [[ "$focus" == "revenue" ]]; then
+      printf 'Revenue (1-5): <score, primary ranking signal for this revenue-focused run -- never answer "n/a">\n'
+      printf 'Description: <what to build, which repo contributes what, and why>\n\n'
+      printf 'Rank non-duplicate candidates primarily by Revenue (highest first);\n'
+      printf 'Attraction + Retention may only break ties between otherwise-equal Revenue\n'
+      printf 'candidates and must never let a lower-Revenue candidate outrank a higher\n'
+      printf 'one.\n\n'
+    else
+      printf 'Revenue (1-5|n/a): <score, secondary -- never outranks Attraction+Retention>\n'
+      printf 'Description: <what to build, which repo contributes what, and why>\n\n'
+      printf 'Rank non-duplicate candidates primarily by Attraction + Retention (highest\n'
+      printf 'first); Revenue may only break ties between otherwise-equal candidates and\n'
+      printf 'must never let a lower Attraction + Retention candidate outrank a higher\n'
+      printf 'one.\n\n'
+    fi
+    printf 'After all candidates, end your response with exactly this block: choose the\n'
+    printf 'highest-ranked candidate that is NOT a duplicate as "selected", using the\n'
+    printf 'literal value "none" only if every candidate is a duplicate of existing work.\n\n'
+    printf -- '---IDEATE-STATUS---\n'
+    printf 'selected: candidate-<N> | none\n'
+    printf 'reason: <one line>\n\n'
+    printf 'Context:\n\n'
+    cat "$facts_file"
+  } > "$prompt_file"
+}
+
+fleet_ideate_validate_candidates() {
+  local response_file="$1" warnings_file="$2"
+  : > "$warnings_file"
+
+  local count
+  count="$(grep -cE '^### Candidate [0-9]+:' "$response_file" || true)"
+  if (( count < 2 || count > 4 )); then
+    printf 'expected 2-4 candidates, got %s\n' "$count" >> "$warnings_file"
+  fi
+
+  local current_num="" current_rationale="" current_repos="" repo_count
+  local has_analogy=0 has_attraction=0 has_retention=0 has_effort=0 line
+
+  while IFS= read -r line; do
+    if [[ "$line" =~ ^###\ Candidate\ ([0-9]+): ]]; then
+      if [[ -n "$current_num" ]]; then
+        [[ -n "$current_rationale" ]] || printf 'Candidate %s is missing a Dedup rationale\n' "$current_num" >> "$warnings_file"
+        if [[ -z "$current_repos" ]]; then
+          printf 'Candidate %s is missing a Repos field\n' "$current_num" >> "$warnings_file"
+        else
+          repo_count="$(tr ',' '\n' <<<"$current_repos" | grep -c '[^[:space:]]' || true)"
+          (( repo_count >= 2 )) || printf 'Candidate %s Repos field lists fewer than 2 repos\n' "$current_num" >> "$warnings_file"
+        fi
+        (( has_analogy )) || printf 'Candidate %s is missing an Analogy field\n' "$current_num" >> "$warnings_file"
+        (( has_attraction )) || printf 'Candidate %s is missing an Attraction score\n' "$current_num" >> "$warnings_file"
+        (( has_retention )) || printf 'Candidate %s is missing a Retention score\n' "$current_num" >> "$warnings_file"
+        (( has_effort )) || printf 'Candidate %s is missing an Effort field\n' "$current_num" >> "$warnings_file"
+      fi
+      current_num="${BASH_REMATCH[1]}"
+      current_rationale=""; current_repos=""
+      has_analogy=0; has_attraction=0; has_retention=0; has_effort=0
+    elif [[ -n "$current_num" ]]; then
+      if [[ "$line" =~ ^Repos:[[:space:]]*(.+)$ ]]; then
+        current_repos="${BASH_REMATCH[1]}"
+      elif [[ "$line" =~ ^Dedup\ rationale:[[:space:]]*(.*)$ ]]; then
+        current_rationale="${BASH_REMATCH[1]}"
+      elif [[ "$line" =~ ^Analogy:[[:space:]]*(.+)$ ]]; then
+        has_analogy=1
+      elif [[ "$line" =~ ^Attraction.*:[[:space:]]*[0-9] ]]; then
+        has_attraction=1
+      elif [[ "$line" =~ ^Retention.*:[[:space:]]*[0-9] ]]; then
+        has_retention=1
+      elif [[ "$line" =~ ^Effort:[[:space:]]*(.+)$ ]]; then
+        has_effort=1
+      fi
+    fi
+  done < "$response_file"
+  if [[ -n "$current_num" ]]; then
+    [[ -n "$current_rationale" ]] || printf 'Candidate %s is missing a Dedup rationale\n' "$current_num" >> "$warnings_file"
+    if [[ -z "$current_repos" ]]; then
+      printf 'Candidate %s is missing a Repos field\n' "$current_num" >> "$warnings_file"
+    else
+      repo_count="$(tr ',' '\n' <<<"$current_repos" | grep -c '[^[:space:]]' || true)"
+      (( repo_count >= 2 )) || printf 'Candidate %s Repos field lists fewer than 2 repos\n' "$current_num" >> "$warnings_file"
+    fi
+    (( has_analogy )) || printf 'Candidate %s is missing an Analogy field\n' "$current_num" >> "$warnings_file"
+    (( has_attraction )) || printf 'Candidate %s is missing an Attraction score\n' "$current_num" >> "$warnings_file"
+    (( has_retention )) || printf 'Candidate %s is missing a Retention score\n' "$current_num" >> "$warnings_file"
+    (( has_effort )) || printf 'Candidate %s is missing an Effort field\n' "$current_num" >> "$warnings_file"
+  fi
+
+  [[ ! -s "$warnings_file" ]]
+}
+
+fleet_ideate_stage() {
+  local run_dir="$1" config_file="$2" focus="$3"
+  local facts_file prompt_file candidates_file provider provider_output selected reason warnings_file
+
+  facts_file="$run_dir/fleet-ideate-facts.md"
+  prompt_file="$run_dir/fleet-ideate-prompt.md"
+  candidates_file="$run_dir/candidates.md"
+
+  build_fleet_ideate_facts_markdown "$run_dir" "$facts_file"
+  build_fleet_ideate_prompt "$facts_file" "$prompt_file" "$focus"
+
+  provider="$(config_value "$config_file" '.providers.ideate')"
+  provider_output="$(run_stage_provider "$provider" "$prompt_file" "$run_dir/fleet-ideate-provider.stderr" "fleet ideate")"
+
+  printf '%s\n' "$provider_output" > "$run_dir/fleet-ideate-response.md"
+
+  selected="$(ideate_status_field "selected" <<<"$provider_output" || true)"
+  reason="$(ideate_status_field "reason" <<<"$provider_output" || true)"
+  [[ -n "$selected" ]] || die "fleet ideate provider response missing ---IDEATE-STATUS--- selected field"
+
+  warnings_file="$run_dir/fleet-ideate-warnings.txt"
+  if ! fleet_ideate_validate_candidates "$run_dir/fleet-ideate-response.md" "$warnings_file"; then
+    printf 'fleet ideate: warning: candidate response did not fully match the expected format:\n'
+    while IFS= read -r line; do
+      [[ -n "$line" ]] && printf '  - %s\n' "$line"
+    done < "$warnings_file"
+  fi
+
+  {
+    printf -- '---\n'
+    printf 'selected: %s\n' "$selected"
+    printf 'reason: %s\n' "$reason"
+    printf 'focus: %s\n' "$focus"
+    printf -- '---\n\n'
+    printf '# Fleet Candidates\n\n'
+    if [[ -s "$warnings_file" ]]; then
+      printf '## Validation Warnings\n\n'
+      while IFS= read -r line; do
+        [[ -n "$line" ]] && printf -- '- %s\n' "$line"
+      done < "$warnings_file"
+      printf '\n'
+    fi
+    printf '## Dedup Context\n\n'
+    cat "$facts_file"
+    printf '\n## Proposed Candidates\n\n'
+    cat "$run_dir/fleet-ideate-response.md"
+    printf '\n'
+  } > "$candidates_file"
+}
+
+cmd_fleet_discover() {
+  if [[ "${1:-}" == "-h" || "${1:-}" == "--help" || $# -eq 0 ]]; then
+    usage
+    return 0
+  fi
+  local file="" run_id="" focus="" config_override=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --run-id)
+        run_id="${2:-}"
+        shift 2
+        ;;
+      --focus)
+        focus="${2:-}"
+        shift 2
+        ;;
+      --config)
+        config_override="${2:-}"
+        shift 2
+        ;;
+      -h|--help)
+        usage
+        return 0
+        ;;
+      -*)
+        die "unknown fleet discover argument: $1"
+        ;;
+      *)
+        [[ -z "$file" ]] || die "unexpected extra argument: $1"
+        file="$1"
+        shift
+        ;;
+    esac
+  done
+  [[ -n "$file" ]] || die "usage: e3d-pilot fleet discover <repos.json> [--run-id <id>] [--focus default|revenue] [--config <path>]"
+  [[ -z "$focus" ]] || validate_focus_value "$focus"
+  [[ -f "$file" ]] || die "fleet file not found: $file"
+  jq -e 'type == "array" and all(.[]; type == "string")' "$file" >/dev/null || die "fleet file must be a JSON array of repo path strings"
+
+  local fleet_dir config_file run_dir resolved_focus
+  fleet_dir="$(fleet_workspace_dir "$file")"
+  config_file="${config_override:-$fleet_dir/config.json}"
+  [[ -f "$config_file" ]] || die "fleet discover config not found: $config_file -- create it with providers.discover and providers.ideate (see examples/sample-fleet-config.json), or pass --config <path>"
+  validate_fleet_discover_config "$config_file"
+
+  mkdir -p "$fleet_dir/runs"
+  [[ -n "$run_id" ]] || run_id="$(new_fleet_run_id "$fleet_dir")"
+  run_dir="$fleet_dir/runs/$run_id"
+  mkdir -p "$run_dir"
+  printf '%s\n' "$run_id" > "$(fleet_latest_run_path "$fleet_dir")"
+
+  resolved_focus="$(resolve_focus "$run_dir" "$focus")"
+
+  fleet_discover_stage "$file" "$run_dir" "$config_file" "$resolved_focus"
+  fleet_ideate_stage "$run_dir" "$config_file" "$resolved_focus"
+  printf '%s\n' "$run_id"
+}
+
+cmd_fleet() {
+  case "${1:-}" in
+    discover)
+      shift
+      cmd_fleet_discover "$@"
+      ;;
+    *)
+      cmd_fleet_run "$@"
+      ;;
+  esac
 }
 
 main() {

@@ -1,0 +1,14 @@
+{
+  "providers": {
+    "discover": "claude",
+    "ideate": "claude"
+  },
+  "research_topics": "cross-repo integration opportunities across this portfolio",
+  "analogy_domains": [
+    "game progression and reward loops",
+    "social feed and notification mechanics",
+    "marketplace liquidity and two-sided matching",
+    "developer-tool CLI ergonomics",
+    "fintech trust and verification UX"
+  ]
+}
