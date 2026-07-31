@@ -80,6 +80,7 @@ providers_list_reports_claude_and_codex_status() {
   assert_contains "$out" "claude"
   assert_contains "$out" "codex"
   assert_contains "$out" "local"
+  assert_contains "$out" "devin"
 }
 
 # --- provider adapters: contract + dry-run -----------------------------
@@ -103,6 +104,42 @@ claude_provider_dry_run_prints_command() {
   assert_contains "$out" "--no-session-persistence"
   assert_contains "$out" "$prompt_file"
   rm -f "$prompt_file"
+}
+
+devin_provider_requires_prompt_file_argument() {
+  local status
+  set +e
+  DEVIN_BIN=devin "$PROVIDERS_DIR/devin" >/dev/null 2>&1
+  status=$?
+  set -e
+  [[ $status -ne 0 ]] || { echo "expected devin provider to fail without a prompt file" >&2; exit 1; }
+}
+
+devin_provider_dry_run_prints_command() {
+  local prompt_file out
+  prompt_file="$(make_prompt_file)"
+  out="$(E3D_PILOT_DRY_RUN=1 DEVIN_BIN=devin DEVIN_MODEL=claude-sonnet-4-6-thinking-1m "$PROVIDERS_DIR/devin" "$prompt_file")"
+  assert_contains "$out" "devin"
+  assert_contains "$out" "--print"
+  assert_contains "$out" "--model claude-sonnet-4-6-thinking-1m"
+  assert_contains "$out" "--prompt-file"
+  assert_contains "$out" "$prompt_file"
+  rm -f "$prompt_file"
+}
+
+devin_provider_dry_run_respects_model_override() {
+  local prompt_file out
+  prompt_file="$(make_prompt_file)"
+  out="$(E3D_PILOT_DRY_RUN=1 DEVIN_BIN=devin DEVIN_MODEL=claude-opus-4 "$PROVIDERS_DIR/devin" "$prompt_file")"
+  assert_contains "$out" "--model claude-opus-4"
+  rm -f "$prompt_file"
+}
+
+devin_provider_check_reports_available() {
+  local out
+  out="$(E3D_PILOT_CHECK=1 DEVIN_BIN=devin "$PROVIDERS_DIR/devin")"
+  assert_contains "$out" "available"
+  assert_contains "$out" "devin"
 }
 
 codex_provider_dry_run_prints_safe_defaults() {
@@ -250,6 +287,20 @@ EOF
   rm -f "$file"
 }
 
+parse_status_synthesizes_reason_when_missing() {
+  local file status reason
+  file="$(mktemp)"
+  cat > "$file" <<'EOF'
+---STATUS---
+status: approved
+EOF
+  status="$("$NEGOTIATE_DIR/parse-status" "$file" status)"
+  assert_eq "$status" "approved"
+  reason="$("$NEGOTIATE_DIR/parse-status" "$file" reason)"
+  assert_contains "$reason" "no reason provided"
+  rm -f "$file"
+}
+
 parse_status_fails_on_missing_status_block() {
   local file status
   file="$(mktemp)"
@@ -307,12 +358,17 @@ main() {
   providers_list_reports_claude_and_codex_status
   claude_provider_requires_prompt_file_argument
   claude_provider_dry_run_prints_command
+  devin_provider_requires_prompt_file_argument
+  devin_provider_dry_run_prints_command
+  devin_provider_dry_run_respects_model_override
+  devin_provider_check_reports_available
   codex_provider_dry_run_prints_safe_defaults
   codex_provider_dry_run_respects_overrides
   local_provider_reports_unavailable_exit_code_when_unset
   local_provider_serializes_concurrent_calls_via_lock
   parse_status_extracts_approved_without_spec
   parse_status_extracts_revise_and_spec_block_even_when_fenced
+  parse_status_synthesizes_reason_when_missing
   parse_status_fails_on_missing_status_block
   convergence_two_entries_all_approved_converges
   convergence_two_entries_one_dissenting_does_not_converge

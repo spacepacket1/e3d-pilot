@@ -30,6 +30,10 @@ Usage:
   e3d-pilot providers list
   e3d-pilot fleet <repos.json>
   e3d-pilot fleet discover <repos.json> [--run-id <id>] [--focus default|revenue] [--config <path>]
+  e3d-pilot fleet prs [<repos.json>]
+  e3d-pilot fleet prs --approve <repo>
+  e3d-pilot fleet prs --merge   <repo>
+  e3d-pilot fleet prs --close   <repo>
 
 Run stages:
   discover
@@ -2135,7 +2139,7 @@ cmd_run() {
 # means adding its name to this list and its script under lib/providers/.
 providers_list() {
   local provider script output status exit_code
-  for provider in claude codex local; do
+  for provider in claude codex local devin; do
     script="$REPO_ROOT/lib/providers/$provider"
     [[ -x "$script" ]] || die "provider script missing or not executable: $script"
     if output="$(provider_availability_probe "$script")"; then
@@ -2167,10 +2171,187 @@ cmd_providers() {
   esac
 }
 
+# ─── fleet prs helpers ────────────────────────────────────────────────────────
+
+fleet_repo_gh_slug() {
+  local repo="$1" remote
+  remote="$(git -C "$repo" remote get-url origin 2>/dev/null || true)"
+  [[ -n "$remote" ]] || return 1
+  # handles git@github.com:owner/repo.git and https://github.com/owner/repo.git
+  printf '%s' "$remote" | sed -E 's|.*github\.com[:/]||; s|\.git$||'
+}
+
+fleet_pr_candidate_summary() {
+  local repo="$1" branch="$2"
+  local run_id="${branch#e3d-pilot/}"
+  local f="$repo/.e3d-pilot/runs/$run_id/candidates.md"
+  [[ -f "$f" ]] || { printf '(unknown idea)|-|-|-'; return; }
+
+  local selected_num
+  selected_num="$(grep -m1 '^selected: candidate-' "$f" | grep -oE '[0-9]+$' || true)"
+  [[ -n "$selected_num" ]] || { printf '(no candidate selected)|-|-|-'; return; }
+
+  local idea="" attraction="" retention="" effort="" in_block=0
+  idea="$(grep -m1 "^### Candidate ${selected_num}:" "$f" | sed "s/^### Candidate ${selected_num}: //" || true)"
+  while IFS= read -r line; do
+    if [[ "$line" =~ ^"### Candidate ${selected_num}:" ]]; then in_block=1; continue; fi
+    [[ $in_block -eq 0 ]] && continue
+    [[ "$line" =~ ^"### Candidate " || "$line" =~ ^"---IDEATE-STATUS---" ]] && break
+    # Extract the value after the last ": " — avoids matching range notation like "(1-5)"
+    [[ "$line" =~ ^Attraction ]] && attraction="$(printf '%s' "$line" | sed -E 's/.*: //')"
+    [[ "$line" =~ ^Retention  ]] && retention="$(printf '%s' "$line" | sed -E 's/.*: //')"
+    [[ "$line" =~ ^Effort     ]] && effort="$(printf '%s' "$line" | sed 's/^Effort: //')"
+  done < "$f"
+  # Use ASCII unit separator (0x1f) as field delimiter to avoid clashes with idea text
+  printf '%s\x1f%s\x1f%s\x1f%s' "${idea:-(unknown idea)}" "${attraction:--}" "${retention:--}" "${effort:--}"
+}
+
+fleet_prs_find() {
+  # Prints "<pr_url> <is_draft>" for the first open e3d-pilot PR matching action_repo.
+  local action_repo="$1" repos=("${@:2}")
+  local repo repo_name slug prs_json pr_url is_draft
+  for repo in "${repos[@]}"; do
+    repo_name="$(basename "$repo")"
+    [[ "$repo_name" == "$action_repo" || "$repo" == "$action_repo" ]] || continue
+    [[ -d "$repo" ]] || die "repository not found: $repo"
+    slug="$(fleet_repo_gh_slug "$repo")" || die "no GitHub remote configured for $repo"
+    prs_json="$(gh pr list --repo "$slug" --state open \
+      --json url,isDraft,headRefName 2>/dev/null \
+      | jq '[.[] | select(.headRefName | startswith("e3d-pilot/"))][0] // empty' || true)"
+    [[ -n "$prs_json" ]] || die "no open e3d-pilot PR found for: $action_repo"
+    pr_url="$(printf '%s' "$prs_json" | jq -r '.url')"
+    is_draft="$(printf '%s' "$prs_json" | jq -r '.isDraft')"
+    printf '%s %s' "$pr_url" "$is_draft"
+    return 0
+  done
+  die "repo not found in fleet: $action_repo"
+}
+
+fleet_prs_act() {
+  local action="$1" action_repo="$2" repos=("${@:3}")
+  local pr_info pr_url is_draft
+  pr_info="$(fleet_prs_find "$action_repo" "${repos[@]}")"
+  pr_url="${pr_info% *}"
+  is_draft="${pr_info#* }"
+  case "$action" in
+    approve)
+      [[ "$is_draft" == "true" ]] && { gh pr ready "$pr_url"; printf 'marked ready: %s\n' "$pr_url"; }
+      gh pr review "$pr_url" --approve
+      printf 'approved: %s\n' "$pr_url"
+      ;;
+    merge)
+      [[ "$is_draft" == "true" ]] && { gh pr ready "$pr_url"; printf 'marked ready: %s\n' "$pr_url"; }
+      gh pr merge "$pr_url" --squash --delete-branch
+      printf 'merged: %s\n' "$pr_url"
+      ;;
+    close)
+      gh pr close "$pr_url"
+      printf 'closed: %s\n' "$pr_url"
+      ;;
+  esac
+}
+
+fleet_prs_list() {
+  local repos=("$@") found=0 header_printed=0
+  local repo repo_name slug prs_json seen_slugs=""
+  for repo in "${repos[@]}"; do
+    [[ -d "$repo" ]] || continue
+    slug="$(fleet_repo_gh_slug "$repo" 2>/dev/null)" || continue
+    [[ "$slug" == *"/"* ]] || continue
+    # Skip duplicate remotes (e.g. e3d-trade appears in both fleet dir and external)
+    [[ "$seen_slugs" == *"|${slug}|"* ]] && continue
+    seen_slugs="${seen_slugs}|${slug}|"
+    prs_json="$(gh pr list --repo "$slug" --state open \
+      --json number,url,isDraft,headRefName 2>/dev/null \
+      | jq '[.[] | select(.headRefName | startswith("e3d-pilot/"))]' || true)"
+    [[ -n "$prs_json" && "$prs_json" != "[]" ]] || continue
+    repo_name="$(basename "$repo")"
+    while IFS= read -r pr; do
+      local number url is_draft branch summary idea attraction retention effort status
+      number="$(printf '%s' "$pr" | jq -r '.number')"
+      url="$(printf '%s' "$pr" | jq -r '.url')"
+      is_draft="$(printf '%s' "$pr" | jq -r '.isDraft')"
+      branch="$(printf '%s' "$pr" | jq -r '.headRefName')"
+      summary="$(fleet_pr_candidate_summary "$repo" "$branch")"
+      # Fields separated by ASCII unit separator (0x1f)
+      IFS=$'\x1f' read -r idea attraction retention effort <<< "$summary"
+      [[ "$is_draft" == "true" ]] && status="DRAFT" || status="READY"
+      if [[ $header_printed -eq 0 ]]; then
+        printf '%-22s  %-5s  %-5s  %-44s  A   R   %-6s\n' repo PR state idea effort
+        printf '%0.s─' {1..96}; printf '\n'
+        header_printed=1
+      fi
+      printf '%-22s  #%-4s  %-5s  %-44s  %-3s %-3s %-6s\n' \
+        "$repo_name" "$number" "$status" \
+        "$(printf '%s' "$idea" | cut -c1-44)" \
+        "$attraction" "$retention" "$effort"
+      printf '  └─ %s\n' "$url"
+      found=$((found + 1))
+    done < <(printf '%s' "$prs_json" | jq -c '.[]')
+  done
+  if [[ $found -eq 0 ]]; then
+    printf 'no open e3d-pilot PRs found across fleet\n'
+  else
+    printf '\n%s open PR(s)\n' "$found"
+  fi
+}
+
+cmd_fleet_prs() {
+  local fleet_file="" action="" action_repo=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --approve|--merge|--close)
+        action="${1#--}"; action_repo="${2:-}"
+        [[ -n "$action_repo" ]] || die "fleet prs $1 requires a repo name"
+        shift 2
+        ;;
+      --fleet|-f)
+        fleet_file="${2:-}"; shift 2
+        ;;
+      -h|--help)
+        usage; return 0
+        ;;
+      *)
+        # treat bare *.json arg as fleet file
+        if [[ -z "$fleet_file" && -f "$1" ]]; then
+          fleet_file="$1"; shift
+        else
+          die "unknown fleet prs argument: $1"
+        fi
+        ;;
+    esac
+  done
+
+  if [[ -z "$fleet_file" ]]; then
+    for candidate in "$HOME/e3d-fleet.json" "$(pwd)/fleet.json" "$(pwd)/e3d-fleet.json"; do
+      [[ -f "$candidate" ]] && { fleet_file="$candidate"; break; }
+    done
+  fi
+  [[ -n "$fleet_file" ]] || die "no fleet file found; pass <fleet.json> or use --fleet <file>"
+  [[ -f "$fleet_file"  ]] || die "fleet file not found: $fleet_file"
+
+  command -v gh >/dev/null 2>&1 || die "gh CLI not found; install and authenticate with 'gh auth login'"
+  gh auth status >/dev/null 2>&1 || die "gh is not authenticated; run 'gh auth login'"
+
+  local repos=()
+  while IFS= read -r repo; do repos+=("$repo"); done < <(jq -r '.[]' "$fleet_file")
+
+  if [[ -n "$action" ]]; then
+    fleet_prs_act "$action" "$action_repo" "${repos[@]}"
+  else
+    fleet_prs_list "${repos[@]}"
+  fi
+}
+
+# ─── fleet run ────────────────────────────────────────────────────────────────
+
 cmd_fleet_run() {
   if [[ "${1:-}" == "-h" || "${1:-}" == "--help" || $# -eq 0 ]]; then
     usage
     return 0
+  fi
+  if [[ "${1:-}" == "prs" ]]; then
+    shift; cmd_fleet_prs "$@"; return
   fi
   [[ $# -eq 1 ]] || die "usage: e3d-pilot fleet <repos.json>"
   local file="$1" repo status failures=0 total=0
@@ -2609,6 +2790,10 @@ cmd_fleet() {
     discover)
       shift
       cmd_fleet_discover "$@"
+      ;;
+    prs)
+      shift
+      cmd_fleet_prs "$@"
       ;;
     *)
       cmd_fleet_run "$@"

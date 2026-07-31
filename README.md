@@ -98,7 +98,17 @@ e3d-pilot run --repo /path/to/repository --stage all
 
 ## Providers and negotiation
 
-Built-in adapters are `claude`, `codex`, and `local`; check them with `e3d-pilot providers list`. The local adapter needs an OpenAI-compatible endpoint:
+Built-in adapters are `claude`, `codex`, `local`, and `devin`; check them with `e3d-pilot providers list`.
+
+**devin** — shells out to the Devin CLI in non-interactive print mode. Defaults to `claude-sonnet-4-6-thinking-1m`; override with environment variables:
+
+```bash
+export DEVIN_BIN=devin                          # binary path (default: devin)
+export DEVIN_MODEL=claude-sonnet-4-6-thinking-1m  # model override
+export DEVIN_PERMISSION_MODE=auto               # permission mode (default: auto)
+```
+
+**local** — calls an OpenAI-compatible endpoint. Useful for a self-hosted model (e.g. Qwen via Ollama) as a third negotiate reviewer:
 
 ```bash
 export LOCAL_MODEL_ENDPOINT=http://localhost:11434/v1
@@ -109,13 +119,15 @@ Then add `"local"` anywhere in `providers.negotiate`; reviewer count is not hard
 
 Every real call through the local adapter serializes through a machine-wide lock (a `mkdir`-based mutex at `${TMPDIR:-/tmp}/e3d-pilot-qwen.lock`, override with `LOCAL_MODEL_LOCK_DIR`) so that two e3d-pilot runs — even against different target repos, from cron or fleet mode — never hit a shared local model endpoint at the same moment. This matters because a local endpoint is typically one memory-resident model process backing multiple repos' agents; concurrent requests to it risk OOM, not just contention. A run waits up to `LOCAL_MODEL_LOCK_TIMEOUT` seconds (default 900) for the lock before failing; a stale lock left by a killed process is detected and reclaimed automatically.
 
+A negotiate reviewer that omits the optional `reason:` field gets a synthesized `"(no reason provided by reviewer)"` rather than failing the parse — small models that produce a valid `status:` line but drop the reason field are tolerated.
+
 The execute stage is intentionally limited to providers supported by `codex-spec-runner`—currently Codex and Claude. Adding local execution requires a separate csr enhancement; e3d-pilot never emits `runner:model=local` today.
 
 ## Publishing
 
 `auto` selects `github` for a `github.com` origin and `local` otherwise. GitHub pushes only the run branch and calls `gh pr create --draft`; it never merges or pushes the base branch. Local commits the worktree branch without network access and writes `publish-summary.md`. The scripts in `lib/publish/` share the extension seam for a future GitLab backend.
 
-Only after verification passes, publish force-adds findings, candidates, negotiation log, final spec, and csr manifest under the run's audit path so summary links resolve on the branch.
+Only after verification passes, publish force-adds findings, candidates, negotiation log, final spec, and csr manifest under the run's audit path so summary links resolve on the branch. Labels configured in `pr.labels` are applied to the GitHub PR at creation time.
 
 ## Notifications
 
@@ -167,17 +179,46 @@ It needs its own small config — just `providers.discover` and `providers.ideat
 
 This stage stops at `candidates.md`: turning a selected cross-repo candidate into per-repo `spec-draft.md`s and running them through negotiate/execute/publish in each touched repo is not yet automated.
 
+## Reviewing fleet improvements
+
+After a fleet run, `fleet prs` gives you a single terminal view of every open e3d-pilot draft PR across all repos — with the selected idea, its Attraction and Retention scores, and the effort estimate pulled from the local candidates file:
+
+```bash
+e3d-pilot fleet prs ~/e3d-fleet.json
+```
+
+```
+repo                    PR     state  idea                                          A   R   effort
+────────────────────────────────────────────────────────────────────────────────────────────────
+e3d-docs                #1     DRAFT  In-docs "Ask the Docs" AI assistant           5   5   high
+e3d-sdk                 #1     DRAFT  MCP-native tool bindings for AI agents        5   4   high
+e3d-trade               #1     DRAFT  Trade Decision Receipts                       4   5   medium
+  └─ https://github.com/spacepacket1/e3d-sdk/pull/1
+```
+
+If `~/e3d-fleet.json` exists it is used by default; pass an explicit path otherwise.
+
+From there, act on individual repos without leaving the terminal:
+
+```bash
+e3d-pilot fleet prs --approve e3d-sdk   # mark ready for review + gh review approve
+e3d-pilot fleet prs --merge   e3d-sdk   # mark ready + squash merge + delete branch
+e3d-pilot fleet prs --close   e3d-sdk   # close without merging
+```
+
+Closing a PR is the right way to reject an idea: it enters the closed-PR history that the dedup system checks, so the same idea won't be re-proposed on the next run. Merging is up to you — e3d-pilot never merges anything on its own.
+
 ## Running on a schedule
 
 e3d-pilot is deliberately not a daemon — every invocation is a single, short-lived CLI call that runs (or resumes) a stage and exits. There's no built-in scheduler, so "continuous" is up to whatever calls it: cron, a systemd timer, a scheduled CI workflow, or your own orchestrator all work equally well.
 
-A daily cron entry running a whole fleet at 6am, logging output and exit status:
+A daily cron entry running a whole fleet at 2am. Pass `LOCAL_MODEL_ENDPOINT` if you use a self-hosted model as a negotiate reviewer:
 
 ```cron
-0 6 * * * PATH="/usr/local/bin:$PATH" /path/to/e3d-pilot/bin/e3d-pilot fleet /path/to/fleet.json >> /var/log/e3d-pilot.log 2>&1
+0 2 * * * PATH="/usr/local/bin:$PATH" LOCAL_MODEL_ENDPOINT="http://127.0.0.1:5050/v1" /path/to/e3d-pilot/bin/e3d-pilot fleet /path/to/fleet.json >> /var/log/e3d-pilot.log 2>&1
 ```
 
-Or a single repository, on its own config-driven cadence:
+Or a single repository:
 
 ```cron
 0 */6 * * * /path/to/e3d-pilot/bin/e3d-pilot run --repo /path/to/repo --stage all >> /var/log/e3d-pilot.log 2>&1

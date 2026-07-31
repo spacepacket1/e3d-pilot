@@ -46,7 +46,7 @@ EOF
 write_ideate_config() {
   local repo="$1"
   mkdir -p "$repo/.e3d-pilot"
-  jq '.providers.ideate = "claude"' "$SAMPLE_CONFIG" > "$repo/.e3d-pilot/config.json"
+  jq '.providers.discover = "claude" | .providers.ideate = "claude"' "$SAMPLE_CONFIG" > "$repo/.e3d-pilot/config.json"
 }
 
 write_findings() {

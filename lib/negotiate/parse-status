@@ -20,10 +20,13 @@ grep -qE '^---STATUS---$' "$response_file" || {
 }
 
 status="$(grep -m1 -E '^status: (approved|revise)$' "$response_file" | sed -E 's/^status: //')"
-reason="$(grep -m1 -E '^reason: .+$' "$response_file" | sed -E 's/^reason: //')"
+reason="$(grep -m1 -E '^reason: .+$' "$response_file" | sed -E 's/^reason: //' || true)"
 
 [[ -n "$status" ]] || { echo "error: missing or invalid status line (expected 'status: approved' or 'status: revise')" >&2; exit 1; }
-[[ -n "$reason" ]] || { echo "error: missing reason line (expected 'reason: <one line>')" >&2; exit 1; }
+# Synthesize a fallback reason when the reviewer omitted it but provided a
+# valid status — prevents local/small models that follow the status format but
+# drop the reason field from causing a hard parse failure.
+[[ -n "$reason" ]] || reason="(no reason provided by reviewer)"
 
 spec_block=""
 if [[ "$status" == "revise" ]]; then

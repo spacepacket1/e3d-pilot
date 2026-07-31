@@ -15,11 +15,11 @@
     "backend": "auto"
   },
   "providers": {
-    "discover": "claude",
-    "ideate": "claude",
+    "discover": "devin",
+    "ideate": "devin",
     "draft": "codex",
-    "negotiate": ["claude", "codex"],
-    "review": "claude"
+    "negotiate": ["devin", "codex"],
+    "review": "devin"
   },
   "max_diff_files": 25,
   "max_diff_lines": 600,

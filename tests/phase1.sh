@@ -53,6 +53,22 @@ EOF
   chmod +x "$bin_dir/claude"
 }
 
+make_fake_devin_bin() {
+  local bin_dir="$1"
+  mkdir -p "$bin_dir"
+  cat > "$bin_dir/devin" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+cat <<'OUT'
+stubbed external context
+---IDEATE-STATUS---
+selected: candidate-1
+reason: stubbed candidate
+OUT
+EOF
+  chmod +x "$bin_dir/devin"
+}
+
 validate_missing_config() {
   local repo out
   repo="$(make_repo)"
@@ -85,7 +101,7 @@ discover_creates_distinct_runs() {
   local repo bin_dir first second
   repo="$(make_repo_with_config)"
   bin_dir="$(mktemp -d)"
-  make_fake_claude_bin "$bin_dir"
+  make_fake_devin_bin "$bin_dir"
   PATH="$bin_dir:$PATH" "$BIN" run --repo "$repo" --stage discover >/dev/null
   first="$(cat "$repo/.e3d-pilot/latest-run")"
   [[ -d "$repo/.e3d-pilot/runs/$first" ]]
@@ -100,7 +116,7 @@ explicit_run_id_resolves_latest() {
   local repo bin_dir older newer after
   repo="$(make_repo_with_config)"
   bin_dir="$(mktemp -d)"
-  make_fake_claude_bin "$bin_dir"
+  make_fake_devin_bin "$bin_dir"
   PATH="$bin_dir:$PATH" "$BIN" run --repo "$repo" --stage discover >/dev/null
   older="$(cat "$repo/.e3d-pilot/latest-run")"
   PATH="$bin_dir:$PATH" "$BIN" run --repo "$repo" --stage discover >/dev/null
@@ -116,7 +132,7 @@ explicit_run_id_on_new_discover_updates_latest() {
   local repo bin_dir chosen_id after
   repo="$(make_repo_with_config)"
   bin_dir="$(mktemp -d)"
-  make_fake_claude_bin "$bin_dir"
+  make_fake_devin_bin "$bin_dir"
   chosen_id="custom-run-id"
   PATH="$bin_dir:$PATH" "$BIN" run --repo "$repo" --stage discover --run-id "$chosen_id" >/dev/null
   after="$(cat "$repo/.e3d-pilot/latest-run")"

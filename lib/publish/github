@@ -16,6 +16,14 @@ base="${6:-}"
 title="e3d-pilot: ${branch}"
 args=(pr create --draft --base "$base" --head "$branch" --title "$title" --body-file "$summary")
 
+# Apply labels from .e3d-pilot/config.json when present
+config_file="$repo/.e3d-pilot/config.json"
+if [[ -f "$config_file" ]]; then
+  while IFS= read -r label; do
+    [[ -n "$label" ]] && args+=(--label "$label")
+  done < <(jq -r '.pr.labels[]? // empty' "$config_file" 2>/dev/null || true)
+fi
+
 if [[ "${E3D_PILOT_GITHUB_DRY_RUN:-0}" == "1" || "${E3D_PILOT_PUBLISH_DRY_RUN:-0}" == "1" ]]; then
   printf 'outcome: published\n'
   printf 'mode: dry-run\n'
