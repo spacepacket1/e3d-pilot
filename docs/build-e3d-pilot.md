@@ -19,6 +19,7 @@ This "any repo" claim is precise about *where* it holds: discover, ideate, draft
 - Zero assumptions baked in about which org, remote host, or repo naming convention is in use — a stranger cloning e3d-pilot against their own unrelated GitHub (or GitLab, or a remote-less local repo) project should have the same experience as running it on e3d-cast, all the way through review; publish degrades to a `local` backend instead of a forge-specific one where there is no supported forge configured yet.
 - A single, well-defined run-id lifecycle: every `e3d-pilot run` invocation is either starting a new run or resuming a specific existing one, and this is never ambiguous or left to an implementer's guess.
 - Ideation should optimize for attracting and retaining users first, revenue second — candidates are graded and ranked accordingly (Phase 4), and sourced in part from cross-domain analogies/metaphors (games, social platforms, marketplaces, dev tools, fintech, etc.) rather than only from the target repo's own backlog (Phase 3), spanning categories such as making data more useful, adding workflow to UI, social features, gamification, testing, marketing, and selling.
+- Two additional ideation modes layered on top of the Phase 3/4 default, both additive rather than replacements for the default single-repo, attraction/retention-first flow: a per-run `--focus revenue` flip that reprioritizes ranking toward monetization when that is explicitly what's wanted (Phase 10), and a fleet-wide `fleet discover` pass that reasons about cross-repo opportunities a single-repo pipeline can never see on its own (Phase 11).
 
 ## Non-Goals
 
@@ -31,6 +32,8 @@ This "any repo" claim is precise about *where* it holds: discover, ideate, draft
 - Do not hardcode spacepacket1- or e3d-specific assumptions anywhere in the pipeline: no fixed GitHub org, no fixed remote host, no naming convention tied to `e3d-*`. The one intentionally e3d-specific integration point is the optional `e3d-agent` live-verification hook in Phase 8, and it must stay strictly config-opt-in so it's a no-op for repos that don't have it.
 - Do not add a YAML dependency. Config and state files are JSON, parseable with `jq`, which csr-adjacent tooling already assumes is available.
 - Do not implement a GitLab (`glab`) publish backend in this spec. Phase 8's publish-backend interface must make one addable later without touching any other stage, but building it now is out of scope.
+- Do not build automatic fan-out from a selected `fleet discover` candidate into per-repo `spec-draft.md`s across multiple repos, or otherwise drive Phase 5-8 for more than one repo from a single cross-repo idea. `fleet discover` (Phase 11) produces `candidates.md` for a human (or a future spec) to act on; it does not itself call draft/negotiate/execute/publish for any repo.
+- Do not have `fleet discover`'s dedup check each individual repo's own branches, PRs, or past per-repo runs. It only checks prior `fleet discover` runs in the same fleet workspace (Phase 11) — broadening that is a documented future extension, not part of this spec.
 
 ## Existing Files (read first)
 
@@ -276,3 +279,51 @@ Let one invocation run the whole pipeline across many repos, and document the to
 - `e3d-pilot fleet examples/sample-fleet.json` (add this file, pointing at 2+ throwaway test repos) runs both and reports a clear per-repo pass/fail summary even when one repo is deliberately broken.
 - A new reader of `README.md` alone (no other context) can onboard a new repo by writing one `config.json` and running `e3d-pilot run --repo <path> --stage all`.
 - `bash -n bin/e3d-pilot` and all phase-level shell syntax checks pass.
+
+## Phase 10 - Revenue-Focused Runs (`--focus revenue`)
+
+<!-- runner:model=claude:sonnet -->
+
+Let an operator explicitly flip a run's ideation priority from "attraction/retention first" (the Phase 4 default) to "revenue first," for cases where the goal is specifically monetization exploration rather than general product idea generation.
+
+### Requirements
+
+- `--focus <default|revenue>` flag on `e3d-pilot run`, accepted by any stage invocation that can start or resume a run (`discover`, `ideate`, or `all`), reusing the run-id lifecycle from Phase 1. An invalid value (anything other than `default`/`revenue`) fails fast with a clear error naming the bad value, e.g. `invalid --focus value: bogus`.
+- The chosen focus is persisted to `.e3d-pilot/runs/<run-id>/focus` the first time it's established for a run-id. A later stage invocation for the same run-id that omits `--focus` entirely inherits the persisted value rather than silently reverting to `default`; an explicit `--focus` on a later invocation overrides and re-persists.
+- Every stage that participates in ideation records which focus was active in the artifacts it writes: `findings.md` and `candidates.md` front matter both gain a `focus: <value>` field.
+- discover stage: when focus is `revenue`, the model prompt adds a "### Monetization Signals" instruction block directing the research pass to actively look for wallet/pricing/paid-tier signals in the target repo's ecosystem, in addition to (not instead of) the normal Local State / External Context / Analogous Patterns content from Phase 3. When focus is `default`, this block is omitted and Phase 3's prompt is unchanged.
+- ideate stage: when focus is `revenue`, the prompt states the run is explicitly focused on revenue-generating ideas, changes Phase 4's ranking rule from "primarily by Attraction + Retention, Revenue as tiebreaker only" to "primarily by Revenue," and makes the `Revenue (1-5)` field required (no `n/a` option) for every candidate. When focus is `default`, Phase 4's original ranking rule and optional-`n/a` Revenue field are unchanged.
+- Soft-validation (Phase 4's existing non-fatal warning mechanism) extends to this: a candidate missing a numeric `Revenue` score in a revenue-focused run produces a warning ("Candidate N is missing a numeric Revenue score (required in a revenue-focused run)") in `candidates.md` and stdout, without failing the stage — same treatment as today's missing-field warnings.
+
+### Acceptance Criteria
+
+- A discover run with no `--focus` flag omits the Monetization Signals section from the prompt sent to the provider and persists `focus: default` both in `findings.md` front matter and in the run's `focus` file.
+- `e3d-pilot run --stage discover --focus revenue` adds the Monetization Signals block to the discover prompt and persists `focus: revenue` the same way.
+- `--focus bogus` exits non-zero with a message containing `invalid --focus value: bogus`.
+- Given a run whose discover stage was invoked with `--focus revenue`, a later, separate `--stage ideate` invocation for the same run-id with no `--focus` flag at all still produces an ideate prompt containing "explicitly focused on revenue-generating ideas" and "Rank non-duplicate candidates primarily by Revenue", and a `candidates.md` with `focus: revenue`.
+- A revenue-focused ideate run whose candidate response uses `Revenue (1-5|n/a): n/a` instead of a number surfaces the "missing a numeric Revenue score (required in a revenue-focused run)" warning on stdout.
+
+## Phase 11 - Cross-Repo Fleet Ideation (`fleet discover`)
+
+<!-- runner:model=claude:sonnet -->
+
+Let discover and ideate reason about an entire fleet of repos at once, surfacing ideas that only make sense as combinations across repos — something Phase 9's per-repo `fleet <repos.json>` cannot do, since it drives each repo's pipeline in total isolation from the others.
+
+### Requirements
+
+- A new workspace, separate from any individual target repo: `.e3d-pilot-fleet/` created next to the fleet config file (never inside a repo in the fleet), holding its own `config.json`, `runs/<run-id>/`, and `latest-run` — mirroring the per-repo run-id lifecycle from Phase 1 but scoped to the fleet as a whole.
+- `e3d-pilot fleet discover <repos.json>` is a new subcommand alongside the pre-existing `e3d-pilot fleet <repos.json>` (Phase 9). Dispatch on the first positional argument after `fleet` (`discover` vs. anything else, e.g. a path) so the Phase 9 per-repo pipeline command is completely unaffected — same invocation, same output, same behavior as before this phase existed.
+- Requires `.e3d-pilot-fleet/config.json` next to the fleet file, in the same shape as a per-repo config's `providers`/`research_topics`/`analogy_domains` fields (see `examples/sample-fleet-config.json`). Missing config fails clearly with an error naming the expected path ("fleet discover config not found ...") — never a silent fallback to any single repo's own `.e3d-pilot/config.json`.
+- Fleet-discover stage: for each repo listed in the fleet file, gather a short per-repo digest (repo basename, README/tagline or equivalent local facts) and assemble a `## Portfolio` findings document with one `### <repo-basename>` subsection per repo, then make one model call (the fleet config's `providers.discover`) that reasons about the fleet as a portfolio and produces cross-repo-specific sections — at minimum "### Cross-Repo Opportunities" and "### Analogous Patterns" — rather than anything scoped to a single repo.
+- Fleet-ideate stage: one model call (the fleet config's `providers.ideate`) proposes candidates the same way Phase 4 does (duplicate/dedup rationale, ranking, selected candidate), but every candidate must additionally carry a `Repos:` field naming 2 or more repos it spans. A candidate missing `Repos:` produces a non-fatal warning ("Candidate N is missing a Repos field"), matching Phase 4's existing soft-validation pattern rather than hard-failing the stage.
+- `--focus revenue` (Phase 10) composes with `fleet discover` exactly as it does with the per-repo pipeline: same flag, same persist-to-run-directory behavior, same Monetization Signals prompt addition and revenue-first ranking/required-Revenue-field changes — just scoped to the fleet run-id (`.e3d-pilot-fleet/runs/<run-id>/focus`) instead of a per-repo run-id.
+- Fleet-discover dedup only checks prior `fleet discover` runs within the same `.e3d-pilot-fleet/` workspace; it does not check any individual repo's own branches, open PRs, or past per-repo `e3d-pilot run` history. This is a documented scope limit, not a silently-assumed guarantee.
+- There is no fan-out from a selected fleet candidate into per-repo `spec-draft.md`s or any automated call into Phase 5-8 for the repos it names. A `fleet discover` run's output (`candidates.md`) is for a human, or a future phase, to act on manually — also a documented scope limit, not a gap to paper over.
+
+### Acceptance Criteria
+
+- `fleet discover <repos.json>` run against a 2-repo fleet with a valid `.e3d-pilot-fleet/config.json` produces `findings.md` containing a `## Portfolio` section, a `### <repo-name>` subsection per repo (including that repo's own tagline/local facts), and a `### Cross-Repo Opportunities` section; and `candidates.md` containing a selected candidate, a `Repos:` field naming both repos, and `focus: default` in front matter.
+- Running `fleet discover <repos.json>` with no `.e3d-pilot-fleet/config.json` present fails with a non-zero exit and a message containing "fleet discover config not found".
+- `fleet discover <repos.json> --focus revenue` adds the Monetization Signals block to the fleet-discover prompt, adds "explicitly focused on revenue-generating ideas" to the fleet-ideate prompt, and persists `focus: revenue` in `candidates.md`.
+- A fleet-ideate candidate response omitting the `Repos:` field triggers the "missing a Repos field" warning without failing the stage.
+- The pre-existing `e3d-pilot fleet <repos.json>` (Phase 9) command, run against the same fleet file with no `.e3d-pilot-fleet/` workspace present, still succeeds with the same per-repo `PASS`/`FAIL` summary output as before this phase, and never creates or references `.e3d-pilot-fleet`.
