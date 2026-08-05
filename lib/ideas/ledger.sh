@@ -169,10 +169,15 @@ ideas_allowed_transition() {
     implemented:changes_requested) printf 'changes_requested' ;;
     implemented:idea_closed) printf 'closed' ;;
     changes_requested:implementation_started) printf 'implementing' ;;
+    changes_requested:merge_approved) printf 'approved_for_merge' ;;
     changes_requested:idea_closed) printf 'closed' ;;
+    approved_for_merge:merge_target_merged) printf 'approved_for_merge' ;;
+    approved_for_merge:merge_target_failed) printf 'approved_for_merge' ;;
     approved_for_merge:merge_completed) printf 'merged' ;;
     approved_for_merge:merge_partially_completed) printf 'partially_merged' ;;
     approved_for_merge:merge_failed) printf 'merge_failed' ;;
+    partially_merged:merge_target_merged) printf 'partially_merged' ;;
+    partially_merged:merge_target_failed) printf 'partially_merged' ;;
     partially_merged:merge_completed) printf 'merged' ;;
     partially_merged:merge_failed) printf 'merge_failed' ;;
     merged:idea_reverted) printf 'reverted' ;;
@@ -322,7 +327,7 @@ ideas_apply_event() {
         | .last_event_id=$e.event_id
       ' "$state_file" "$event_file" > "$out_file"
       ;;
-    implementation_completed|implementation_failed|merge_completed|merge_partially_completed|merge_failed)
+    implementation_completed|implementation_failed|merge_target_merged|merge_target_failed|merge_completed|merge_partially_completed|merge_failed)
       jq -cS --arg status "$next" '
         . as $s | input as $e
         | $s
@@ -533,7 +538,7 @@ ideas_transition() {
     --arg note "$note" \
     --arg digest "$current_digest" \
     --arg head_sha "$head_sha" \
-    --argjson targets "$(if [[ -n "$targets_file" ]]; then jq -c '.' "$targets_file"; else printf '[]'; fi)" \
+    --argjson targets "$(if [[ -n "$targets_file" ]]; then jq -c 'if type == "array" then . else [.] end' "$targets_file"; else printf '[]'; fi)" \
     --argjson outcome "$(if [[ -n "$outcome_file" ]]; then jq -c '.' "$outcome_file"; else printf 'null'; fi)" \
     '{
       schema_version:$schema,event_id:$event_id,idea_id:$idea_id,event:$event,

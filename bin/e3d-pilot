@@ -41,6 +41,8 @@ Usage:
   e3d-pilot ideas request-changes --repo <path> <idea-id> --reason <text> [--actor <actor>]
   e3d-pilot ideas implement --repo <path> <idea-id>
   e3d-pilot ideas implement-approved --repo <path>
+  e3d-pilot ideas approve-merge --repo <path> <idea-id> [--actor <actor>] [--note <text>]
+  e3d-pilot ideas merge --repo <path> <idea-id>
   e3d-pilot providers list
   e3d-pilot fleet <repos.json>
   e3d-pilot fleet discover <repos.json> [--run-id <id>] [--focus default|revenue] [--config <path>]
@@ -54,6 +56,9 @@ Usage:
   e3d-pilot fleet ideas <fleet.json> request-changes <idea-id> --reason <text> [--actor <actor>]
   e3d-pilot fleet ideas <fleet.json> implement <idea-id> [--continue-on-target-failure]
   e3d-pilot fleet ideas <fleet.json> implement-approved [--continue-on-target-failure]
+  e3d-pilot fleet ideas <fleet.json> approve-merge <idea-id> [--actor <actor>] [--note <text>]
+  e3d-pilot fleet ideas <fleet.json> merge <idea-id>
+  e3d-pilot fleet ideas <fleet.json> merge-approved
   e3d-pilot fleet prs [<repos.json>]
   e3d-pilot fleet prs --approve <repo>
   e3d-pilot fleet prs --merge   <repo>
@@ -2983,6 +2988,301 @@ ideas_do_implement_approved_fleet() {
   [[ $failures -eq 0 ]]
 }
 
+# ─── merge approval and merge orchestration (Phase 6) ─────────────────────────
+
+idea_status_can_approve_merge() {
+  local status="$1"
+  case "$status" in
+    implemented|changes_requested) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+implementation_success_targets_json() {
+  local idea_file="$1"
+  jq -cS '
+    (.outcomes // [])
+    | (map(select(.type=="implementation" and .status=="succeeded")) | .[-1].targets) // []
+    | map(select(.status=="succeeded"))
+  ' "$idea_file"
+}
+
+gh_pr_view_json() {
+  local repo="$1" pr_ref="$2" fields="$3"
+  command -v gh >/dev/null 2>&1 || die "gh CLI unavailable for GitHub merge operations"
+  (cd "$repo" && gh pr view "$pr_ref" --json "$fields")
+}
+
+gh_pr_json_field() {
+  local json="$1" filter="$2"
+  jq -r "$filter // empty" <<<"$json"
+}
+
+merge_pr_number_from_metadata() {
+  local metadata="$1" fallback="$2"
+  local number
+  number="$(gh_pr_json_field "$metadata" '.number')"
+  [[ -n "$number" && "$number" != "null" ]] && { printf '%s' "$number"; return 0; }
+  printf '%s' "$fallback"
+}
+
+merge_require_target_ready_for_approval() {
+  local target_json="$1" idx="$2"
+  local status review_count verify_count backend pr_url branch
+  status="$(jq -r '.status // empty' <<<"$target_json")"
+  review_count="$(jq '[.verification[]? | select((.exit_status // 1) == 0)] | length' <<<"$target_json")"
+  verify_count="$review_count"
+  backend="$(jq -r '.publish_backend // empty' <<<"$target_json")"
+  pr_url="$(jq -r '.pr_url // empty' <<<"$target_json")"
+  branch="$(jq -r '.branch // empty' <<<"$target_json")"
+  [[ "$status" == "succeeded" ]] || die "merge approval requires target $((idx + 1)) to have succeeded implementation"
+  (( verify_count > 0 )) || die "merge approval requires target $((idx + 1)) to have passing verification"
+  case "$backend" in
+    github) [[ -n "$pr_url" ]] || die "merge approval requires target $((idx + 1)) to have an open GitHub PR" ;;
+    local) [[ -n "$branch" ]] || die "merge approval requires target $((idx + 1)) to have a local review branch" ;;
+    *) die "merge approval requires target $((idx + 1)) to have a supported publish backend" ;;
+  esac
+}
+
+build_merge_approval_targets_json() {
+  local idea_file="$1" out_file="$2" actor="$3"
+  local targets_json count idx target_tmp lines_tmp repo backend pr_url pr_number branch base_branch head_sha metadata state is_draft ready_marked role
+  targets_json="$(implementation_success_targets_json "$idea_file")"
+  count="$(jq 'length' <<<"$targets_json")"
+  (( count > 0 )) || die "idea $(jq -r '.idea_id' "$idea_file") has no successful implementation targets to approve for merge"
+  lines_tmp="$(mktemp "${TMPDIR:-/tmp}/e3d-merge-approval-lines.XXXXXX")"
+  : > "$lines_tmp"
+  for ((idx=0; idx<count; idx++)); do
+    target_tmp="$(mktemp "${TMPDIR:-/tmp}/e3d-merge-target.XXXXXX")"
+    jq -cS --argjson i "$idx" '.[$i]' <<<"$targets_json" > "$target_tmp"
+    merge_require_target_ready_for_approval "$(cat "$target_tmp")" "$idx"
+    repo="$(jq -r '.repo' "$target_tmp")"
+    backend="$(jq -r '.publish_backend' "$target_tmp")"
+    role="$(jq -r '.role // "target"' "$target_tmp")"
+    base_branch="$(jq -r '.base_branch // empty' "$target_tmp")"
+    pr_url="$(jq -r '.pr_url // empty' "$target_tmp")"
+    pr_number="$(jq -r '.pr_number // empty' "$target_tmp")"
+    branch="$(jq -r '.branch // empty' "$target_tmp")"
+    ready_marked=false
+    if [[ "$backend" == "github" ]]; then
+      metadata="$(gh_pr_view_json "$repo" "$pr_url" "number,url,isDraft,headRefOid,baseRefName,state")"
+      state="$(gh_pr_json_field "$metadata" '.state')"
+      [[ "$state" == "OPEN" || "$state" == "open" ]] || die "merge approval requires target $((idx + 1)) PR to be open"
+      is_draft="$(gh_pr_json_field "$metadata" '.isDraft')"
+      if [[ "$is_draft" == "true" ]]; then
+        (cd "$repo" && gh pr ready "$pr_url")
+        ready_marked=true
+        metadata="$(gh_pr_view_json "$repo" "$pr_url" "number,url,isDraft,headRefOid,baseRefName,state")"
+      fi
+      pr_url="$(gh_pr_json_field "$metadata" '.url')"
+      pr_number="$(merge_pr_number_from_metadata "$metadata" "$pr_number")"
+      base_branch="$(gh_pr_json_field "$metadata" '.baseRefName')"
+      head_sha="$(gh_pr_json_field "$metadata" '.headRefOid')"
+      [[ -n "$head_sha" ]] || die "merge approval could not observe target $((idx + 1)) PR head SHA"
+    else
+      head_sha="$(jq -r '.final_pr_head_sha // empty' "$target_tmp")"
+      [[ -n "$head_sha" ]] || die "merge approval could not observe target $((idx + 1)) local branch head SHA"
+    fi
+    jq -ncS \
+      --arg repo "$repo" --arg role "$role" --arg backend "$backend" --arg pr_url "$pr_url" \
+      --arg pr_number "$pr_number" --arg base_branch "$base_branch" --arg head_sha "$head_sha" \
+      --arg branch "$branch" --argjson ready_marked "$ready_marked" \
+      '{
+        repo:$repo,
+        role:$role,
+        publish_backend:$backend,
+        pr_url:(if $pr_url == "" then null else $pr_url end),
+        pr_number:(if $pr_number == "" or $pr_number == "null" then null else ($pr_number | tonumber) end),
+        base_branch:$base_branch,
+        head_sha:$head_sha,
+        branch:(if $branch == "" then null else $branch end),
+        ready_action_recorded:$ready_marked
+      }' >> "$lines_tmp"
+    rm -f "$target_tmp"
+  done
+  jq -s -cS '.' "$lines_tmp" > "$out_file"
+  rm -f "$lines_tmp"
+}
+
+ideas_do_approve_merge() {
+  local kind="$1" workspace="$2" context_dir="$3" idea_id="$4" actor_explicit="$5" note="$6"
+  local canonical idea_file status actor targets_tmp
+  canonical="$(ideas_canonical_path "$workspace")" || die "workspace not found: $workspace"
+  idea_file="$(ideas_require_snapshot "$kind" "$canonical" "$idea_id")"
+  status="$(jq -r '.status' "$idea_file")"
+  idea_status_can_approve_merge "$status" || die "idea $idea_id is not eligible for merge approval (status: $status)"
+  actor="$(ideas_resolve_actor "$context_dir" "$actor_explicit")"
+  targets_tmp="$(mktemp "${TMPDIR:-/tmp}/e3d-merge-approval-targets.XXXXXX")"
+  build_merge_approval_targets_json "$idea_file" "$targets_tmp" "$actor"
+  ideas_transition "$kind" "$canonical" "$idea_id" merge_approved "$actor" "$note" "$targets_tmp" "" >/dev/null
+  rm -f "$targets_tmp"
+  printf 'ideas: approved merge for %s targets=%s\n' "$idea_id" "$(jq '.merge_approval.targets | length' "$(ideas_require_snapshot "$kind" "$canonical" "$idea_id")")"
+}
+
+merge_approval_valid() {
+  local idea_file="$1"
+  [[ "$(jq -r '.status' "$idea_file")" == "approved_for_merge" ]] || return 1
+  [[ "$(jq -r '.merge_approval.targets | length' "$idea_file")" -gt 0 ]] || return 1
+}
+
+merge_result_target_json() {
+  local approved_target="$1" status="$2" merge_sha="$3" failure_stage="$4" failure_reason="$5"
+  jq -cS \
+    --arg status "$status" --arg merge_sha "$merge_sha" \
+    --arg failure_stage "$failure_stage" --arg failure_reason "$failure_reason" \
+    '. + {
+      status:$status,
+      merge_sha:(if $merge_sha == "" then null else $merge_sha end)
+    }
+    | if $status == "failed" then .failure={stage:$failure_stage,reason:$failure_reason} else . end' \
+    <<<"$approved_target"
+}
+
+merge_outcome_file() {
+  local idea_id="$1" status="$2" targets_file="$3" failure_reason="${4:-}" out_file
+  out_file="$(mktemp "${TMPDIR:-/tmp}/e3d-merge-outcome.XXXXXX")"
+  jq -ncS \
+    --arg idea_id "$idea_id" --arg status "$status" --arg failure_reason "$failure_reason" \
+    --slurpfile targets "$targets_file" \
+    '{
+      type:"merge",
+      idea_id:$idea_id,
+      status:$status,
+      targets:$targets
+    }
+    | if $failure_reason != "" then .failure_reason=$failure_reason else . end' > "$out_file"
+  printf '%s' "$out_file"
+}
+
+preflight_merge_targets() {
+  local idea_file="$1" observed_file="$2"
+  local count idx approved metadata current_head current_base current_draft current_state backend repo pr_url approved_head approved_base
+  count="$(jq '.merge_approval.targets | length' "$idea_file")"
+  (( count > 0 )) || { printf 'error: idea %s has no merge approval targets\n' "$(jq -r '.idea_id' "$idea_file")" >&2; return 1; }
+  : > "$observed_file"
+  for ((idx=0; idx<count; idx++)); do
+    approved="$(jq -cS --argjson i "$idx" '.merge_approval.targets[$i]' "$idea_file")"
+    backend="$(jq -r '.publish_backend' <<<"$approved")"
+    repo="$(jq -r '.repo' <<<"$approved")"
+    pr_url="$(jq -r '.pr_url // empty' <<<"$approved")"
+    approved_head="$(jq -r '.head_sha' <<<"$approved")"
+    approved_base="$(jq -r '.base_branch' <<<"$approved")"
+    if [[ "$backend" == "local" ]]; then
+      printf 'error: local merge backend is not implemented; merge approval remains recorded for idea %s\n' "$(jq -r '.idea_id' "$idea_file")" >&2
+      return 2
+    fi
+    [[ "$backend" == "github" ]] || { printf 'error: unsupported merge backend for target %s: %s\n' "$((idx + 1))" "$backend" >&2; return 1; }
+    metadata="$(gh_pr_view_json "$repo" "$pr_url" "number,url,isDraft,headRefOid,baseRefName,state,mergeCommit")"
+    current_state="$(gh_pr_json_field "$metadata" '.state')"
+    [[ "$current_state" == "OPEN" || "$current_state" == "open" ]] || { printf 'error: merge preflight failed for target %s: PR is not open\n' "$((idx + 1))" >&2; return 1; }
+    current_draft="$(gh_pr_json_field "$metadata" '.isDraft')"
+    [[ "$current_draft" != "true" ]] || { printf 'error: merge preflight failed for target %s: PR is draft; run approve-merge so readiness is recorded\n' "$((idx + 1))" >&2; return 1; }
+    current_head="$(gh_pr_json_field "$metadata" '.headRefOid')"
+    current_base="$(gh_pr_json_field "$metadata" '.baseRefName')"
+    [[ "$current_head" == "$approved_head" ]] || { printf 'error: approval-stale: target %s head SHA changed after merge approval (%s -> %s)\n' "$((idx + 1))" "$approved_head" "$current_head" >&2; return 1; }
+    [[ "$current_base" == "$approved_base" ]] || { printf 'error: approval-stale: target %s base branch changed after merge approval (%s -> %s)\n' "$((idx + 1))" "$approved_base" "$current_base" >&2; return 1; }
+    jq -ncS --argjson approved "$approved" --argjson metadata "$metadata" '$approved + {current_pr:$metadata}' >> "$observed_file"
+  done
+}
+
+ideas_do_merge() {
+  local kind="$1" workspace="$2" idea_id="$3"
+  local canonical idea_file actor observed_tmp results_tmp count idx target pr_url merge_out result merge_sha outcome_tmp merged_count=0 failure_reason="" status event
+  canonical="$(ideas_canonical_path "$workspace")" || die "workspace not found: $workspace"
+  idea_file="$(ideas_require_snapshot "$kind" "$canonical" "$idea_id")"
+  merge_approval_valid "$idea_file" || die "merge refuses to run without current ledger approval. Approve first: e3d-pilot ideas approve-merge --repo $workspace $idea_id"
+  actor="$(ideas_resolve_actor "$canonical" "")"
+  observed_tmp="$(mktemp "${TMPDIR:-/tmp}/e3d-merge-observed.XXXXXX")"
+  results_tmp="$(mktemp "${TMPDIR:-/tmp}/e3d-merge-results.XXXXXX")"
+  set +e
+  preflight_merge_targets "$idea_file" "$observed_tmp"
+  status=$?
+  set -e
+  if [[ $status -ne 0 ]]; then
+    if [[ $status -ne 2 ]]; then
+      outcome_tmp="$(merge_outcome_file "$idea_id" failed "$results_tmp" "merge preflight failed")"
+      ideas_transition "$kind" "$canonical" "$idea_id" merge_failed "$actor" "merge preflight failed" "" "" "$outcome_tmp" >/dev/null
+      rm -f "$outcome_tmp"
+    fi
+    rm -f "$observed_tmp" "$results_tmp"
+    return 1
+  fi
+  : > "$results_tmp"
+  count="$(jq -s 'length' "$observed_tmp")"
+  for ((idx=0; idx<count; idx++)); do
+    target="$(jq -cS --argjson i "$idx" -s '.[$i]' "$observed_tmp")"
+    pr_url="$(jq -r '.pr_url' <<<"$target")"
+    set +e
+    merge_out="$(cd "$(jq -r '.repo' <<<"$target")" && gh pr merge "$pr_url" --squash --delete-branch 2>&1)"
+    status=$?
+    set -e
+    if [[ $status -ne 0 ]]; then
+      failure_reason="$merge_out"
+      result="$(merge_result_target_json "$target" failed "" "gh-pr-merge" "$failure_reason")"
+      printf '%s\n' "$result" >> "$results_tmp"
+      outcome_tmp="$(merge_outcome_file "$idea_id" failed <(printf '%s\n' "$result") "$failure_reason")"
+      ideas_transition "$kind" "$canonical" "$idea_id" merge_target_failed "$actor" "merge target failed" "" "" "$outcome_tmp" >/dev/null
+      rm -f "$outcome_tmp"
+      break
+    fi
+    merge_sha="$(gh_pr_view_json "$(jq -r '.repo' <<<"$target")" "$pr_url" "mergeCommit,state" | jq -r '.mergeCommit.oid // .mergeCommit.sha // empty')"
+    [[ -n "$merge_sha" ]] || merge_sha="$(printf '%s\n' "$merge_out" | grep -Eo '[0-9a-f]{40}' | head -n1 || true)"
+    result="$(merge_result_target_json "$target" merged "$merge_sha" "" "")"
+    printf '%s\n' "$result" >> "$results_tmp"
+    merged_count=$((merged_count + 1))
+    outcome_tmp="$(merge_outcome_file "$idea_id" succeeded <(printf '%s\n' "$result"))"
+    ideas_transition "$kind" "$canonical" "$idea_id" merge_target_merged "$actor" "merge target merged" "" "" "$outcome_tmp" >/dev/null
+    rm -f "$outcome_tmp"
+  done
+  if (( merged_count == count )); then
+    event="merge_completed"
+    status="succeeded"
+    failure_reason=""
+  elif (( merged_count > 0 )); then
+    event="merge_partially_completed"
+    status="partial"
+  else
+    event="merge_failed"
+    status="failed"
+  fi
+  outcome_tmp="$(merge_outcome_file "$idea_id" "$status" "$results_tmp" "$failure_reason")"
+  ideas_transition "$kind" "$canonical" "$idea_id" "$event" "$actor" "merge $status" "" "" "$outcome_tmp" >/dev/null
+  rm -f "$observed_tmp" "$results_tmp" "$outcome_tmp"
+  if [[ "$event" == "merge_completed" ]]; then
+    printf 'ideas: merged %s targets=%s\n' "$idea_id" "$count"
+    return 0
+  fi
+  printf 'ideas: merge %s for %s\n' "$status" "$idea_id"
+  return 1
+}
+
+ideas_merge_approved_queue() {
+  local kind="$1" workspace="$2" canonical dir
+  canonical="$(ideas_canonical_path "$workspace")" || return 1
+  dir="$(ideas_snapshots_dir "$kind" "$canonical")"
+  [[ -d "$dir" ]] || return 0
+  find "$dir" -mindepth 2 -maxdepth 2 -name idea.json -print0 \
+    | xargs -0 jq -r 'select(.status=="approved_for_merge" and ((.merge_approval.targets // []) | length > 0)) | [.merge_approval.approved_at,.idea_id] | @tsv' 2>/dev/null \
+    | sort -k1,1 -k2,2 \
+    | cut -f2
+}
+
+ideas_do_merge_approved_fleet() {
+  local fleet_file="$1" workspace idea_id any=0 failures=0 status
+  [[ -f "$fleet_file" ]] || die "fleet file not found: $fleet_file"
+  workspace="$(cd "$(dirname "$fleet_file")" && pwd -P)"
+  while IFS= read -r idea_id; do
+    [[ -n "$idea_id" ]] || continue
+    any=1
+    set +e
+    "$0" fleet ideas "$fleet_file" merge "$idea_id"
+    status=$?
+    set -e
+    [[ $status -eq 0 ]] || failures=$((failures + 1))
+  done < <(ideas_merge_approved_queue fleet "$workspace")
+  [[ $any -eq 1 ]] || printf 'fleet ideas: no merge-approved ideas to merge\n'
+  [[ $failures -eq 0 ]]
+}
 
 cmd_ideas() {
   local subcommand="${1:-}"
@@ -3137,6 +3437,38 @@ cmd_ideas() {
       [[ -n "$repo" ]] || die "ideas implement-approved requires --repo"
       ideas_do_implement_approved_repo "$repo"
       ;;
+    approve-merge)
+      local repo="" actor="" note="" positional=()
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --repo) repo="${2:-}"; shift 2 ;;
+          --actor) actor="${2:-}"; shift 2 ;;
+          --note) note="${2:-}"; shift 2 ;;
+          -h|--help) usage; return 0 ;;
+          --*) die "unknown ideas approve-merge argument: $1" ;;
+          *) positional+=("$1"); shift ;;
+        esac
+      done
+      [[ -n "$repo" ]] || die "ideas approve-merge requires --repo"
+      [[ ${#positional[@]} -eq 1 ]] || die "usage: e3d-pilot ideas approve-merge --repo <path> <idea-id>"
+      repo="$(repo_abs_path "$repo")"
+      ideas_do_approve_merge repo "$repo" "$repo" "${positional[0]}" "$actor" "$note"
+      ;;
+    merge)
+      local repo="" positional=()
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --repo) repo="${2:-}"; shift 2 ;;
+          -h|--help) usage; return 0 ;;
+          --*) die "unknown ideas merge argument: $1" ;;
+          *) positional+=("$1"); shift ;;
+        esac
+      done
+      [[ -n "$repo" ]] || die "ideas merge requires --repo"
+      [[ ${#positional[@]} -eq 1 ]] || die "usage: e3d-pilot ideas merge --repo <path> <idea-id>"
+      repo="$(repo_abs_path "$repo")"
+      ideas_do_merge repo "$repo" "${positional[0]}"
+      ;;
     rebuild)
       local repo=""
       while [[ $# -gt 0 ]]; do
@@ -3254,9 +3586,47 @@ fleet_prs_find() {
   die "repo not found in fleet: $action_repo"
 }
 
+fleet_prs_find_idea_for_pr() {
+  local fleet_file="$1" pr_url="$2" workspace dir file
+  workspace="$(cd "$(dirname "$fleet_file")" && pwd -P)"
+  dir="$(ideas_snapshots_dir fleet "$workspace")"
+  [[ -d "$dir" ]] || return 1
+  find "$dir" -mindepth 2 -maxdepth 2 -name idea.json -print0 \
+    | xargs -0 jq -r --arg url "$pr_url" '
+        select(any(.outcomes[]?.targets[]?; .pr_url == $url))
+        | .idea_id
+      ' 2>/dev/null \
+    | head -n1
+}
+
+fleet_prs_require_merge_approval() {
+  local fleet_file="$1" pr_url="$2" idea_id workspace idea_file current approved_head approved_base metadata current_head current_base
+  workspace="$(cd "$(dirname "$fleet_file")" && pwd -P)"
+  idea_id="$(fleet_prs_find_idea_for_pr "$fleet_file" "$pr_url")"
+  if [[ -z "$idea_id" ]]; then
+    die "fleet prs --merge refuses to bypass the idea ledger. Approve merge first: e3d-pilot fleet ideas $fleet_file approve-merge <idea-id>"
+  fi
+  idea_file="$(ideas_require_snapshot fleet "$workspace" "$idea_id")"
+  if [[ "$(jq -r '.status' "$idea_file")" != "approved_for_merge" ]]; then
+    die "fleet prs --merge refuses to bypass the idea ledger. Approve merge first: e3d-pilot fleet ideas $fleet_file approve-merge $idea_id"
+  fi
+  current="$(jq -cS --arg url "$pr_url" '.merge_approval.targets[]? | select(.pr_url == $url)' "$idea_file" | head -n1)"
+  if [[ -z "$current" ]]; then
+    die "fleet prs --merge refuses to bypass the idea ledger. Approve merge first: e3d-pilot fleet ideas $fleet_file approve-merge $idea_id"
+  fi
+  metadata="$(gh_pr_view_json "$(jq -r '.repo' <<<"$current")" "$pr_url" "headRefOid,baseRefName,isDraft,state")"
+  [[ "$(jq -r '.isDraft // false' <<<"$metadata")" != "true" ]] || die "fleet prs --merge refuses draft PR without recorded ready action. Approve merge first: e3d-pilot fleet ideas $fleet_file approve-merge $idea_id"
+  approved_head="$(jq -r '.head_sha' <<<"$current")"
+  approved_base="$(jq -r '.base_branch' <<<"$current")"
+  current_head="$(jq -r '.headRefOid // empty' <<<"$metadata")"
+  current_base="$(jq -r '.baseRefName // empty' <<<"$metadata")"
+  [[ "$current_head" == "$approved_head" && "$current_base" == "$approved_base" ]] || die "approval-stale: fleet prs --merge cannot merge $pr_url. Re-approve first: e3d-pilot fleet ideas $fleet_file approve-merge $idea_id"
+  printf '%s' "$idea_id"
+}
+
 fleet_prs_act() {
-  local action="$1" action_repo="$2" repos=("${@:3}")
-  local pr_info pr_url is_draft
+  local fleet_file="$1" action="$2" action_repo="$3" repos=("${@:4}")
+  local pr_info pr_url is_draft idea_id
   pr_info="$(fleet_prs_find "$action_repo" "${repos[@]}")"
   pr_url="${pr_info% *}"
   is_draft="${pr_info#* }"
@@ -3267,9 +3637,8 @@ fleet_prs_act() {
       printf 'approved: %s\n' "$pr_url"
       ;;
     merge)
-      [[ "$is_draft" == "true" ]] && { gh pr ready "$pr_url"; printf 'marked ready: %s\n' "$pr_url"; }
-      gh pr merge "$pr_url" --squash --delete-branch
-      printf 'merged: %s\n' "$pr_url"
+      idea_id="$(fleet_prs_require_merge_approval "$fleet_file" "$pr_url")"
+      ideas_do_merge fleet "$(cd "$(dirname "$fleet_file")" && pwd -P)" "$idea_id"
       ;;
     close)
       gh pr close "$pr_url"
@@ -3364,7 +3733,7 @@ cmd_fleet_prs() {
   while IFS= read -r repo; do repos+=("$repo"); done < <(jq -r '.[]' "$fleet_file")
 
   if [[ -n "$action" ]]; then
-    fleet_prs_act "$action" "$action_repo" "${repos[@]}"
+    fleet_prs_act "$fleet_file" "$action" "$action_repo" "${repos[@]}"
   else
     fleet_prs_list "${repos[@]}"
   fi
@@ -3959,6 +4328,41 @@ cmd_fleet_ideas() {
         esac
       done
       ideas_do_implement_approved_fleet "$file" "$continue_on_failure"
+      ;;
+    approve-merge)
+      local actor="" note="" positional=()
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --actor) actor="${2:-}"; shift 2 ;;
+          --note) note="${2:-}"; shift 2 ;;
+          -h|--help) usage; return 0 ;;
+          --*) die "unknown fleet ideas approve-merge argument: $1" ;;
+          *) positional+=("$1"); shift ;;
+        esac
+      done
+      [[ ${#positional[@]} -eq 1 ]] || die "usage: e3d-pilot fleet ideas <fleet.json> approve-merge <idea-id>"
+      ideas_do_approve_merge fleet "$workspace" "$workspace" "${positional[0]}" "$actor" "$note"
+      ;;
+    merge)
+      local positional=()
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          -h|--help) usage; return 0 ;;
+          --*) die "unknown fleet ideas merge argument: $1" ;;
+          *) positional+=("$1"); shift ;;
+        esac
+      done
+      [[ ${#positional[@]} -eq 1 ]] || die "usage: e3d-pilot fleet ideas <fleet.json> merge <idea-id>"
+      ideas_do_merge fleet "$workspace" "${positional[0]}"
+      ;;
+    merge-approved)
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          -h|--help) usage; return 0 ;;
+          *) die "unknown fleet ideas merge-approved argument: $1" ;;
+        esac
+      done
+      ideas_do_merge_approved_fleet "$file"
       ;;
     rebuild)
       [[ $# -eq 0 ]] || die "usage: e3d-pilot fleet ideas <fleet.json> rebuild"

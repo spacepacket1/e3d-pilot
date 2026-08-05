@@ -98,6 +98,7 @@ allowed_next_status() {
     implemented:changes_requested) printf 'changes_requested' ;;
     implemented:idea_closed) printf 'closed' ;;
     changes_requested:implementation_started) printf 'implementing' ;;
+    changes_requested:merge_approved) printf 'approved_for_merge' ;;
     changes_requested:idea_closed) printf 'closed' ;;
     approved_for_merge:merge_completed) printf 'merged' ;;
     approved_for_merge:merge_partially_completed) printf 'partially_merged' ;;
@@ -158,6 +159,7 @@ implemented merge_approved approved_for_merge
 implemented changes_requested changes_requested
 implemented idea_closed closed
 changes_requested implementation_started implementing
+changes_requested merge_approved approved_for_merge
 changes_requested idea_closed closed
 approved_for_merge merge_completed merged
 approved_for_merge merge_partially_completed partially_merged
