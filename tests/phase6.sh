@@ -57,7 +57,9 @@ EOF
 write_phase6_config() {
   local repo="$1" negotiate_json="$2"
   mkdir -p "$repo/.e3d-pilot"
-  jq --argjson negotiate "$negotiate_json" '.providers.negotiate = $negotiate' \
+  jq --argjson negotiate "$negotiate_json" \
+    '.providers.negotiate = $negotiate
+     | .approval.implementation_required = false | .approval.merge_required = false' \
     "$SAMPLE_CONFIG" > "$repo/.e3d-pilot/config.json"
 }
 

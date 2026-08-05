@@ -41,7 +41,8 @@ write_phase7_config() {
   jq \
     --argjson max_files "$max_files" \
     --argjson max_lines "$max_lines" \
-    '.max_diff_files = $max_files | .max_diff_lines = $max_lines' \
+    '.max_diff_files = $max_files | .max_diff_lines = $max_lines
+     | .approval.implementation_required = false | .approval.merge_required = false' \
     "$SAMPLE_CONFIG" > "$repo/.e3d-pilot/config.json"
 }
 
@@ -285,7 +286,8 @@ write_phase7_all_stage_config() {
     --argjson max_lines "$max_lines" \
     '.max_diff_files = $max_files | .max_diff_lines = $max_lines
      | .providers.discover = "claude" | .providers.ideate = "claude"
-     | .providers.draft = "claude" | .providers.negotiate = ["claude"]' \
+     | .providers.draft = "claude" | .providers.negotiate = ["claude"]
+     | .approval.implementation_required = false | .approval.merge_required = false' \
     "$SAMPLE_CONFIG" > "$repo/.e3d-pilot/config.json"
 }
 

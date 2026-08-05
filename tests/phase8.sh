@@ -76,7 +76,8 @@ write_phase8_config() {
     '.verify = $verify
      | .pr.backend = $backend
      | .providers.review = "phase8-review"
-     | if $live_verify == null then del(.live_verify) else .live_verify = $live_verify end' \
+     | if $live_verify == null then del(.live_verify) else .live_verify = $live_verify end
+     | .approval.implementation_required = false | .approval.merge_required = false' \
     "$SAMPLE_CONFIG" > "$repo/.e3d-pilot/config.json"
 }
 

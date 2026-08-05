@@ -13,6 +13,10 @@ REVIEW_EXIT_VERIFY_FAILED=5
 
 # shellcheck source=lib/providers/common.sh
 source "$REPO_ROOT/lib/providers/common.sh"
+# shellcheck source=lib/ideas/ledger.sh
+source "$REPO_ROOT/lib/ideas/ledger.sh"
+# shellcheck source=lib/ideas/materialize.sh
+source "$REPO_ROOT/lib/ideas/materialize.sh"
 
 die() {
   printf 'error: %s\n' "$*" >&2
@@ -27,9 +31,25 @@ Usage:
   e3d-pilot --help
   e3d-pilot config validate <repo>
   e3d-pilot run --repo <path> --stage <name> [--run-id <id>] [--focus default|revenue]
+  e3d-pilot ideas ingest --repo <path> --run-id <id> --candidate-id <id> --candidate-json <file>
+  e3d-pilot ideas transition --repo <path> <idea-id> <event> [--actor <actor>] [--note <text>] [--targets-json <file>] [--head-sha <sha>]
+  e3d-pilot ideas rebuild --repo <path>
+  e3d-pilot ideas list --repo <path> [--status <status>] [--json]
+  e3d-pilot ideas show --repo <path> <idea-id> [--json]
+  e3d-pilot ideas approve --repo <path> <idea-id> [--actor <actor>] [--note <text>]
+  e3d-pilot ideas reject --repo <path> <idea-id> --reason <text> [--actor <actor>]
+  e3d-pilot ideas request-changes --repo <path> <idea-id> --reason <text> [--actor <actor>]
   e3d-pilot providers list
   e3d-pilot fleet <repos.json>
   e3d-pilot fleet discover <repos.json> [--run-id <id>] [--focus default|revenue] [--config <path>]
+  e3d-pilot fleet ideas <fleet.json> ingest --run-id <id> --candidate-id <id> --candidate-json <file>
+  e3d-pilot fleet ideas <fleet.json> transition <idea-id> <event> [--actor <actor>] [--note <text>] [--targets-json <file>] [--head-sha <sha>]
+  e3d-pilot fleet ideas <fleet.json> rebuild
+  e3d-pilot fleet ideas <fleet.json> list [--status <status>] [--json]
+  e3d-pilot fleet ideas <fleet.json> show <idea-id> [--json]
+  e3d-pilot fleet ideas <fleet.json> approve <idea-id> [--actor <actor>] [--note <text>]
+  e3d-pilot fleet ideas <fleet.json> reject <idea-id> --reason <text> [--actor <actor>]
+  e3d-pilot fleet ideas <fleet.json> request-changes <idea-id> --reason <text> [--actor <actor>]
   e3d-pilot fleet prs [<repos.json>]
   e3d-pilot fleet prs --approve <repo>
   e3d-pilot fleet prs --merge   <repo>
@@ -773,6 +793,7 @@ ideate_stage() {
   fi
 
   write_candidates_markdown "$selected" "$reason" "$facts_file" "$run_dir/ideate-response.md" "$candidates_file" "$warnings_file" "$focus"
+  materialize_single_repo_ideas "$repo" "$run_dir" "$run_id" "$focus" >/dev/null
   printf '%s\n' "$run_id"
 }
 
@@ -1193,6 +1214,7 @@ execute_stage() {
   ensure_git_repo "$repo"
   config_file="$(config_path_for_repo "$repo")"
   validate_config_file "$config_file"
+  require_valid_implementation_approval "$repo" "$run_id" "execute"
   run_dir="$(runs_dir_for_repo "$repo")/$run_id"
   mkdir -p "$run_dir"
 
@@ -1456,6 +1478,7 @@ review_stage() {
   run_dir="$(runs_dir_for_repo "$repo")/$run_id"; config_file="$(config_path_for_repo "$repo")"
   ensure_git_repo "$repo"
   validate_config_file "$config_file"
+  require_valid_implementation_approval "$repo" "$run_id" "review"
   metadata="$(execute_worktree_fields "$run_dir")"; branch="${metadata%%$'\t'*}"; worktree="${metadata#*$'\t'}"
   [[ -d "$worktree" ]] || die "execute worktree no longer exists: $worktree"
   verify_summary="$run_dir/review-verify-summary.md"
@@ -1566,6 +1589,7 @@ publish_stage() {
   run_dir="$(runs_dir_for_repo "$repo")/$run_id"; config_file="$(config_path_for_repo "$repo")"
   ensure_git_repo "$repo"
   validate_config_file "$config_file"
+  require_valid_implementation_approval "$repo" "$run_id" "publish"
   [[ -f "$run_dir/review-status.txt" ]] || die "publish requires a completed review stage; missing $run_dir/review-status.txt"
   [[ "$(review_status_value "$run_dir/review-status.txt" verify_status)" == passed ]] || die "publish refused because verify did not pass for run $run_id"
   metadata="$(execute_worktree_fields "$run_dir")"; branch="${metadata%%$'\t'*}"; worktree="${metadata#*$'\t'}"
@@ -1610,6 +1634,7 @@ draft_stage() {
   ensure_git_repo "$repo"
   config_file="$(config_path_for_repo "$repo")"
   validate_config_file "$config_file"
+  require_valid_implementation_approval "$repo" "$run_id" "draft"
   run_dir="$(runs_dir_for_repo "$repo")/$run_id"
   mkdir -p "$run_dir"
 
@@ -1772,6 +1797,7 @@ negotiate_stage() {
   ensure_git_repo "$repo"
   config_file="$(config_path_for_repo "$repo")"
   validate_config_file "$config_file"
+  require_valid_implementation_approval "$repo" "$run_id" "negotiate"
   run_dir="$(runs_dir_for_repo "$repo")/$run_id"
   mkdir -p "$run_dir"
 
@@ -1972,6 +1998,10 @@ validate_config_file() {
   json_type_check "$file" 'if (has("notify") and (.notify | has("email"))) then (.notify.email | has("to")) else true end' "config.notify.email.to is required when notify.email is provided"
   json_type_check "$file" 'if (has("notify") and (.notify | has("email"))) then (.notify.email.to | type == "string") else true end' "config.notify.email.to must be a string"
   json_type_check "$file" 'if (has("notify") and (.notify | has("email")) and (.notify.email | has("command"))) then (.notify.email.command | type == "string") else true end' "config.notify.email.command must be a string when provided"
+  json_type_check "$file" 'if has("approval") then (.approval | type == "object") else true end' "config.approval must be an object when provided"
+  json_type_check "$file" 'if has("approval") then (.approval | has("implementation_required") and has("merge_required")) else true end' "config.approval must include implementation_required and merge_required when provided"
+  json_type_check "$file" 'if has("approval") then (.approval.implementation_required | type == "boolean") else true end' "config.approval.implementation_required must be a boolean"
+  json_type_check "$file" 'if has("approval") then (.approval.merge_required | type == "boolean") else true end' "config.approval.merge_required must be a boolean"
   printf 'config valid: %s\n' "$file"
 }
 
@@ -2062,6 +2092,24 @@ run_single_stage() {
               printf 'ideate: nothing to do (all candidates duplicate existing work); stopping before draft\n'
               return 0
             fi
+            local approval_required
+            approval_required="$(config_approval_implementation_required "$(config_path_for_repo "$repo")")"
+            if [[ "$approval_required" == "true" ]]; then
+              local approval_info a_kind a_workspace a_idea_id a_status a_approved
+              if approval_info="$(resolve_run_idea_info "$repo" "$run_id")"; then
+                IFS=$'\t' read -r a_kind a_workspace a_idea_id a_status a_approved <<<"$approval_info"
+                if ! idea_stage_approval_ok "draft" "$a_status" "$a_approved"; then
+                  printf 'ideate: idea %s is not approved for implementation (status: %s); stopping before draft\n' "$a_idea_id" "$a_status"
+                  printf 'pilot: pending-approval idea=%s status=%s\n' "$a_idea_id" "$a_status"
+                  printf '  approve with: e3d-pilot ideas approve --repo %s %s\n' "$repo" "$a_idea_id"
+                  return 0
+                fi
+              else
+                printf 'ideate: no idea record resolved for selected candidate %s; stopping before draft\n' "$selected"
+                printf 'pilot: pending-approval idea=(unresolved) status=none\n'
+                return 0
+              fi
+            fi
           fi
         fi
         if [[ "$current" == "draft" ]]; then
@@ -2131,6 +2179,463 @@ cmd_run() {
   fi
 
   run_single_stage "$stage" "$repo" "$run_id"
+}
+
+# ─── ideas CLI helpers (shared between `ideas` and `fleet ideas`) ────────────
+
+ideas_snapshot_files() {
+  local kind="$1" workspace="$2" dir
+  dir="$(ideas_snapshots_dir "$kind" "$workspace")" || return 1
+  [[ -d "$dir" ]] || return 0
+  find "$dir" -mindepth 2 -maxdepth 2 -name idea.json 2>/dev/null
+}
+
+ideas_age_from_timestamp() {
+  local created="$1" now_epoch created_epoch
+  now_epoch="$(date -u +%s)"
+  if created_epoch="$(date -u -d "$created" +%s 2>/dev/null)"; then
+    :
+  elif created_epoch="$(date -j -u -f '%Y-%m-%dT%H:%M:%SZ' "$created" +%s 2>/dev/null)"; then
+    :
+  else
+    printf '?'
+    return 0
+  fi
+  printf '%sd' $(( (now_epoch - created_epoch) / 86400 ))
+}
+
+ideas_events_for_idea_json() {
+  local kind="$1" workspace="$2" idea_id="$3" events_file
+  events_file="$(ideas_events_file "$kind" "$workspace")" || return 1
+  [[ -f "$events_file" ]] || { printf '[]'; return 0; }
+  jq -R -s --arg id "$idea_id" '[split("\n")[] | select(length>0) | fromjson | select(.idea_id==$id)]' "$events_file"
+}
+
+ideas_require_snapshot() {
+  local kind="$1" workspace="$2" idea_id="$3" file
+  file="$(ideas_snapshots_dir "$kind" "$workspace")/$idea_id/idea.json"
+  if [[ ! -f "$file" ]]; then
+    ideas_rebuild "$kind" "$workspace" || die "failed to rebuild idea ledger for $workspace"
+  fi
+  file="$(ideas_snapshots_dir "$kind" "$workspace")/$idea_id/idea.json"
+  [[ -f "$file" ]] || die "idea not found: $idea_id"
+  printf '%s' "$file"
+}
+
+ideas_do_list() {
+  local kind="$1" workspace="$2" status_filter="$3" json_flag="$4"
+  local canonical dir files=() rows='[]'
+  canonical="$(ideas_canonical_path "$workspace")" || die "workspace not found: $workspace"
+  dir="$(ideas_snapshots_dir "$kind" "$canonical")"
+  if [[ -d "$dir" ]]; then
+    mapfile -t files < <(ideas_snapshot_files "$kind" "$canonical")
+    if [[ ${#files[@]} -gt 0 ]]; then
+      rows="$(jq -cS -s '.' "${files[@]}")"
+    fi
+  fi
+  if [[ -n "$status_filter" ]]; then
+    rows="$(jq -cS --arg s "$status_filter" '[.[] | select(.status == $s)]' <<<"$rows")"
+  fi
+  rows="$(jq -cS 'sort_by(.idea_id) | reverse | sort_by(.created_at) | reverse' <<<"$rows")"
+  if [[ "$json_flag" == "1" ]]; then
+    printf '%s\n' "$rows"
+    return 0
+  fi
+  local count
+  count="$(jq 'length' <<<"$rows")"
+  if [[ "$count" -eq 0 ]]; then
+    printf 'no ideas found\n'
+    return 0
+  fi
+  printf '%-16s  %-26s  %-3s  %-36s  %-20s  %3s %3s %3s  %5s  %s\n' \
+    "ID" "STATUS" "SEL" "TITLE" "REPOS" "ATT" "RET" "REV" "AGE" "LATEST ACTOR"
+  local line id status sel title repos_s att ret rev created actor
+  while IFS=$'\t' read -r id status sel title repos_s att ret rev created actor; do
+    printf '%-16s  %-26s  %-3s  %-36s  %-20s  %3s %3s %3s  %5s  %s\n' \
+      "$id" "$status" "$sel" "${title:0:36}" "${repos_s:0:20}" "$att" "$ret" "$rev" \
+      "$(ideas_age_from_timestamp "$created")" "$actor"
+  done < <(jq -r '.[] | [
+      .idea_id, .status,
+      (if .selected_by_model then "yes" else "-" end),
+      (.title // "-"),
+      ((.repos // []) | map(split("/") | last) | join(",")),
+      ((.scores.attraction // "-") | tostring),
+      ((.scores.retention // "-") | tostring),
+      ((.scores.revenue // "-") | tostring),
+      .created_at,
+      (.last_decision_actor // "-")
+    ] | @tsv' <<<"$rows")
+}
+
+ideas_do_show() {
+  local kind="$1" workspace="$2" idea_id="$3" json_flag="$4"
+  local canonical file events_json
+  canonical="$(ideas_canonical_path "$workspace")" || die "workspace not found: $workspace"
+  file="$(ideas_require_snapshot "$kind" "$canonical" "$idea_id")"
+  events_json="$(ideas_events_for_idea_json "$kind" "$canonical" "$idea_id")"
+  if [[ "$json_flag" == "1" ]]; then
+    jq -cS --argjson events "$events_json" '. + {events: $events}' "$file"
+    return 0
+  fi
+  jq -r '
+    "idea:                    " + .idea_id,
+    "status:                  " + .status,
+    "workspace:                " + .workspace_kind + " " + .workspace_path,
+    "source:                  run=" + .source_run_id + " candidate=" + .source_candidate,
+    "title:                   " + (.title // "-"),
+    "summary:                 " + (.summary // "-"),
+    "repos:                   " + ((.repos // []) | join(", ")),
+    "category:                " + (.category // "-"),
+    "analogy:                 " + (.analogy // "-"),
+    "dedup_rationale:         " + (.dedup_rationale // "-"),
+    "scores:                  attraction=" + ((.scores.attraction // "-")|tostring) +
+      " retention=" + ((.scores.retention // "-")|tostring) +
+      " revenue=" + ((.scores.revenue // "-")|tostring) +
+      " effort=" + ((.scores.effort // "-")|tostring),
+    "approvable:              " + (.validation.approvable | tostring) +
+      (if (.validation.eligibility_reason // null) != null then " (" + .validation.eligibility_reason + ")" else "" end),
+    "warnings:                " + ((.validation.warnings // []) | join("; ")),
+    "created_at:              " + .created_at,
+    "updated_at:              " + .updated_at
+  ' "$file"
+  printf 'implementation_approval: %s\n' "$(jq -c '.implementation_approval' "$file")"
+  printf 'implementation.targets:  %s\n' "$(jq -c '.implementation.targets' "$file")"
+  printf 'merge_approval:          %s\n' "$(jq -c '.merge_approval' "$file")"
+  printf 'outcomes:                %s\n' "$(jq -c '.outcomes' "$file")"
+  printf '\nevent history:\n'
+  jq -r '.[] | "  " + .timestamp + "  " + .event + "  actor=" + .actor + (if (.note // null) != null then "  note=" + .note else "" end)' <<<"$events_json"
+}
+
+# Builds the ordered per-repo implementation target plan for a fleet idea at
+# approval time: canonical path, role, base SHA/branch as of *now* (approval
+# time, not proposal time), and shared candidate context. Feeding this into
+# ideas_transition binds it into the same approval event/digest.
+ideas_build_fleet_targets_json() {
+  local idea_file="$1" title summary category repo idx=0 role base_sha base_branch cfg first=1
+  title="$(jq -r '.title // ""' "$idea_file")"
+  summary="$(jq -r '.summary // ""' "$idea_file")"
+  category="$(jq -r '.category // ""' "$idea_file")"
+  printf '['
+  while IFS= read -r repo; do
+    [[ -n "$repo" ]] || continue
+    idx=$((idx + 1))
+    [[ $idx -eq 1 ]] && role="primary" || role="secondary"
+    base_sha="$(git -C "$repo" rev-parse HEAD 2>/dev/null || printf '')"
+    [[ -n "$base_sha" ]] || die "fleet target repo has no HEAD commit: $repo"
+    cfg="$(config_path_for_repo "$repo")"
+    if [[ -f "$cfg" ]]; then
+      base_branch="$(jq -r '.pr.base_branch // "main"' "$cfg")"
+    else
+      base_branch="main"
+    fi
+    (( first == 0 )) && printf ','
+    first=0
+    jq -ncS \
+      --arg path "$repo" --arg role "$role" --arg base_sha "$base_sha" --arg base_branch "$base_branch" \
+      --arg title "$title" --arg summary "$summary" --arg category "$category" \
+      '{path:$path,role:$role,base_sha:$base_sha,base_branch:$base_branch,candidate_context:{title:$title,summary:$summary,category:$category}}'
+  done < <(jq -r '.repos[]? // empty' "$idea_file")
+  printf ']'
+}
+
+ideas_do_approve() {
+  local kind="$1" workspace="$2" context_dir="$3" idea_id="$4" actor_explicit="$5" note="$6"
+  local canonical file actor status targets_file="" existing_digest new_digest
+  canonical="$(ideas_canonical_path "$workspace")" || die "workspace not found: $workspace"
+  file="$(ideas_require_snapshot "$kind" "$canonical" "$idea_id")"
+  actor="$(ideas_resolve_actor "$context_dir" "$actor_explicit")"
+  status="$(jq -r '.status' "$file")"
+
+  if [[ "$kind" == "fleet" ]]; then
+    targets_file="$(mktemp "${TMPDIR:-/tmp}/e3d-idea-targets.XXXXXX")"
+    ideas_build_fleet_targets_json "$file" > "$targets_file"
+  fi
+
+  if [[ "$status" == "approved_for_implementation" ]]; then
+    existing_digest="$(jq -r '.implementation_approval.digest // empty' "$file")"
+    new_digest="$(ideas_decision_digest_effective "$file" "$targets_file")"
+    rm -f "$targets_file"
+    if [[ "$existing_digest" == "$new_digest" ]]; then
+      printf 'ideas: %s already approved for implementation (idempotent, digest %s)\n' "$idea_id" "$new_digest"
+      return 0
+    fi
+    die "idea $idea_id was already approved but its decision-bearing content (or, for fleet ideas, a target repo's HEAD) has since changed; a fresh proposal/revision is required before approving again"
+  fi
+
+  if [[ "$status" != "proposed" ]]; then
+    rm -f "$targets_file"
+    die "idea $idea_id is not eligible for approval (status: $status)"
+  fi
+
+  ideas_transition "$kind" "$canonical" "$idea_id" implementation_approved "$actor" "$note" "$targets_file" ""
+  rm -f "$targets_file"
+}
+
+ideas_do_reject() {
+  local kind="$1" workspace="$2" context_dir="$3" idea_id="$4" actor_explicit="$5" reason="$6"
+  [[ -n "$reason" ]] || die "reject requires --reason <text>"
+  local canonical actor
+  canonical="$(ideas_canonical_path "$workspace")" || die "workspace not found: $workspace"
+  actor="$(ideas_resolve_actor "$context_dir" "$actor_explicit")"
+  ideas_transition "$kind" "$canonical" "$idea_id" idea_rejected "$actor" "$reason" "" ""
+}
+
+ideas_do_request_changes() {
+  local kind="$1" workspace="$2" context_dir="$3" idea_id="$4" actor_explicit="$5" reason="$6"
+  [[ -n "$reason" ]] || die "request-changes requires --reason <text>"
+  local canonical actor
+  canonical="$(ideas_canonical_path "$workspace")" || die "workspace not found: $workspace"
+  actor="$(ideas_resolve_actor "$context_dir" "$actor_explicit")"
+  ideas_transition "$kind" "$canonical" "$idea_id" changes_requested "$actor" "$reason" "" ""
+}
+
+# ─── approval gate (Phase 4) ──────────────────────────────────────────────────
+
+config_approval_implementation_required() {
+  local config_file="$1"
+  jq -r 'if has("approval") then (.approval.implementation_required | tostring) else "true" end' "$config_file"
+}
+
+config_approval_merge_required() {
+  local config_file="$1"
+  jq -r 'if has("approval") then (.approval.merge_required | tostring) else "true" end' "$config_file"
+}
+
+IDEA_IMPLEMENTATION_CONTINUATION_STATUSES="approved_for_implementation implementing changes_requested implemented"
+
+idea_stage_approval_ok() {
+  local stage_name="$1" status="$2" approved="$3" s
+  [[ "$approved" == "1" ]] || return 1
+  case "$stage_name" in
+    execute|review|publish)
+      for s in $IDEA_IMPLEMENTATION_CONTINUATION_STATUSES; do
+        [[ "$status" == "$s" ]] && return 0
+      done
+      return 1
+      ;;
+    *)
+      [[ "$status" == "approved_for_implementation" ]]
+      ;;
+  esac
+}
+
+# Resolves the idea linked to a run and reports whether its implementation
+# approval is still valid. Prints "kind\tworkspace\tidea_id\tstatus\tapproved"
+# and returns 0 when an idea record was found at all (regardless of whether
+# it is approved -- callers check status/approved themselves); returns 1 only
+# when no idea can be resolved (legacy run, or nothing selected yet).
+#
+# Linkage is resolved two ways: an explicit .e3d-pilot/runs/<id>/idea-link.txt
+# (kind\tworkspace\tidea_id) written by `ideas implement` for runs it creates
+# itself, or -- for the default discover/ideate/draft/... pipeline, where no
+# such file exists -- deterministically from the run's own selected candidate
+# via the same stable-ID formula ideate-time materialization already used, so
+# no separate linking step is required for the common path.
+resolve_run_idea_info() {
+  local repo="$1" run_id="$2"
+  local run_dir kind workspace idea_id link_file candidates_file selected
+  run_dir="$(runs_dir_for_repo "$repo")/$run_id"
+  link_file="$run_dir/idea-link.txt"
+  if [[ -f "$link_file" ]]; then
+    IFS=$'\t' read -r kind workspace idea_id < "$link_file"
+  else
+    kind="repo"
+    workspace="$(ideas_canonical_path "$repo")" || return 1
+    candidates_file="$run_dir/candidates.md"
+    [[ -f "$candidates_file" ]] || return 1
+    selected="$(candidates_selected_field "$candidates_file" 2>/dev/null || true)"
+    [[ -n "$selected" && "$selected" != "none" ]] || return 1
+    idea_id="$(ideas_stable_id "$kind" "$workspace" "$run_id" "$selected")"
+  fi
+
+  local snapshot status approval_digest current_digest approved=0
+  snapshot="$(ideas_snapshots_dir "$kind" "$workspace")/$idea_id/idea.json"
+  if [[ ! -f "$snapshot" ]]; then
+    ideas_rebuild "$kind" "$workspace" >/dev/null 2>&1 || true
+    snapshot="$(ideas_snapshots_dir "$kind" "$workspace")/$idea_id/idea.json"
+  fi
+  [[ -f "$snapshot" ]] || return 1
+
+  status="$(jq -r '.status' "$snapshot")"
+  approval_digest="$(jq -r '.implementation_approval.digest // empty' "$snapshot")"
+  if [[ -n "$approval_digest" ]]; then
+    current_digest="$(ideas_decision_digest_from_json "$snapshot")"
+    [[ "$approval_digest" == "$current_digest" ]] && approved=1
+  fi
+  printf '%s\t%s\t%s\t%s\t%s\n' "$kind" "$workspace" "$idea_id" "$status" "$approved"
+}
+
+# Defense-in-depth: called at the top of draft/negotiate/execute/review/
+# publish so that a mutating stage can never run against source code without
+# a currently-valid implementation approval, whether reached via `run --stage
+# all` or a direct single-stage invocation. Respects the per-repo
+# approval.implementation_required escape hatch (default true).
+require_valid_implementation_approval() {
+  local repo="$1" run_id="$2" stage_name="$3" config_file required info kind workspace idea_id status approved
+  config_file="$(config_path_for_repo "$repo")"
+  required="$(config_approval_implementation_required "$config_file")"
+  [[ "$required" == "true" ]] || return 0
+
+  if ! info="$(resolve_run_idea_info "$repo" "$run_id")"; then
+    die "$stage_name refuses to run: no idea record is linked to run $run_id. Legacy runs created before approval-gated ideas have no implicit approval and are never silently grandfathered in. Re-run 'e3d-pilot run --repo $repo --stage ideate --run-id $run_id' to materialize idea records for this run's candidates, then approve the one you want with 'e3d-pilot ideas approve --repo $repo <idea-id>' before retrying $stage_name."
+  fi
+  IFS=$'\t' read -r kind workspace idea_id status approved <<<"$info"
+  if ! idea_stage_approval_ok "$stage_name" "$status" "$approved"; then
+    if [[ "$approved" != "1" && "$status" == approved_for_implementation ]]; then
+      die "$stage_name refuses to run: idea $idea_id's implementation approval digest no longer matches its current decision-bearing content (it changed after approval). Re-review and approve again: e3d-pilot ideas approve --repo $repo $idea_id"
+    fi
+    die "$stage_name refuses to run: idea $idea_id is not approved for implementation (status: $status). Approve it first: e3d-pilot ideas approve --repo $repo $idea_id"
+  fi
+}
+
+cmd_ideas() {
+  local subcommand="${1:-}"
+  shift || true
+  case "$subcommand" in
+    ingest)
+      local repo="" run_id="" candidate_id="" candidate_json=""
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --repo) repo="${2:-}"; shift 2 ;;
+          --run-id) run_id="${2:-}"; shift 2 ;;
+          --candidate-id) candidate_id="${2:-}"; shift 2 ;;
+          --candidate-json) candidate_json="${2:-}"; shift 2 ;;
+          -h|--help) usage; return 0 ;;
+          *) die "unknown ideas ingest argument: $1" ;;
+        esac
+      done
+      [[ -n "$repo" ]] || die "ideas ingest requires --repo"
+      [[ -n "$run_id" ]] || die "ideas ingest requires --run-id"
+      [[ -n "$candidate_id" ]] || die "ideas ingest requires --candidate-id"
+      [[ -f "$candidate_json" ]] || die "ideas ingest requires --candidate-json <file>"
+      repo="$(repo_abs_path "$repo")"
+      ideas_ingest_candidate repo "$repo" "$run_id" "$candidate_id" "$candidate_json"
+      ;;
+    transition)
+      local repo="" actor="" note="" targets_json="" head_sha=""
+      local positional=()
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --repo) repo="${2:-}"; shift 2 ;;
+          --actor) actor="${2:-}"; shift 2 ;;
+          --note) note="${2:-}"; shift 2 ;;
+          --targets-json) targets_json="${2:-}"; shift 2 ;;
+          --head-sha) head_sha="${2:-}"; shift 2 ;;
+          -h|--help) usage; return 0 ;;
+          --*) die "unknown ideas transition argument: $1" ;;
+          *) positional+=("$1"); shift ;;
+        esac
+      done
+      [[ -n "$repo" ]] || die "ideas transition requires --repo"
+      [[ ${#positional[@]} -eq 2 ]] || die "usage: e3d-pilot ideas transition --repo <path> <idea-id> <event>"
+      [[ -z "$targets_json" || -f "$targets_json" ]] || die "targets JSON not found: $targets_json"
+      repo="$(repo_abs_path "$repo")"
+      actor="$(ideas_resolve_actor "$repo" "$actor")"
+      ideas_transition repo "$repo" "${positional[0]}" "${positional[1]}" "$actor" "$note" "$targets_json" "$head_sha"
+      ;;
+    list)
+      local repo="" status_filter="" json_flag="0"
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --repo) repo="${2:-}"; shift 2 ;;
+          --status) status_filter="${2:-}"; shift 2 ;;
+          --json) json_flag="1"; shift ;;
+          -h|--help) usage; return 0 ;;
+          *) die "unknown ideas list argument: $1" ;;
+        esac
+      done
+      [[ -n "$repo" ]] || die "ideas list requires --repo"
+      repo="$(repo_abs_path "$repo")"
+      ideas_do_list repo "$repo" "$status_filter" "$json_flag"
+      ;;
+    show)
+      local repo="" json_flag="0" positional=()
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --repo) repo="${2:-}"; shift 2 ;;
+          --json) json_flag="1"; shift ;;
+          -h|--help) usage; return 0 ;;
+          --*) die "unknown ideas show argument: $1" ;;
+          *) positional+=("$1"); shift ;;
+        esac
+      done
+      [[ -n "$repo" ]] || die "ideas show requires --repo"
+      [[ ${#positional[@]} -eq 1 ]] || die "usage: e3d-pilot ideas show --repo <path> <idea-id>"
+      repo="$(repo_abs_path "$repo")"
+      ideas_do_show repo "$repo" "${positional[0]}" "$json_flag"
+      ;;
+    approve)
+      local repo="" actor="" note="" positional=()
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --repo) repo="${2:-}"; shift 2 ;;
+          --actor) actor="${2:-}"; shift 2 ;;
+          --note) note="${2:-}"; shift 2 ;;
+          -h|--help) usage; return 0 ;;
+          --*) die "unknown ideas approve argument: $1" ;;
+          *) positional+=("$1"); shift ;;
+        esac
+      done
+      [[ -n "$repo" ]] || die "ideas approve requires --repo"
+      [[ ${#positional[@]} -eq 1 ]] || die "usage: e3d-pilot ideas approve --repo <path> <idea-id>"
+      repo="$(repo_abs_path "$repo")"
+      ideas_do_approve repo "$repo" "$repo" "${positional[0]}" "$actor" "$note"
+      ;;
+    reject)
+      local repo="" actor="" reason="" positional=()
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --repo) repo="${2:-}"; shift 2 ;;
+          --actor) actor="${2:-}"; shift 2 ;;
+          --reason) reason="${2:-}"; shift 2 ;;
+          -h|--help) usage; return 0 ;;
+          --*) die "unknown ideas reject argument: $1" ;;
+          *) positional+=("$1"); shift ;;
+        esac
+      done
+      [[ -n "$repo" ]] || die "ideas reject requires --repo"
+      [[ ${#positional[@]} -eq 1 ]] || die "usage: e3d-pilot ideas reject --repo <path> <idea-id> --reason <text>"
+      repo="$(repo_abs_path "$repo")"
+      ideas_do_reject repo "$repo" "$repo" "${positional[0]}" "$actor" "$reason"
+      ;;
+    request-changes)
+      local repo="" actor="" reason="" positional=()
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --repo) repo="${2:-}"; shift 2 ;;
+          --actor) actor="${2:-}"; shift 2 ;;
+          --reason) reason="${2:-}"; shift 2 ;;
+          -h|--help) usage; return 0 ;;
+          --*) die "unknown ideas request-changes argument: $1" ;;
+          *) positional+=("$1"); shift ;;
+        esac
+      done
+      [[ -n "$repo" ]] || die "ideas request-changes requires --repo"
+      [[ ${#positional[@]} -eq 1 ]] || die "usage: e3d-pilot ideas request-changes --repo <path> <idea-id> --reason <text>"
+      repo="$(repo_abs_path "$repo")"
+      ideas_do_request_changes repo "$repo" "$repo" "${positional[0]}" "$actor" "$reason"
+      ;;
+    rebuild)
+      local repo=""
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --repo) repo="${2:-}"; shift 2 ;;
+          -h|--help) usage; return 0 ;;
+          *) die "unknown ideas rebuild argument: $1" ;;
+        esac
+      done
+      [[ -n "$repo" ]] || die "ideas rebuild requires --repo"
+      repo="$(repo_abs_path "$repo")"
+      ideas_rebuild repo "$repo"
+      printf 'ideas: rebuilt %s\n' "$repo"
+      ;;
+    ""|-h|--help)
+      usage
+      ;;
+    *)
+      die "unknown ideas subcommand: $subcommand"
+      ;;
+  esac
 }
 
 # Reports availability for the fixed provider set by delegating the actual
@@ -2354,16 +2859,26 @@ cmd_fleet_run() {
     shift; cmd_fleet_prs "$@"; return
   fi
   [[ $# -eq 1 ]] || die "usage: e3d-pilot fleet <repos.json>"
-  local file="$1" repo status failures=0 total=0
+  local file="$1" repo status failures=0 pending=0 total=0 out_tmp
   [[ -f "$file" ]] || die "fleet file not found: $file"
   jq -e 'type == "array" and all(.[]; type == "string")' "$file" >/dev/null || die "fleet file must be a JSON array of repo path strings"
   while IFS= read -r repo; do
     total=$((total + 1)); printf 'fleet: starting %s\n' "$repo"
-    set +e; "$0" run --repo "$repo" --stage all < /dev/null; status=$?; set -e
-    if [[ $status -eq 0 ]]; then printf 'fleet: PASS %s\n' "$repo"
-    else printf 'fleet: FAIL %s (exit %s)\n' "$repo" "$status"; failures=$((failures + 1)); fi
+    out_tmp="$(mktemp)"
+    set +e
+    "$0" run --repo "$repo" --stage all < /dev/null 2>&1 | tee "$out_tmp"
+    status="${PIPESTATUS[0]}"
+    set -e
+    if [[ $status -ne 0 ]]; then
+      printf 'fleet: FAIL %s (exit %s)\n' "$repo" "$status"; failures=$((failures + 1))
+    elif grep -q '^pilot: pending-approval ' "$out_tmp"; then
+      printf 'fleet: PENDING %s\n' "$repo"; pending=$((pending + 1))
+    else
+      printf 'fleet: PASS %s\n' "$repo"
+    fi
+    rm -f "$out_tmp"
   done < <(jq -r '.[]' "$file")
-  printf 'fleet: summary total=%s passed=%s failed=%s\n' "$total" "$((total - failures))" "$failures"
+  printf 'fleet: summary total=%s passed=%s failed=%s pending=%s\n' "$total" "$((total - failures - pending))" "$failures" "$pending"
   [[ $failures -eq 0 ]]
 }
 
@@ -2517,6 +3032,7 @@ fleet_discover_stage() {
   provider_output="$(run_stage_provider "$provider" "$prompt_file" "$run_dir/fleet-discover-provider.stderr" "fleet discover")"
 
   printf '%s\n' "$provider_output" > "$external_context_file"
+  printf '%s\n' "$provider_output" > "$run_dir/fleet-discover-response.md"
   {
     printf -- '---\n'
     printf 'focus: %s\n' "$focus"
@@ -2678,7 +3194,7 @@ fleet_ideate_validate_candidates() {
 }
 
 fleet_ideate_stage() {
-  local run_dir="$1" config_file="$2" focus="$3"
+  local fleet_file="$1" run_dir="$2" run_id="$3" config_file="$4" focus="$5"
   local facts_file prompt_file candidates_file provider provider_output selected reason warnings_file
 
   facts_file="$run_dir/fleet-ideate-facts.md"
@@ -2725,6 +3241,7 @@ fleet_ideate_stage() {
     cat "$run_dir/fleet-ideate-response.md"
     printf '\n'
   } > "$candidates_file"
+  materialize_fleet_ideas "$(dirname "$(dirname "$(dirname "$run_dir")")")" "$fleet_file" "$run_dir" "$run_id" "$focus" >/dev/null
 }
 
 cmd_fleet_discover() {
@@ -2781,8 +3298,134 @@ cmd_fleet_discover() {
   resolved_focus="$(resolve_focus "$run_dir" "$focus")"
 
   fleet_discover_stage "$file" "$run_dir" "$config_file" "$resolved_focus"
-  fleet_ideate_stage "$run_dir" "$config_file" "$resolved_focus"
+  fleet_ideate_stage "$file" "$run_dir" "$run_id" "$config_file" "$resolved_focus"
   printf '%s\n' "$run_id"
+}
+
+cmd_fleet_ideas() {
+  [[ $# -ge 2 ]] || die "usage: e3d-pilot fleet ideas <fleet.json> <ingest|transition|rebuild>"
+  local file="$1"
+  shift
+  [[ -f "$file" ]] || die "fleet file not found: $file"
+  local workspace
+  workspace="$(cd "$(dirname "$file")" && pwd -P)"
+  local subcommand="${1:-}"
+  shift || true
+  case "$subcommand" in
+    ingest)
+      local run_id="" candidate_id="" candidate_json=""
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --run-id) run_id="${2:-}"; shift 2 ;;
+          --candidate-id) candidate_id="${2:-}"; shift 2 ;;
+          --candidate-json) candidate_json="${2:-}"; shift 2 ;;
+          -h|--help) usage; return 0 ;;
+          *) die "unknown fleet ideas ingest argument: $1" ;;
+        esac
+      done
+      [[ -n "$run_id" ]] || die "fleet ideas ingest requires --run-id"
+      [[ -n "$candidate_id" ]] || die "fleet ideas ingest requires --candidate-id"
+      [[ -f "$candidate_json" ]] || die "fleet ideas ingest requires --candidate-json <file>"
+      ideas_ingest_candidate fleet "$workspace" "$run_id" "$candidate_id" "$candidate_json"
+      ;;
+    transition)
+      local actor="" note="" targets_json="" head_sha=""
+      local positional=()
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --actor) actor="${2:-}"; shift 2 ;;
+          --note) note="${2:-}"; shift 2 ;;
+          --targets-json) targets_json="${2:-}"; shift 2 ;;
+          --head-sha) head_sha="${2:-}"; shift 2 ;;
+          -h|--help) usage; return 0 ;;
+          --*) die "unknown fleet ideas transition argument: $1" ;;
+          *) positional+=("$1"); shift ;;
+        esac
+      done
+      [[ ${#positional[@]} -eq 2 ]] || die "usage: e3d-pilot fleet ideas <fleet.json> transition <idea-id> <event>"
+      [[ -z "$targets_json" || -f "$targets_json" ]] || die "targets JSON not found: $targets_json"
+      actor="$(ideas_resolve_actor "$workspace" "$actor")"
+      ideas_transition fleet "$workspace" "${positional[0]}" "${positional[1]}" "$actor" "$note" "$targets_json" "$head_sha"
+      ;;
+    list)
+      local status_filter="" json_flag="0"
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --status) status_filter="${2:-}"; shift 2 ;;
+          --json) json_flag="1"; shift ;;
+          -h|--help) usage; return 0 ;;
+          *) die "unknown fleet ideas list argument: $1" ;;
+        esac
+      done
+      ideas_do_list fleet "$workspace" "$status_filter" "$json_flag"
+      ;;
+    show)
+      local json_flag="0" positional=()
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --json) json_flag="1"; shift ;;
+          -h|--help) usage; return 0 ;;
+          --*) die "unknown fleet ideas show argument: $1" ;;
+          *) positional+=("$1"); shift ;;
+        esac
+      done
+      [[ ${#positional[@]} -eq 1 ]] || die "usage: e3d-pilot fleet ideas <fleet.json> show <idea-id>"
+      ideas_do_show fleet "$workspace" "${positional[0]}" "$json_flag"
+      ;;
+    approve)
+      local actor="" note="" positional=()
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --actor) actor="${2:-}"; shift 2 ;;
+          --note) note="${2:-}"; shift 2 ;;
+          -h|--help) usage; return 0 ;;
+          --*) die "unknown fleet ideas approve argument: $1" ;;
+          *) positional+=("$1"); shift ;;
+        esac
+      done
+      [[ ${#positional[@]} -eq 1 ]] || die "usage: e3d-pilot fleet ideas <fleet.json> approve <idea-id>"
+      ideas_do_approve fleet "$workspace" "$workspace" "${positional[0]}" "$actor" "$note"
+      ;;
+    reject)
+      local actor="" reason="" positional=()
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --actor) actor="${2:-}"; shift 2 ;;
+          --reason) reason="${2:-}"; shift 2 ;;
+          -h|--help) usage; return 0 ;;
+          --*) die "unknown fleet ideas reject argument: $1" ;;
+          *) positional+=("$1"); shift ;;
+        esac
+      done
+      [[ ${#positional[@]} -eq 1 ]] || die "usage: e3d-pilot fleet ideas <fleet.json> reject <idea-id> --reason <text>"
+      ideas_do_reject fleet "$workspace" "$workspace" "${positional[0]}" "$actor" "$reason"
+      ;;
+    request-changes)
+      local actor="" reason="" positional=()
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --actor) actor="${2:-}"; shift 2 ;;
+          --reason) reason="${2:-}"; shift 2 ;;
+          -h|--help) usage; return 0 ;;
+          --*) die "unknown fleet ideas request-changes argument: $1" ;;
+          *) positional+=("$1"); shift ;;
+        esac
+      done
+      [[ ${#positional[@]} -eq 1 ]] || die "usage: e3d-pilot fleet ideas <fleet.json> request-changes <idea-id> --reason <text>"
+      ideas_do_request_changes fleet "$workspace" "$workspace" "${positional[0]}" "$actor" "$reason"
+      ;;
+    rebuild)
+      [[ $# -eq 0 ]] || die "usage: e3d-pilot fleet ideas <fleet.json> rebuild"
+      ideas_rebuild fleet "$workspace"
+      printf 'fleet ideas: rebuilt %s\n' "$workspace"
+      ;;
+    ""|-h|--help)
+      usage
+      ;;
+    *)
+      die "unknown fleet ideas subcommand: $subcommand"
+      ;;
+  esac
 }
 
 cmd_fleet() {
@@ -2790,6 +3433,10 @@ cmd_fleet() {
     discover)
       shift
       cmd_fleet_discover "$@"
+      ;;
+    ideas)
+      shift
+      cmd_fleet_ideas "$@"
       ;;
     prs)
       shift
@@ -2814,6 +3461,10 @@ main() {
     run)
       shift
       cmd_run "$@"
+      ;;
+    ideas)
+      shift
+      cmd_ideas "$@"
       ;;
     providers)
       shift
