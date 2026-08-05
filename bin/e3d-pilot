@@ -39,6 +39,8 @@ Usage:
   e3d-pilot ideas approve --repo <path> <idea-id> [--actor <actor>] [--note <text>]
   e3d-pilot ideas reject --repo <path> <idea-id> --reason <text> [--actor <actor>]
   e3d-pilot ideas request-changes --repo <path> <idea-id> --reason <text> [--actor <actor>]
+  e3d-pilot ideas implement --repo <path> <idea-id>
+  e3d-pilot ideas implement-approved --repo <path>
   e3d-pilot providers list
   e3d-pilot fleet <repos.json>
   e3d-pilot fleet discover <repos.json> [--run-id <id>] [--focus default|revenue] [--config <path>]
@@ -50,6 +52,8 @@ Usage:
   e3d-pilot fleet ideas <fleet.json> approve <idea-id> [--actor <actor>] [--note <text>]
   e3d-pilot fleet ideas <fleet.json> reject <idea-id> --reason <text> [--actor <actor>]
   e3d-pilot fleet ideas <fleet.json> request-changes <idea-id> --reason <text> [--actor <actor>]
+  e3d-pilot fleet ideas <fleet.json> implement <idea-id> [--continue-on-target-failure]
+  e3d-pilot fleet ideas <fleet.json> implement-approved [--continue-on-target-failure]
   e3d-pilot fleet prs [<repos.json>]
   e3d-pilot fleet prs --approve <repo>
   e3d-pilot fleet prs --merge   <repo>
@@ -2407,7 +2411,7 @@ idea_stage_approval_ok() {
   local stage_name="$1" status="$2" approved="$3" s
   [[ "$approved" == "1" ]] || return 1
   case "$stage_name" in
-    execute|review|publish)
+    draft|negotiate|execute|review|publish)
       for s in $IDEA_IMPLEMENTATION_CONTINUATION_STATUSES; do
         [[ "$status" == "$s" ]] && return 0
       done
@@ -2487,6 +2491,498 @@ require_valid_implementation_approval() {
     die "$stage_name refuses to run: idea $idea_id is not approved for implementation (status: $status). Approve it first: e3d-pilot ideas approve --repo $repo $idea_id"
   fi
 }
+
+# ─── implementation orchestration (Phase 5) ─────────────────────────────────
+
+idea_approval_digest_valid() {
+  local file="$1" approval_digest current_digest
+  approval_digest="$(jq -r '.implementation_approval.digest // empty' "$file")"
+  [[ -n "$approval_digest" ]] || return 1
+  current_digest="$(ideas_decision_digest_from_json "$file")"
+  [[ "$approval_digest" == "$current_digest" ]]
+}
+
+idea_status_can_start_implementation() {
+  local status="$1"
+  case "$status" in
+    approved_for_implementation|changes_requested|implementation_failed) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+idea_single_approved_base_sha() {
+  local repo="$1" idea_file="$2" source_run_id approved_base=""
+  approved_base="$(jq -r '.implementation.targets[0].base_sha // empty' "$idea_file")"
+  if [[ -z "$approved_base" ]]; then
+    source_run_id="$(jq -r '.source_run_id // empty' "$idea_file")"
+    if [[ -n "$source_run_id" && -f "$(runs_dir_for_repo "$repo")/$source_run_id/findings.md" ]]; then
+      approved_base="$(findings_head_sha "$(runs_dir_for_repo "$repo")/$source_run_id/findings.md" || true)"
+    fi
+  fi
+  if [[ -z "$approved_base" ]]; then
+    approved_base="$(repo_head_sha "$repo")"
+  fi
+  printf '%s' "$approved_base"
+}
+
+git_material_changes_since_base() {
+  local repo="$1" base_sha="$2" path rel material=0
+  [[ -n "$base_sha" ]] || return 1
+  git -C "$repo" cat-file -e "$base_sha^{commit}" 2>/dev/null || return 1
+  while IFS= read -r path; do
+    [[ -n "$path" ]] || continue
+    rel="${path#./}"
+    case "$rel" in
+      .e3d-pilot|.e3d-pilot/*|.e3d-pilot-fleet|.e3d-pilot-fleet/*) ;;
+      *) material=1 ;;
+    esac
+  done < <(git -C "$repo" diff --name-only "$base_sha"..HEAD -- . 2>/dev/null || true)
+  [[ $material -eq 1 ]]
+}
+
+implementation_next_run_id() {
+  local repo="$1" idea_id="$2" target_label="$3" base candidate counter
+  base="impl-${idea_id#idea-}-${target_label}-$(date -u '+%Y%m%d%H%M%S')"
+  candidate="$base"
+  counter=2
+  while [[ -e "$(runs_dir_for_repo "$repo")/$candidate" ]]; do
+    candidate="${base}-${counter}"
+    counter=$((counter + 1))
+  done
+  printf '%s' "$candidate"
+}
+
+write_idea_link() {
+  local run_dir="$1" kind="$2" workspace="$3" idea_id="$4"
+  printf '%s\t%s\t%s\n' "$kind" "$workspace" "$idea_id" > "$run_dir/idea-link.txt"
+}
+
+synthesize_run_candidate_artifacts() {
+  local repo="$1" run_dir="$2" run_id="$3" idea_file="$4" approved_base="$5" selected="${6:-candidate-1}"
+  local title summary dedup category analogy attraction retention revenue effort focus
+  title="$(jq -r '.title // "Approved idea"' "$idea_file")"
+  summary="$(jq -r '.summary // "Implement the approved idea."' "$idea_file")"
+  dedup="$(jq -r '.dedup_rationale // "approved by human decision"' "$idea_file")"
+  category="$(jq -r '.category // "other"' "$idea_file")"
+  analogy="$(jq -r '.analogy // "none"' "$idea_file")"
+  attraction="$(jq -r '(.scores.attraction // "-") | tostring' "$idea_file")"
+  retention="$(jq -r '(.scores.retention // "-") | tostring' "$idea_file")"
+  revenue="$(jq -r '(.scores.revenue // "-") | tostring' "$idea_file")"
+  effort="$(jq -r '(.scores.effort // "medium") | tostring' "$idea_file")"
+  focus="$(jq -r '.focus // "default"' "$idea_file")"
+  printf '%s\n' "$focus" > "$run_dir/focus"
+  {
+    printf -- '---\n'
+    printf 'head_sha: %s\n' "$approved_base"
+    printf 'focus: %s\n' "$focus"
+    printf 'implementation_run_id: %s\n' "$run_id"
+    printf -- '---\n\n'
+    printf '# Findings\n\n'
+    printf '## Local State\n\n'
+    printf 'Approved idea `%s` is being implemented for `%s`.\n\n' "$(jq -r '.idea_id' "$idea_file")" "$repo"
+    printf '## External Context\n\n'
+    printf '%s\n' "$summary"
+  } > "$run_dir/findings.md"
+  {
+    printf -- '---\n'
+    printf 'selected: %s\n' "$selected"
+    printf 'reason: approved idea implementation\n'
+    printf 'focus: %s\n' "$focus"
+    printf -- '---\n\n'
+    printf '# Candidates\n\n'
+    printf '## Proposed Candidates\n\n'
+    printf '### Candidate %s: %s\n' "${selected##candidate-}" "$title"
+    printf 'Duplicate: no\n'
+    printf 'Dedup rationale: %s\n' "$dedup"
+    printf 'Category: %s\n' "$category"
+    printf 'Analogy: %s\n' "$analogy"
+    printf 'Attraction (1-5): %s\n' "$attraction"
+    printf 'Retention (1-5): %s\n' "$retention"
+    printf 'Effort: %s\n' "$effort"
+    printf 'Revenue (1-5|n/a): %s\n' "$revenue"
+    printf 'Description: %s\n' "$summary"
+  } > "$run_dir/candidates.md"
+}
+
+prepare_repo_implementation_run() {
+  local repo="$1" run_id="$2" idea_file="$3" approved_base="$4" kind="$5" workspace="$6" idea_id="$7" selected="${8:-}"
+  local run_dir source_run source_dir name
+  run_dir="$(runs_dir_for_repo "$repo")/$run_id"
+  mkdir -p "$run_dir"
+  write_latest_run "$repo" "$run_id"
+  write_idea_link "$run_dir" "$kind" "$workspace" "$idea_id"
+  source_run="$(jq -r '.source_run_id // empty' "$idea_file")"
+  source_dir="$(runs_dir_for_repo "$repo")/$source_run"
+  if [[ -z "$selected" ]]; then
+    selected="$(jq -r '.source_candidate // "candidate-1"' "$idea_file")"
+  fi
+  if [[ "$kind" == "repo" && -d "$source_dir" && -f "$source_dir/candidates.md" ]]; then
+    for name in findings.md candidates.md focus discover-local-state.md discover-prompt.md discover-external-context.md ideate-facts.md ideate-prompt.md ideate-response.md; do
+      [[ -f "$source_dir/$name" ]] && cp "$source_dir/$name" "$run_dir/$name"
+    done
+    [[ -f "$run_dir/findings.md" ]] || synthesize_run_candidate_artifacts "$repo" "$run_dir" "$run_id" "$idea_file" "$approved_base" "$selected"
+  else
+    synthesize_run_candidate_artifacts "$repo" "$run_dir" "$run_id" "$idea_file" "$approved_base" "$selected"
+  fi
+}
+
+json_array_from_lines() {
+  jq -R -s 'split("\n") | map(select(length > 0))'
+}
+
+implementation_verification_json() {
+  local summary_file="$1" cmd="" status="" first=1 tick=$'\x60'
+  printf '['
+  [[ -f "$summary_file" ]] || { printf ']'; return 0; }
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    case "$line" in
+      Command:\ *)
+        cmd="${line#Command: }"
+        cmd="${cmd#"$tick"}"
+        cmd="${cmd%"$tick"}"
+        ;;
+      Exit\ Status:\ *)
+        status="${line#Exit Status: }"
+        status="${status#"$tick"}"
+        status="${status%"$tick"}"
+        if [[ -n "$cmd" ]]; then
+          (( first == 0 )) && printf ','
+          first=0
+          jq -ncS --arg command "$cmd" --argjson exit_status "$status" '{command:$command,exit_status:$exit_status}'
+          cmd=""
+        fi
+        ;;
+    esac
+  done < "$summary_file"
+  printf ']'
+}
+
+publish_pr_number_from_url() {
+  local url="$1"
+  [[ "$url" =~ /pull/([0-9]+) ]] && printf '%s' "${BASH_REMATCH[1]}"
+}
+
+implementation_target_outcome_json() {
+  local repo="$1" run_id="$2" approved_base="$3" actual_start="$4" status="$5" failure_stage="$6" failure_reason="$7" role="${8:-primary}" base_branch="${9:-}"
+  local run_dir branch="" worktree="" diff_files="" diff_lines="" final_head="" backend="" pr_url="" pr_number="" review_outcome=""
+  local commits_json changed_files_json verification_json
+  run_dir="$(runs_dir_for_repo "$repo")/$run_id"
+  if [[ -f "$run_dir/execute-worktree.txt" ]]; then
+    branch="$(cut -f1 "$run_dir/execute-worktree.txt")"
+    worktree="$(cut -f2 "$run_dir/execute-worktree.txt")"
+  fi
+  if [[ -f "$run_dir/execute-diff-summary.txt" ]]; then
+    diff_files="$(publish_backend_field_value "$run_dir/execute-diff-summary.txt" "diff_files")"
+    diff_lines="$(publish_backend_field_value "$run_dir/execute-diff-summary.txt" "diff_lines")"
+  fi
+  if [[ -f "$run_dir/review-status.txt" ]]; then
+    review_outcome="$(review_status_value "$run_dir/review-status.txt" verify_status)"
+  fi
+  if [[ -f "$run_dir/publish-backend.out" ]]; then
+    backend="$(publish_backend_field_value "$run_dir/publish-backend.out" "mode")"
+    pr_url="$(publish_backend_field_value "$run_dir/publish-backend.out" "pr_url")"
+    pr_number="$(publish_pr_number_from_url "$pr_url")"
+  fi
+  if [[ -n "$worktree" && -d "$worktree" ]]; then
+    final_head="$(git -C "$worktree" rev-parse HEAD 2>/dev/null || true)"
+  fi
+  commits_json="$(mktemp "${TMPDIR:-/tmp}/e3d-implementation-commits.XXXXXX")"
+  changed_files_json="$(mktemp "${TMPDIR:-/tmp}/e3d-implementation-files.XXXXXX")"
+  verification_json="$(mktemp "${TMPDIR:-/tmp}/e3d-implementation-verify.XXXXXX")"
+  if [[ -n "$worktree" && -d "$worktree" && -n "$approved_base" ]]; then
+    git -C "$worktree" rev-list --reverse "$approved_base"..HEAD 2>/dev/null | json_array_from_lines > "$commits_json"
+    git -C "$worktree" diff --name-only "$approved_base"..HEAD -- . 2>/dev/null | json_array_from_lines > "$changed_files_json"
+  else
+    printf '[]\n' > "$commits_json"
+    printf '[]\n' > "$changed_files_json"
+  fi
+  implementation_verification_json "$run_dir/review-verify-summary.md" > "$verification_json"
+  jq -ncS \
+    --arg repo "$repo" \
+    --arg run_id "$run_id" \
+    --arg approved_base_sha "$approved_base" \
+    --arg actual_start_sha "$actual_start" \
+    --arg role "$role" \
+    --arg base_branch "$base_branch" \
+    --arg status "$status" \
+    --arg branch "$branch" \
+    --arg worktree "$worktree" \
+    --arg failure_stage "$failure_stage" \
+    --arg failure_reason "$failure_reason" \
+    --arg final_head "$final_head" \
+    --arg publish_backend "$backend" \
+    --arg pr_url "$pr_url" \
+    --arg pr_number "$pr_number" \
+    --arg review_outcome "$review_outcome" \
+    --argjson diff_files "${diff_files:-0}" \
+    --argjson diff_lines "${diff_lines:-0}" \
+    --slurpfile commits "$commits_json" \
+    --slurpfile changed_files "$changed_files_json" \
+    --slurpfile verification "$verification_json" \
+    '{
+      repo:$repo,
+      role:$role,
+      run_id:$run_id,
+      approved_base_sha:$approved_base_sha,
+      actual_start_sha:$actual_start_sha,
+      base_branch:(if $base_branch == "" then null else $base_branch end),
+      branch:(if $branch == "" then null else $branch end),
+      worktree:(if $worktree == "" then null else $worktree end),
+      commit_shas:$commits[0],
+      changed_files:$changed_files[0],
+      changed_lines:$diff_lines,
+      changed_file_count:$diff_files,
+      verification:$verification[0],
+      review_outcome:(if $review_outcome == "" then null else $review_outcome end),
+      publish_backend:(if $publish_backend == "" then null else $publish_backend end),
+      pr_url:(if $pr_url == "" then null else $pr_url end),
+      pr_number:(if $pr_number == "" then null else ($pr_number | tonumber) end),
+      final_pr_head_sha:(if $final_head == "" then null else $final_head end),
+      status:$status
+    }
+    | if $status == "failed" then .failure={stage:$failure_stage,reason:$failure_reason} else . end'
+  rm -f "$commits_json" "$changed_files_json" "$verification_json"
+}
+
+implementation_outcome_file() {
+  local idea_id="$1" overall_status="$2" targets_file="$3" failure_reason="${4:-}" out_file
+  out_file="$(mktemp "${TMPDIR:-/tmp}/e3d-implementation-outcome.XXXXXX")"
+  jq -ncS \
+    --arg idea_id "$idea_id" \
+    --arg status "$overall_status" \
+    --arg failure_reason "$failure_reason" \
+    --slurpfile targets "$targets_file" \
+    '{
+      type:"implementation",
+      idea_id:$idea_id,
+      status:$status,
+      targets:$targets
+    }
+    | if $failure_reason != "" then .failure_reason=$failure_reason else . end' > "$out_file"
+  printf '%s' "$out_file"
+}
+
+run_repo_implementation_pipeline() {
+  local repo="$1" run_id="$2" approved_base="$3" actual_start="$4" target_out_file="$5" role="${6:-primary}" base_branch="${7:-}"
+  local stage output status run_dir
+  run_dir="$(runs_dir_for_repo "$repo")/$run_id"
+  : > "$run_dir/implementation-stage-log.md"
+  for stage in draft negotiate execute review publish; do
+    set +e
+    output="$("$0" run --repo "$repo" --stage "$stage" --run-id "$run_id" 2>&1)"
+    status=$?
+    set -e
+    {
+      printf '## %s\n\n' "$stage"
+      printf 'exit_status: %s\n\n```text\n%s\n```\n\n' "$status" "$output"
+    } >> "$run_dir/implementation-stage-log.md"
+    if [[ $status -ne 0 ]]; then
+      implementation_target_outcome_json "$repo" "$run_id" "$approved_base" "$actual_start" failed "$stage" "$output" "$role" "$base_branch" > "$target_out_file"
+      return 1
+    fi
+    case "$stage" in
+      draft) [[ -f "$run_dir/spec-draft.md" ]] || { implementation_target_outcome_json "$repo" "$run_id" "$approved_base" "$actual_start" failed "$stage" "draft did not produce spec-draft.md" "$role" "$base_branch" > "$target_out_file"; return 1; } ;;
+      negotiate) [[ -f "$run_dir/spec-final.md" ]] || { implementation_target_outcome_json "$repo" "$run_id" "$approved_base" "$actual_start" failed "$stage" "negotiate did not produce spec-final.md" "$role" "$base_branch" > "$target_out_file"; return 1; } ;;
+      execute) [[ -f "$run_dir/execute-worktree.txt" ]] || { implementation_target_outcome_json "$repo" "$run_id" "$approved_base" "$actual_start" failed "$stage" "execute did not produce worktree metadata" "$role" "$base_branch" > "$target_out_file"; return 1; } ;;
+      review) [[ "$(review_status_value "$run_dir/review-status.txt" verify_status 2>/dev/null || true)" == passed ]] || { implementation_target_outcome_json "$repo" "$run_id" "$approved_base" "$actual_start" failed "$stage" "review verification did not pass" "$role" "$base_branch" > "$target_out_file"; return 1; } ;;
+      publish) [[ -f "$run_dir/publish-backend.out" ]] || { implementation_target_outcome_json "$repo" "$run_id" "$approved_base" "$actual_start" failed "$stage" "publish did not produce backend output" "$role" "$base_branch" > "$target_out_file"; return 1; } ;;
+    esac
+  done
+  implementation_target_outcome_json "$repo" "$run_id" "$approved_base" "$actual_start" succeeded "" "" "$role" "$base_branch" > "$target_out_file"
+  return 0
+}
+
+ideas_do_implement_repo() {
+  local repo="$1" idea_id="$2" canonical idea_file status approved_base actual_start run_id run_dir actor targets_tmp target_tmp outcome_tmp base_branch
+  repo="$(repo_abs_path "$repo")"
+  canonical="$(ideas_canonical_path "$repo")" || die "workspace not found: $repo"
+  idea_file="$(ideas_require_snapshot repo "$canonical" "$idea_id")"
+  status="$(jq -r '.status' "$idea_file")"
+  idea_status_can_start_implementation "$status" || die "idea $idea_id cannot enter implementation from status: $status"
+  idea_approval_digest_valid "$idea_file" || die "idea $idea_id does not have a current valid implementation approval"
+  approved_base="$(idea_single_approved_base_sha "$repo" "$idea_file")"
+  base_branch="$(config_value "$(config_path_for_repo "$repo")" '.pr.base_branch')"
+  actual_start="$(repo_head_sha "$repo")"
+  if [[ "$actual_start" != "$approved_base" ]] && git_material_changes_since_base "$repo" "$approved_base"; then
+    die "idea $idea_id base SHA changed since approval ($approved_base -> $actual_start); refresh human approval before implementation"
+  fi
+  actor="$(ideas_resolve_actor "$repo" "")"
+  case "$status" in
+    implementation_failed)
+      ideas_transition repo "$canonical" "$idea_id" implementation_retry_approved "$actor" "retry implementation" "" "" >/dev/null
+      ;;
+    *)
+      ideas_transition repo "$canonical" "$idea_id" implementation_started "$actor" "implementation started" "" "" >/dev/null
+      ;;
+  esac
+  run_id="$(implementation_next_run_id "$repo" "$idea_id" "repo")"
+  run_dir="$(runs_dir_for_repo "$repo")/$run_id"
+  prepare_repo_implementation_run "$repo" "$run_id" "$idea_file" "$approved_base" repo "$canonical" "$idea_id"
+  targets_tmp="$(mktemp "${TMPDIR:-/tmp}/e3d-implementation-targets.XXXXXX")"
+  target_tmp="$(mktemp "${TMPDIR:-/tmp}/e3d-implementation-target.XXXXXX")"
+  if run_repo_implementation_pipeline "$repo" "$run_id" "$approved_base" "$actual_start" "$target_tmp" "primary" "$base_branch"; then
+    cat "$target_tmp" > "$targets_tmp"
+    outcome_tmp="$(implementation_outcome_file "$idea_id" succeeded "$targets_tmp")"
+    ideas_transition repo "$canonical" "$idea_id" implementation_completed "$actor" "implementation completed" "" "" "$outcome_tmp" >/dev/null
+    rm -f "$targets_tmp" "$target_tmp" "$outcome_tmp"
+    printf 'ideas: implemented %s run=%s\n' "$idea_id" "$run_id"
+    return 0
+  fi
+  cat "$target_tmp" > "$targets_tmp"
+  outcome_tmp="$(implementation_outcome_file "$idea_id" failed "$targets_tmp" "target failed")"
+  ideas_transition repo "$canonical" "$idea_id" implementation_failed "$actor" "implementation failed" "" "" "$outcome_tmp" >/dev/null
+  rm -f "$targets_tmp" "$target_tmp" "$outcome_tmp"
+  printf 'ideas: implementation failed for %s run=%s\n' "$idea_id" "$run_id"
+  return 1
+}
+
+implementation_skipped_target_json() {
+  local repo="$1" approved_base="$2" role="$3" base_branch="$4" reason="$5"
+  jq -ncS \
+    --arg repo "$repo" \
+    --arg approved_base_sha "$approved_base" \
+    --arg role "$role" \
+    --arg base_branch "$base_branch" \
+    --arg reason "$reason" \
+    '{
+      repo:$repo,
+      role:$role,
+      run_id:null,
+      approved_base_sha:$approved_base_sha,
+      actual_start_sha:null,
+      base_branch:(if $base_branch == "" then null else $base_branch end),
+      branch:null,
+      worktree:null,
+      commit_shas:[],
+      changed_files:[],
+      changed_lines:0,
+      changed_file_count:0,
+      verification:[],
+      review_outcome:null,
+      publish_backend:null,
+      pr_url:null,
+      pr_number:null,
+      final_pr_head_sha:null,
+      status:"skipped",
+      failure:{stage:"not_started",reason:$reason}
+    }'
+}
+
+ideas_do_implement_fleet() {
+  local fleet_file="$1" idea_id="$2" continue_on_failure="${3:-0}"
+  local workspace idea_file status actor targets_count targets_tmp target_tmp outcome_tmp idx failed=0 stop_remaining=0 failure_reason=""
+  [[ -f "$fleet_file" ]] || die "fleet file not found: $fleet_file"
+  workspace="$(cd "$(dirname "$fleet_file")" && pwd -P)"
+  idea_file="$(ideas_require_snapshot fleet "$workspace" "$idea_id")"
+  status="$(jq -r '.status' "$idea_file")"
+  idea_status_can_start_implementation "$status" || die "fleet idea $idea_id cannot enter implementation from status: $status"
+  idea_approval_digest_valid "$idea_file" || die "fleet idea $idea_id does not have a current valid implementation approval"
+  targets_count="$(jq '.implementation.targets | length' "$idea_file")"
+  (( targets_count > 0 )) || die "fleet idea $idea_id has no approved implementation targets"
+  actor="$(ideas_resolve_actor "$workspace" "")"
+  case "$status" in
+    implementation_failed)
+      ideas_transition fleet "$workspace" "$idea_id" implementation_retry_approved "$actor" "retry implementation" "" "" >/dev/null
+      ;;
+    *)
+      ideas_transition fleet "$workspace" "$idea_id" implementation_started "$actor" "implementation started" "" "" >/dev/null
+      ;;
+  esac
+
+  targets_tmp="$(mktemp "${TMPDIR:-/tmp}/e3d-fleet-implementation-targets.XXXXXX")"
+  : > "$targets_tmp"
+  for ((idx=0; idx<targets_count; idx++)); do
+    local repo role approved_base base_branch actual_start run_id
+    repo="$(jq -r --argjson i "$idx" '.implementation.targets[$i].path' "$idea_file")"
+    role="$(jq -r --argjson i "$idx" '.implementation.targets[$i].role // "target"' "$idea_file")"
+    approved_base="$(jq -r --argjson i "$idx" '.implementation.targets[$i].base_sha' "$idea_file")"
+    base_branch="$(jq -r --argjson i "$idx" '.implementation.targets[$i].base_branch // empty' "$idea_file")"
+    if (( stop_remaining )); then
+      implementation_skipped_target_json "$repo" "$approved_base" "$role" "$base_branch" "previous target failed" >> "$targets_tmp"
+      continue
+    fi
+    repo="$(repo_abs_path "$repo")"
+    actual_start="$(repo_head_sha "$repo")"
+    run_id="$(implementation_next_run_id "$repo" "$idea_id" "target-$((idx + 1))")"
+    target_tmp="$(mktemp "${TMPDIR:-/tmp}/e3d-fleet-implementation-target.XXXXXX")"
+    if [[ "$actual_start" != "$approved_base" ]] && git_material_changes_since_base "$repo" "$approved_base"; then
+      implementation_target_outcome_json "$repo" "$run_id" "$approved_base" "$actual_start" failed "base-check" "target base SHA changed since approval" "$role" "$base_branch" > "$target_tmp"
+      cat "$target_tmp" >> "$targets_tmp"
+      failed=1
+      failure_reason="target failed"
+      (( continue_on_failure )) || stop_remaining=1
+      rm -f "$target_tmp"
+      continue
+    fi
+    prepare_repo_implementation_run "$repo" "$run_id" "$idea_file" "$approved_base" fleet "$workspace" "$idea_id" "candidate-1"
+    if run_repo_implementation_pipeline "$repo" "$run_id" "$approved_base" "$actual_start" "$target_tmp" "$role" "$base_branch"; then
+      cat "$target_tmp" >> "$targets_tmp"
+    else
+      cat "$target_tmp" >> "$targets_tmp"
+      failed=1
+      failure_reason="target failed"
+      (( continue_on_failure )) || stop_remaining=1
+    fi
+    rm -f "$target_tmp"
+  done
+
+  if (( failed )); then
+    outcome_tmp="$(implementation_outcome_file "$idea_id" failed "$targets_tmp" "$failure_reason")"
+    ideas_transition fleet "$workspace" "$idea_id" implementation_failed "$actor" "implementation failed" "" "" "$outcome_tmp" >/dev/null
+    rm -f "$targets_tmp" "$outcome_tmp"
+    printf 'fleet ideas: implementation failed for %s\n' "$idea_id"
+    return 1
+  fi
+  outcome_tmp="$(implementation_outcome_file "$idea_id" succeeded "$targets_tmp")"
+  ideas_transition fleet "$workspace" "$idea_id" implementation_completed "$actor" "implementation completed" "" "" "$outcome_tmp" >/dev/null
+  rm -f "$targets_tmp" "$outcome_tmp"
+  printf 'fleet ideas: implemented %s targets=%s\n' "$idea_id" "$targets_count"
+}
+
+ideas_approved_queue() {
+  local kind="$1" workspace="$2" canonical dir
+  canonical="$(ideas_canonical_path "$workspace")" || return 1
+  dir="$(ideas_snapshots_dir "$kind" "$canonical")"
+  [[ -d "$dir" ]] || return 0
+  find "$dir" -mindepth 2 -maxdepth 2 -name idea.json -print0 \
+    | xargs -0 jq -r 'select(.status=="approved_for_implementation") | [.created_at,.idea_id] | @tsv' 2>/dev/null \
+    | sort -k1,1 -k2,2 \
+    | cut -f2
+}
+
+ideas_do_implement_approved_repo() {
+  local repo="$1" idea_id failures=0 any=0 status
+  repo="$(repo_abs_path "$repo")"
+  while IFS= read -r idea_id; do
+    [[ -n "$idea_id" ]] || continue
+    any=1
+    set +e
+    "$0" ideas implement --repo "$repo" "$idea_id"
+    status=$?
+    set -e
+    [[ $status -eq 0 ]] || failures=$((failures + 1))
+  done < <(ideas_approved_queue repo "$repo")
+  [[ $any -eq 1 ]] || printf 'ideas: no approved ideas to implement\n'
+  [[ $failures -eq 0 ]]
+}
+
+ideas_do_implement_approved_fleet() {
+  local fleet_file="$1" continue_on_failure="${2:-0}" workspace idea_id failures=0 any=0 status
+  [[ -f "$fleet_file" ]] || die "fleet file not found: $fleet_file"
+  workspace="$(cd "$(dirname "$fleet_file")" && pwd -P)"
+  while IFS= read -r idea_id; do
+    [[ -n "$idea_id" ]] || continue
+    any=1
+    set +e
+    "$0" fleet ideas "$fleet_file" implement "$idea_id" $( (( continue_on_failure )) && printf '%s' "--continue-on-target-failure" )
+    status=$?
+    set -e
+    [[ $status -eq 0 ]] || failures=$((failures + 1))
+  done < <(ideas_approved_queue fleet "$workspace")
+  [[ $any -eq 1 ]] || printf 'fleet ideas: no approved ideas to implement\n'
+  [[ $failures -eq 0 ]]
+}
+
 
 cmd_ideas() {
   local subcommand="${1:-}"
@@ -2614,6 +3110,32 @@ cmd_ideas() {
       [[ ${#positional[@]} -eq 1 ]] || die "usage: e3d-pilot ideas request-changes --repo <path> <idea-id> --reason <text>"
       repo="$(repo_abs_path "$repo")"
       ideas_do_request_changes repo "$repo" "$repo" "${positional[0]}" "$actor" "$reason"
+      ;;
+    implement)
+      local repo="" positional=()
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --repo) repo="${2:-}"; shift 2 ;;
+          -h|--help) usage; return 0 ;;
+          --*) die "unknown ideas implement argument: $1" ;;
+          *) positional+=("$1"); shift ;;
+        esac
+      done
+      [[ -n "$repo" ]] || die "ideas implement requires --repo"
+      [[ ${#positional[@]} -eq 1 ]] || die "usage: e3d-pilot ideas implement --repo <path> <idea-id>"
+      ideas_do_implement_repo "$repo" "${positional[0]}"
+      ;;
+    implement-approved)
+      local repo=""
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --repo) repo="${2:-}"; shift 2 ;;
+          -h|--help) usage; return 0 ;;
+          *) die "unknown ideas implement-approved argument: $1" ;;
+        esac
+      done
+      [[ -n "$repo" ]] || die "ideas implement-approved requires --repo"
+      ideas_do_implement_approved_repo "$repo"
       ;;
     rebuild)
       local repo=""
@@ -3413,6 +3935,30 @@ cmd_fleet_ideas() {
       done
       [[ ${#positional[@]} -eq 1 ]] || die "usage: e3d-pilot fleet ideas <fleet.json> request-changes <idea-id> --reason <text>"
       ideas_do_request_changes fleet "$workspace" "$workspace" "${positional[0]}" "$actor" "$reason"
+      ;;
+    implement)
+      local continue_on_failure=0 positional=()
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --continue-on-target-failure) continue_on_failure=1; shift ;;
+          -h|--help) usage; return 0 ;;
+          --*) die "unknown fleet ideas implement argument: $1" ;;
+          *) positional+=("$1"); shift ;;
+        esac
+      done
+      [[ ${#positional[@]} -eq 1 ]] || die "usage: e3d-pilot fleet ideas <fleet.json> implement <idea-id>"
+      ideas_do_implement_fleet "$file" "${positional[0]}" "$continue_on_failure"
+      ;;
+    implement-approved)
+      local continue_on_failure=0
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --continue-on-target-failure) continue_on_failure=1; shift ;;
+          -h|--help) usage; return 0 ;;
+          *) die "unknown fleet ideas implement-approved argument: $1" ;;
+        esac
+      done
+      ideas_do_implement_approved_fleet "$file" "$continue_on_failure"
       ;;
     rebuild)
       [[ $# -eq 0 ]] || die "usage: e3d-pilot fleet ideas <fleet.json> rebuild"

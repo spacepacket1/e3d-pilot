@@ -492,7 +492,7 @@ ideas_ingest_candidate() {
 }
 
 ideas_transition() {
-  local kind="$1" workspace="$2" idea_id="$3" event="$4" actor="$5" note="$6" targets_file="$7" head_sha="$8"
+  local kind="$1" workspace="$2" idea_id="$3" event="$4" actor="$5" note="$6" targets_file="$7" head_sha="$8" outcome_file="${9:-}"
   local canonical events_file current_file timestamp event_tmp current_digest
   canonical="$(ideas_canonical_path "$workspace")" || return 1
   events_file="$(ideas_events_file "$kind" "$canonical")" || return 1
@@ -534,6 +534,7 @@ ideas_transition() {
     --arg digest "$current_digest" \
     --arg head_sha "$head_sha" \
     --argjson targets "$(if [[ -n "$targets_file" ]]; then jq -c '.' "$targets_file"; else printf '[]'; fi)" \
+    --argjson outcome "$(if [[ -n "$outcome_file" ]]; then jq -c '.' "$outcome_file"; else printf 'null'; fi)" \
     '{
       schema_version:$schema,event_id:$event_id,idea_id:$idea_id,event:$event,
       timestamp:$timestamp,actor:$actor
@@ -541,7 +542,8 @@ ideas_transition() {
     | if $note != "" then .note=$note else . end
     | if ($event|test("approved|retry")) then .approval_digest=$digest else . end
     | if $head_sha != "" then .head_sha=$head_sha else . end
-    | if ($targets|length) > 0 then .targets=$targets else . end' > "$event_tmp"
+    | if ($targets|length) > 0 then .targets=$targets else . end
+    | if $outcome != null then .outcome=$outcome else . end' > "$event_tmp"
   ideas_append_event "$events_file" "$event_tmp" || { rm -f "$event_tmp"; ideas_release_lock "$kind" "$canonical"; return 1; }
   if [[ "${E3D_PILOT_CRASH_AFTER_EVENT:-0}" == "1" ]]; then
     rm -f "$event_tmp"
