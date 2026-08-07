@@ -70,6 +70,14 @@ case "$cmd" in
         mv "$tmp" "$state"
         exit 0
         ;;
+      merge)
+        url="${1:-}"
+        printf 'MERGE %s\n' "$url" >> "$trace"
+        tmp="${state}.tmp.$$"
+        jq --arg url "$url" '(.prs[] | select(.url==$url) | .state)="MERGED" | (.prs[] | select(.url==$url) | .mergeSha)="self-merge-sha"' "$state" > "$tmp"
+        mv "$tmp" "$state"
+        exit 0
+        ;;
     esac
     ;;
 esac
@@ -271,6 +279,36 @@ mark_reverted_discovers_revert_commit() {
   assert_eq "$(jq -r '.outcomes[-1].revert_commit' <<<"$idea_json")" "$revert_sha" "revert commit discovered"
 }
 
+sync_after_self_merge_is_noop() {
+  local repo idea url head state trace bin state_json idea_json events_before events_after out
+  repo="$(make_repo)"
+  idea="$(ingest_idea "$repo" run-g "Self-merged by e3d-pilot")"
+  url="https://github.com/example/repo/pull/7"
+  head="7777777777777777777777777777777777777777"
+  seed_implemented_repo_idea "$repo" "$idea" "$url" 7 "$head"
+  state="$(mktemp)"; trace="$(mktemp)"; bin="$(mktemp -d)"
+  make_gh_stub "$bin"
+  state_json="$(jq -ncS --argjson pr "$(github_pr_json "$url" "$head" 7 false OPEN "" "" '[]')" '[$pr]')"
+  write_gh_state "$state" "$state_json"
+  PHASE18_GH_STATE="$state" PHASE18_GH_TRACE="$trace" PATH="$bin:$PATH" "$BIN" ideas approve-merge --repo "$repo" "$idea" >/dev/null
+  PHASE18_GH_STATE="$state" PHASE18_GH_TRACE="$trace" PATH="$bin:$PATH" "$BIN" ideas merge --repo "$repo" "$idea" >/dev/null
+  idea_json="$("$BIN" ideas show --repo "$repo" "$idea" --json)"
+  assert_eq "$(jq -r '.status' <<<"$idea_json")" "merged" "self-merge status"
+  events_before="$(wc -l < "$repo/.e3d-pilot/events.jsonl" | tr -d '[:space:]')"
+  # A merge driven by `ideas merge` itself never touches .forge.targets, so a
+  # later `ideas sync` observes the same real (now-MERGED) PR state against a
+  # stale baseline and must not treat that as a change to record -- there is
+  # no allowed transition out of `merged` for a discovered external merge,
+  # and this used to crash the whole sync run rather than no-op.
+  out="$(PHASE18_GH_STATE="$state" PHASE18_GH_TRACE="$trace" PATH="$bin:$PATH" "$BIN" ideas sync --repo "$repo" "$idea")"
+  assert_contains "$out" "changed=0"
+  assert_contains "$out" "noop=1"
+  events_after="$(wc -l < "$repo/.e3d-pilot/events.jsonl" | tr -d '[:space:]')"
+  assert_eq "$events_after" "$events_before" "sync after self-merge must not append an event"
+  idea_json="$("$BIN" ideas show --repo "$repo" "$idea" --json)"
+  assert_eq "$(jq -r '.status' <<<"$idea_json")" "merged" "status unchanged after no-op sync"
+}
+
 bash -n "$ROOT/bin/e3d-pilot"
 bash -n "$ROOT/lib/ideas/ledger.sh"
 sync_noop_is_idempotent
@@ -278,5 +316,6 @@ request_changes_and_sync_restore_changes_requested
 external_merge_and_close_are_recorded
 outcomes_are_typed_and_append_history
 mark_reverted_discovers_revert_commit
+sync_after_self_merge_is_noop
 
 printf 'phase18 ok\n'

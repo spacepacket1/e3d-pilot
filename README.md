@@ -1,10 +1,10 @@
 # e3d-pilot
 
-**e3d-pilot decides what a codebase should work on next, and drives that idea safely to a reviewable branch — unattended, but never unsupervised.**
+**e3d-pilot decides what a codebase should work on next, records the idea for human approval, and only then drives approved work to a draft PR and head-SHA-bound merge.**
 
 ![e3d-pilot's autonomous agentic loop: discover, ideate, draft, negotiate, execute, review, publish, orbiting a central autonomous pilot core, with gold safety gates before the diff-ceiling check and before publish](docs/images/agentic-loop.svg)
 
-It is a repo-agnostic, Bash-first agentic loop: research a repository, propose an idea, check it hasn't already been done, get independent models to agree the plan is ready, hand execution to [codex-spec-runner](https://github.com/spacepacket1/codex-spec-runner) (csr), verify the result, and stop at a draft PR or a local review branch. It never merges anything itself.
+It is a repo-agnostic, Bash-first agentic loop: research a repository, propose durable ideas, wait for explicit implementation approval, get independent models to agree the plan is ready, hand execution to [codex-spec-runner](https://github.com/spacepacket1/codex-spec-runner) (csr), verify the result, publish a draft PR or local review branch, then wait for a separate merge approval bound to the exact reviewed PR head SHA.
 
 ## Why we built this
 
@@ -18,7 +18,9 @@ The other reason: good ideas rarely come from staring harder at the same backlog
 
 - **Never repeats work.** Every idea is checked against the target repo's open branches, its PR history (open and closed), and every prior e3d-pilot run before it's allowed to proceed.
 - **Never runs on one model's opinion.** The negotiate stage requires every configured reviewer — two today, more later, purely via config — to independently approve the same unchanged draft. Disagreement means bounded retries, then a clean "needs human" stop, not a forced merge.
-- **Never touches anything irreversibly.** Execution happens in an isolated worktree on its own branch. A path denylist and real post-execution diff ceilings are enforced before anything is reviewed, let alone published. Publish itself only ever opens a draft PR or commits a local review branch — no merges, no force-pushes, no pushes to a protected branch, ever.
+- **Never treats absence of approval as approval.** Discovery and ideation can run unattended, but source-mutating stages require `ideas approve`, and base-branch merge requires `approve-merge` for the exact PR head SHA.
+- **Never touches source before the first gate.** Execution happens in an isolated worktree on its own branch only after implementation approval. A path denylist and real post-execution diff ceilings are enforced before anything is reviewed or published.
+- **Never merges a different revision.** Merge approval is separate from GitHub review approval and is bound to the observed PR URL, base branch, and head SHA. A pushed commit invalidates the approval until a human reviews and approves the new head.
 - **Never assumes it's talking to spacepacket1's repos.** The entire contract with a target repository is one JSON config file. No fixed org, no fixed remote host, no `e3d-*` naming assumptions baked into the pipeline.
 
 ## How it can help others
@@ -31,7 +33,9 @@ If you maintain a repository and want a standing second opinion on "what should 
 flowchart LR
     A[discover] --> B[ideate]
     B -->|selected: none| STOP1((nothing to do))
-    B --> C[draft]
+    B --> I[[proposed idea ledger]]
+    I -->|ideas approve| C[draft]
+    I -->|ideas reject| STOPR((rejected))
     C --> D[negotiate]
     D -->|needs human| STOP2((stop for review))
     D --> E[execute]
@@ -39,18 +43,22 @@ flowchart LR
     E --> F[review]
     F -->|verify failed| STOP3((blocked))
     F --> G[publish]
-    G --> H[[draft PR / local branch]]
+    G --> H[[implemented: draft PR / local branch]]
+    H -->|approve-merge for exact head SHA| M[merge]
+    M --> Z[[merged / partially_merged / merge_failed]]
 ```
 
 1. **discover** — writes `findings.md`: Git history, branches, issues/PRs, existing docs and TODOs, plus a model-researched "External Context" section that includes an explicit cross-domain "Analogous Patterns" subsection (see [Ideation sourcing](#ideation-sourcing-and-scoring) below).
-2. **ideate** — writes ranked, deduplicated `candidates.md`. Every candidate states plainly whether it duplicates an existing branch, PR, or past run; `selected: none` is a valid, clean stop when everything proposed is already covered.
-3. **draft** — turns the selected candidate into a csr-shaped `spec-draft.md`, with machine-readable `pilot:touches` annotations per phase so later guards can check real paths instead of guessing from prose.
-4. **negotiate** — every configured reviewer must approve the same unchanged draft in one pass; disagreement drives bounded revision rounds, ending in `spec-final.md` on success or a clean "needs human" stop.
-5. **execute** — hands `spec-final.md` to csr inside an isolated worktree on its own branch, then enforces `protected_paths` and the real post-execution `max_diff_files`/`max_diff_lines` ceilings.
-6. **review** — runs (or auto-detects) verification commands and asks an independent review provider to inspect the actual diff.
-7. **publish** — only after verification passes: commits the run's audit artifacts to the branch and hands off to a publish backend (`github` or `local`) to open a draft PR or leave a local review branch.
+2. **ideate** — writes ranked, deduplicated `candidates.md` and materializes every non-duplicate candidate as a `proposed` idea. `selected: none` is a valid, clean stop when everything proposed is already covered.
+3. **approval gate 1** — a human approves or rejects the exact idea. `proposed` never means rejected, and no source-mutating stage can run without current implementation approval.
+4. **draft** — turns the approved candidate into a csr-shaped `spec-draft.md`, with machine-readable `pilot:touches` annotations per phase so later guards can check real paths instead of guessing from prose.
+5. **negotiate** — every configured reviewer must approve the same unchanged draft in one pass; disagreement drives bounded revision rounds, ending in `spec-final.md` on success or a clean "needs human" stop.
+6. **execute** — hands `spec-final.md` to csr inside an isolated worktree on its own branch, then enforces `protected_paths` and the real post-execution `max_diff_files`/`max_diff_lines` ceilings.
+7. **review** — runs (or auto-detects) verification commands and asks an independent review provider to inspect the actual diff.
+8. **publish** — only after verification passes: commits the run's audit artifacts to the branch and hands off to a publish backend (`github` or `local`) to open a draft PR or leave a local review branch.
+9. **approval gate 2** — a human runs `approve-merge` after reviewing the draft PR/local branch. For GitHub targets, e3d-pilot records the current PR head SHA and refuses to merge any later head without a new approval.
 
-Generated state lives entirely under `.e3d-pilot/runs/<run-id>/` in the *target* repository — inspectable, git-ignorable, safe to delete and regenerate. `discover` and `all` without `--run-id` start a new, collision-safe run-id and update `.e3d-pilot/latest-run`; every other stage resumes that latest run-id unless you pass `--run-id <id>` explicitly to resume a specific one. Create `.e3d-pilot/paused` in a target repo to stop stages before any external work happens.
+Generated run artifacts live under `.e3d-pilot/runs/<run-id>/` in the *target* repository. Idea ledger state lives under `.e3d-pilot/ideas/<idea-id>/idea.json`, with append-only events in `.e3d-pilot/events.jsonl`. `idea.json` is derived from events and can be rebuilt; `events.jsonl` is the immutable audit source. `discover` and `all` without `--run-id` start a new, collision-safe run-id and update `.e3d-pilot/latest-run`; every other stage resumes that latest run-id unless you pass `--run-id <id>` explicitly. Create `.e3d-pilot/paused` in a target repo to stop stages before any external work happens.
 
 ## Ideation sourcing and scoring
 
@@ -95,6 +103,67 @@ Validate and run:
 e3d-pilot config validate /path/to/repository
 e3d-pilot run --repo /path/to/repository --stage all
 ```
+
+## Approval-gated operator workflow
+
+The default `run --stage all` discovers and ideates autonomously, materializes ideas, then stops before `draft` unless the selected idea already has current implementation approval. This is a successful waiting state, not a crash.
+
+List and inspect proposed ideas:
+
+```bash
+e3d-pilot ideas list --repo /path/to/repository --status proposed
+e3d-pilot ideas show --repo /path/to/repository idea-abc123def456
+```
+
+Approve or reject implementation:
+
+```bash
+e3d-pilot ideas approve --repo /path/to/repository idea-abc123def456 --actor you@example.com --note "Build this next"
+e3d-pilot ideas reject  --repo /path/to/repository idea-abc123def456 --reason "Not aligned this cycle" --actor you@example.com
+```
+
+`ideas approve` is the first gate. It authorizes drafting, negotiation, execution, review, and publication for the exact idea content and approved target plan. It is not a GitHub PR review, and it does not authorize merge.
+
+Implement approved ideas:
+
+```bash
+e3d-pilot ideas implement --repo /path/to/repository idea-abc123def456
+e3d-pilot ideas implement-approved --repo /path/to/repository
+```
+
+Successful implementation records the run ID, branch/worktree, changed files and lines, verification results, review result, publish backend, PR URL/number, and final PR head SHA. GitHub publication creates a draft PR; local publication leaves a local review branch and summary.
+
+After reviewing the draft PR, approve and perform merge with the second gate:
+
+```bash
+e3d-pilot ideas approve-merge --repo /path/to/repository idea-abc123def456 --actor you@example.com --note "Reviewed head"
+e3d-pilot ideas merge         --repo /path/to/repository idea-abc123def456
+```
+
+`approve-merge` records the exact PR URL, base branch, and head SHA. `ideas merge` refreshes forge state immediately before merging and refuses stale heads, changed base branches, draft PRs, closed PRs, or missing approvals. A GitHub review approval is useful social evidence, but it is not an e3d-pilot merge approval.
+
+Request changes, sync forge state, and record outcomes:
+
+```bash
+e3d-pilot ideas request-changes --repo /path/to/repository idea-abc123def456 --reason "Tighten scope"
+e3d-pilot ideas sync            --repo /path/to/repository
+e3d-pilot ideas outcome         --repo /path/to/repository idea-abc123def456 --window 7d --metric retained=true --metric revenue=42
+e3d-pilot ideas rebuild         --repo /path/to/repository
+```
+
+`sync` observes PR head changes, draft/ready changes, checks, closures, and external merges without approving anything. A new PR head invalidates merge approval. `outcome` appends typed metrics; it never overwrites history. `rebuild` rematerializes derived `idea.json` snapshots from `events.jsonl`.
+
+## Migration
+
+Existing `.e3d-pilot/runs/<run-id>/` artifacts remain readable. A legacy selected candidate can be materialized as a `proposed` idea by rerunning ideation for that run:
+
+```bash
+e3d-pilot run --repo /path/to/repository --stage ideate --run-id <legacy-run-id>
+```
+
+That command may create a proposed idea record, but it never creates implementation approval. A human must still run `ideas approve`.
+
+Existing open e3d-pilot PRs should be adopted only through an explicit adoption command when one is available for your installed version. Adoption must record provenance for the PR/run, start the idea at `implemented`, and still require `approve-merge` before any base-branch merge. Do not treat an open PR, a GitHub review approval, or a branch name as ledger approval.
 
 ## Providers and negotiation
 
@@ -177,11 +246,21 @@ e3d-pilot fleet discover examples/sample-fleet.json --focus revenue
 
 It needs its own small config — just `providers.discover` and `providers.ideate` (see [`examples/sample-fleet-config.json`](examples/sample-fleet-config.json)) — at `.e3d-pilot-fleet/config.json` next to the fleet file, or pass `--config <path>` to point elsewhere. Output lands under `.e3d-pilot-fleet/runs/<run-id>/findings.md` and `candidates.md`, mirroring the single-repo run layout: `findings.md` has a per-repo `## Portfolio` digest (README/AGENTS/CLAUDE content, head sha) and a model-researched `## Cross-Repo Context` section; `candidates.md` ranks candidates the same way single-repo `ideate` does, except every candidate must name 2 or more repos in a `Repos:` field, and dedup is checked only against prior `fleet discover` runs in the same workspace — not against each individual repo's own branches or PRs, which is a real scope limit worth knowing about.
 
-This stage stops at `candidates.md`: turning a selected cross-repo candidate into per-repo `spec-draft.md`s and running them through negotiate/execute/publish in each touched repo is not yet automated.
+This stage stops after materializing fleet ideas in `.e3d-pilot-fleet/ideas/`, with events in `.e3d-pilot-fleet/events.jsonl`. Cross-repo implementation still requires explicit approval:
+
+```bash
+e3d-pilot fleet ideas examples/sample-fleet.json list --status proposed
+e3d-pilot fleet ideas examples/sample-fleet.json show idea-abc123def456
+e3d-pilot fleet ideas examples/sample-fleet.json approve idea-abc123def456 --actor you@example.com
+e3d-pilot fleet ideas examples/sample-fleet.json implement idea-abc123def456
+e3d-pilot fleet ideas examples/sample-fleet.json implement-approved
+```
+
+A fleet idea records ordered per-repo targets at approval time. Targets are implemented sequentially. If some targets merge and a later target fails or changes, the fleet idea becomes `partially_merged`; e3d-pilot records which repositories merged and which did not. It never claims cross-repo atomicity.
 
 ## Reviewing fleet improvements
 
-After a fleet run, `fleet prs` gives you a single terminal view of every open e3d-pilot draft PR across all repos — with the selected idea, its Attraction and Retention scores, and the effort estimate pulled from the local candidates file:
+After a fleet run, `fleet prs` gives you a terminal view of open e3d-pilot draft PRs across repos. Use it for visibility, not as the approval workflow:
 
 ```bash
 e3d-pilot fleet prs ~/e3d-fleet.json
@@ -198,40 +277,66 @@ e3d-trade               #1     DRAFT  Trade Decision Receipts                   
 
 If `~/e3d-fleet.json` exists it is used by default; pass an explicit path otherwise.
 
-From there, act on individual repos without leaving the terminal:
+Recommended fleet approvals use the idea ledger:
 
 ```bash
-e3d-pilot fleet prs --approve e3d-sdk   # mark ready for review + gh review approve
-e3d-pilot fleet prs --merge   e3d-sdk   # mark ready + squash merge + delete branch
-e3d-pilot fleet prs --close   e3d-sdk   # close without merging
+e3d-pilot fleet ideas ~/e3d-fleet.json approve-merge idea-abc123def456 --actor you@example.com
+e3d-pilot fleet ideas ~/e3d-fleet.json merge idea-abc123def456
+e3d-pilot fleet ideas ~/e3d-fleet.json merge-approved
 ```
 
-Closing a PR is the right way to reject an idea: it enters the closed-PR history that the dedup system checks, so the same idea won't be re-proposed on the next run. Merging is up to you — e3d-pilot never merges anything on its own.
+`fleet ideas approve` is implementation approval. `fleet ideas approve-merge` is merge approval for the exact reviewed head SHA. A GitHub review approval or `fleet prs --approve` action must not be treated as either ledger approval.
 
 ## Running on a schedule
 
 e3d-pilot is deliberately not a daemon — every invocation is a single, short-lived CLI call that runs (or resumes) a stage and exits. There's no built-in scheduler, so "continuous" is up to whatever calls it: cron, a systemd timer, a scheduled CI workflow, or your own orchestrator all work equally well.
 
-A daily cron entry running a whole fleet at 2am. Pass `LOCAL_MODEL_ENDPOINT` if you use a self-hosted model as a negotiate reviewer:
+Separate autonomous ideation from approved implementation, sync, and dataset export. For example:
 
 ```cron
-0 2 * * * PATH="/usr/local/bin:$PATH" LOCAL_MODEL_ENDPOINT="http://127.0.0.1:5050/v1" /path/to/e3d-pilot/bin/e3d-pilot fleet /path/to/fleet.json >> /var/log/e3d-pilot.log 2>&1
+# Autonomous single-repo ideation; stops before implementation approval.
+0 */6 * * * /path/to/e3d-pilot/bin/e3d-pilot run --repo /path/to/repo --stage all --focus revenue >> /var/log/e3d-pilot-ideate.log 2>&1
+
+# Implement only ideas that humans already approved.
+15 * * * * PATH="/usr/local/bin:$PATH" /path/to/e3d-pilot/bin/e3d-pilot ideas implement-approved --repo /path/to/repo >> /var/log/e3d-pilot-implement.log 2>&1
+
+# Observe forge state and invalidate stale merge approvals.
+*/30 * * * * PATH="/usr/local/bin:$PATH" /path/to/e3d-pilot/bin/e3d-pilot ideas sync --repo /path/to/repo >> /var/log/e3d-pilot-sync.log 2>&1
+
+# Weekly labeled dataset export for local Qwen evaluation/training.
+0 3 * * 1 /path/to/e3d-pilot/bin/e3d-pilot fleet train export /path/to/fleet.json >> /var/log/e3d-pilot-export.log 2>&1
 ```
 
-Or a single repository:
+Fleet equivalents:
 
 ```cron
-0 */6 * * * /path/to/e3d-pilot/bin/e3d-pilot run --repo /path/to/repo --stage all >> /var/log/e3d-pilot.log 2>&1
+0 2 * * * PATH="/usr/local/bin:$PATH" LOCAL_MODEL_ENDPOINT="http://127.0.0.1:5050/v1" /path/to/e3d-pilot/bin/e3d-pilot fleet discover /path/to/fleet.json --focus revenue >> /var/log/e3d-pilot-fleet-ideate.log 2>&1
+20 * * * * PATH="/usr/local/bin:$PATH" /path/to/e3d-pilot/bin/e3d-pilot fleet ideas /path/to/fleet.json implement-approved >> /var/log/e3d-pilot-fleet-implement.log 2>&1
+*/30 * * * * PATH="/usr/local/bin:$PATH" /path/to/e3d-pilot/bin/e3d-pilot fleet ideas /path/to/fleet.json sync >> /var/log/e3d-pilot-fleet-sync.log 2>&1
 ```
 
 A nonzero exit can mean a real failure, or a legitimate stop (`ideate`'s "nothing to do," a `negotiate` deadlock needing human input, a failed `verify`) — check `.e3d-pilot/runs/<run-id>/` in the target repo before treating it as a crash. Drop a `.e3d-pilot/paused` file in a target repo to make the scheduled job a no-op without touching the crontab.
 
+## Weekly exports
+
+Use fleet training commands to aggregate the fleet ledger plus every repo ledger named by the fleet file:
+
+```bash
+e3d-pilot fleet train readiness /path/to/fleet.json --since 2026-08-01T00:00:00Z
+e3d-pilot fleet train export    /path/to/fleet.json --week 2026-W32
+```
+
+Exports write `ideation.jsonl`, `preferences.jsonl`, `implementation.jsonl`, and `manifest.json` under `.e3d-pilot-fleet/datasets/<YYYY-Www>/` by default. Pending ideas may be exported as unlabeled ideation records, never as rejected examples. Explicit approvals, rejections, changes requested, failures, merges, partial merges, closures, reversions, and typed outcomes provide the labels.
+
 ## Safety model
 
-Execution uses a separate worktree and per-run branch. Protected paths are checked both when drafting and immediately before csr. Actual file/line ceilings stop before review. Failed verification blocks publish. Publication is draft/local only, with no merge, force-push, or direct base-branch push.
+Discovery and ideation do not mutate source. Draft, negotiate, execute, review, and publish require current implementation approval. Execution uses a separate worktree and per-run branch. Protected paths are checked both when drafting and immediately before csr. Actual file/line ceilings stop before review. Failed verification blocks publish. Publication opens a draft PR or local review branch.
+
+Merge is a separate operation. `approve-merge` binds approval to the observed target set and exact PR head SHA. Merge refuses stale heads, changed base branches, draft PRs, closed PRs, missing approvals, and unsupported local merge backends. e3d-pilot never force-pushes or pushes directly to a protected base branch.
 
 Run the repository test suite with:
 
 ```bash
-for test_file in tests/*.sh; do bash "$test_file"; done
+set -e
+for test_file in tests/phase{1..20}.sh; do bash "$test_file"; done
 ```

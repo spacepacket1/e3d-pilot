@@ -2704,8 +2704,21 @@ ideas_do_sync() {
   for file in "${files[@]}"; do
     [[ -n "$file" ]] || continue
     scanned=$((scanned + 1))
-    local this_id extra_json extra_file event note status
+    local this_id extra_json extra_file event note status this_status
     this_id="$(jq -r '.idea_id' "$file")"
+    this_status="$(jq -r '.status' "$file")"
+    # Terminal statuses have no allowed forge_sync/merge_observed_external/
+    # idea_closed transition in the lifecycle validator (only outcome_recorded
+    # and their specific retry events are), so scanning them would just
+    # rediscover the same already-terminal forge state on every future sync
+    # call and die on a rejected transition. Nothing meaningful for sync to
+    # observe once an idea is done.
+    case "$this_status" in
+      merged|reverted|closed|implementation_failed|merge_failed)
+        noop=$((noop + 1))
+        continue
+        ;;
+    esac
     extra_json="$(ideas_collect_sync_changes "$kind" "$canonical" "$this_id" "$file")"
     if [[ "$extra_json" == "{}" ]]; then
       noop=$((noop + 1))
