@@ -39,6 +39,9 @@ Usage:
   e3d-pilot ideas approve --repo <path> <idea-id> [--actor <actor>] [--note <text>]
   e3d-pilot ideas reject --repo <path> <idea-id> --reason <text> [--actor <actor>]
   e3d-pilot ideas request-changes --repo <path> <idea-id> --reason <text> [--actor <actor>]
+  e3d-pilot ideas sync --repo <path> [<idea-id>]
+  e3d-pilot ideas outcome --repo <path> <idea-id> --window <7d|30d|custom> --metric <key=value>... [--note <text>]
+  e3d-pilot ideas mark-reverted --repo <path> <idea-id> --reason <text>
   e3d-pilot ideas implement --repo <path> <idea-id>
   e3d-pilot ideas implement-approved --repo <path>
   e3d-pilot ideas approve-merge --repo <path> <idea-id> [--actor <actor>] [--note <text>]
@@ -54,6 +57,8 @@ Usage:
   e3d-pilot fleet ideas <fleet.json> approve <idea-id> [--actor <actor>] [--note <text>]
   e3d-pilot fleet ideas <fleet.json> reject <idea-id> --reason <text> [--actor <actor>]
   e3d-pilot fleet ideas <fleet.json> request-changes <idea-id> --reason <text> [--actor <actor>]
+  e3d-pilot fleet ideas <fleet.json> sync [<idea-id>]
+  e3d-pilot fleet ideas <fleet.json> outcome <idea-id> --window <7d|30d|custom> --metric <key=value>... [--note <text>]
   e3d-pilot fleet ideas <fleet.json> implement <idea-id> [--continue-on-target-failure]
   e3d-pilot fleet ideas <fleet.json> implement-approved [--continue-on-target-failure]
   e3d-pilot fleet ideas <fleet.json> approve-merge <idea-id> [--actor <actor>] [--note <text>]
@@ -2392,10 +2397,435 @@ ideas_do_reject() {
 ideas_do_request_changes() {
   local kind="$1" workspace="$2" context_dir="$3" idea_id="$4" actor_explicit="$5" reason="$6"
   [[ -n "$reason" ]] || die "request-changes requires --reason <text>"
-  local canonical actor
+  local canonical actor idea_file status targets_tmp reviewed_head
   canonical="$(ideas_canonical_path "$workspace")" || die "workspace not found: $workspace"
   actor="$(ideas_resolve_actor "$context_dir" "$actor_explicit")"
-  ideas_transition "$kind" "$canonical" "$idea_id" changes_requested "$actor" "$reason" "" ""
+  idea_file="$(ideas_require_snapshot "$kind" "$canonical" "$idea_id")"
+  status="$(jq -r '.status' "$idea_file")"
+  case "$status" in
+    implemented|approved_for_merge) ;;
+    *) die "idea $idea_id cannot request changes from status: $status" ;;
+  esac
+  targets_tmp="$(mktemp "${TMPDIR:-/tmp}/e3d-request-changes-targets.XXXXXX")"
+  jq -cS '
+    if (.merge_approval.targets // [] | length) > 0 then
+      .merge_approval.targets
+      | map({
+          repo,
+          pr_url,
+          pr_number,
+          reviewed_head_sha: (.head_sha // null)
+        })
+    else
+      ((.outcomes // [])
+      | map(select(.type=="implementation" and .status=="succeeded"))
+      | .[-1].targets // [])
+      | map(select(.publish_backend == "github" and (.pr_url // null) != null) | {
+          repo,
+          pr_url,
+          pr_number,
+          reviewed_head_sha: (.final_pr_head_sha // null)
+        })
+    end
+  ' "$idea_file" > "$targets_tmp"
+  reviewed_head="$(jq -r '.[0].reviewed_head_sha // empty' "$targets_tmp")"
+  ideas_transition "$kind" "$canonical" "$idea_id" changes_requested "$actor" "$reason" "$targets_tmp" "$reviewed_head" >/dev/null
+  rm -f "$targets_tmp"
+}
+
+ideas_append_custom_event() {
+  local kind="$1" workspace="$2" idea_id="$3" event="$4" actor="$5" note="$6" extra_file="$7"
+  local canonical event_tmp timestamp
+  canonical="$(ideas_canonical_path "$workspace")" || die "workspace not found: $workspace"
+  ideas_require_snapshot "$kind" "$canonical" "$idea_id" >/dev/null
+  event_tmp="$(mktemp "${TMPDIR:-/tmp}/e3d-idea-custom-event.XXXXXX")"
+  timestamp="$(ideas_utc_now)"
+  jq -ncS \
+    --argjson schema "$IDEA_SCHEMA_VERSION" \
+    --arg event_id "$(ideas_event_id "$idea_id:$event:$timestamp")" \
+    --arg idea_id "$idea_id" \
+    --arg event "$event" \
+    --arg timestamp "$timestamp" \
+    --arg actor "$actor" \
+    --arg note "$note" \
+    --slurpfile extra "$extra_file" '
+      {
+        schema_version:$schema,
+        event_id:$event_id,
+        idea_id:$idea_id,
+        event:$event,
+        timestamp:$timestamp,
+        actor:$actor
+      }
+      | if $note != "" then .note=$note else . end
+      | . + ($extra[0] // {})
+    ' > "$event_tmp"
+  ideas_commit_event_file "$kind" "$canonical" "$idea_id" "$event_tmp" || {
+    rm -f "$event_tmp"
+    return 1
+  }
+  rm -f "$event_tmp"
+}
+
+gh_pr_check_summary_json() {
+  local metadata="$1"
+  jq -cS '
+    (.statusCheckRollup // null) as $rollup
+    | if ($rollup == null) then
+        null
+      else
+        ($rollup | if type == "array" then . else [.] end) as $items
+        | {
+            total: ($items | length),
+            passed: ($items | map(select((.conclusion // .state // .status // "") | ascii_upcase | test("SUCCESS|PASSED"))) | length),
+            failed: ($items | map(select((.conclusion // .state // .status // "") | ascii_upcase | test("FAIL|ERROR|CANCEL|TIMED_OUT"))) | length),
+            pending: ($items | map(select((.conclusion // "") == null or (.status // .state // "" | ascii_upcase | test("QUEUED|IN_PROGRESS|PENDING|EXPECTED")))) | length)
+          }
+      end
+  ' <<<"$metadata"
+}
+
+forge_observation_from_metadata() {
+  local target_json="$1" metadata="$2"
+  local check_summary
+  check_summary="$(gh_pr_check_summary_json "$metadata")"
+  jq -ncS \
+    --argjson target "$target_json" \
+    --argjson metadata "$metadata" \
+    --argjson checks "$check_summary" '
+    {
+      repo: ($target.repo // null),
+      publish_backend: ($target.publish_backend // "github"),
+      pr_url: ($metadata.url // $target.pr_url // null),
+      pr_number: ($metadata.number // $target.pr_number // null),
+      base_branch: ($metadata.baseRefName // $target.base_branch // null),
+      head_sha: ($metadata.headRefOid // $target.head_sha // null),
+      pr_state: ($metadata.state // null),
+      is_draft: ($metadata.isDraft // null),
+      merge_sha: ($metadata.mergeCommit.oid // $metadata.mergeCommit.sha // null),
+      close_reason: ($metadata.closeReason // null),
+      checks: $checks
+    }'
+}
+
+idea_target_baseline_json() {
+  local idea_file="$1" repo="$2" pr_url="$3" pr_number="$4"
+  jq -cS \
+    --arg repo "$repo" \
+    --arg pr_url "$pr_url" \
+    --arg pr_number "$pr_number" '
+      (
+        .forge.targets[]? | select(.repo == $repo and (.pr_url // "") == $pr_url)
+      ) // (
+        .merge_approval.targets[]? | select(.repo == $repo and (.pr_url // "") == $pr_url)
+        | {
+            repo,
+            publish_backend,
+            pr_url,
+            pr_number,
+            base_branch,
+            head_sha,
+            pr_state:"OPEN",
+            is_draft:null,
+            merge_sha:null,
+            close_reason:null,
+            checks:null
+          }
+      ) // (
+        (.outcomes // [])
+        | map(select(.type=="implementation" and .status=="succeeded"))
+        | .[-1].targets[]?
+        | select(.repo == $repo and (.pr_url // "") == $pr_url)
+        | {
+            repo,
+            publish_backend,
+            pr_url,
+            pr_number,
+            base_branch,
+            head_sha:(.final_pr_head_sha // null),
+            pr_state:"OPEN",
+            is_draft:null,
+            merge_sha:null,
+            close_reason:null,
+            checks:null
+          }
+      ) // null
+    ' "$idea_file" | head -n1
+}
+
+idea_sync_targets_json() {
+  local idea_file="$1"
+  jq -cS '
+    [
+      (.merge_approval.targets[]? | select(.publish_backend == "github")),
+      (
+        (.outcomes // [])
+        | map(select(.type=="implementation" and .status=="succeeded"))
+        | .[-1].targets[]?
+        | select(.publish_backend == "github" and (.pr_url // null) != null)
+        | {
+            repo,
+            publish_backend,
+            pr_url,
+            pr_number,
+            base_branch,
+            head_sha:(.final_pr_head_sha // null)
+          }
+      ),
+      (.forge.targets[]? | select(.publish_backend == "github" and (.pr_url // null) != null))
+    ]
+    | map(select(.repo != null and (.pr_url // null) != null))
+    | unique_by(.repo + "|" + .pr_url + "|" + ((.pr_number // null) | tostring))
+  ' "$idea_file"
+}
+
+sync_summary_output() {
+  local scope="$1" scanned="$2" changed="$3" noop="$4" failures="${5:-0}"
+  printf '%s ideas sync: scanned=%s changed=%s noop=%s failures=%s\n' "$scope" "$scanned" "$changed" "$noop" "$failures"
+}
+
+ideas_collect_sync_changes() {
+  local kind="$1" workspace="$2" idea_id="$3" idea_file="$4"
+  local targets_json count idx target metadata obs baseline approval_head source_status current_status restore_status matched_count merged_count closed_count
+  local generic_tmp invalidation_tmp merged_tmp closed_tmp
+  current_status="$(jq -r '.status' "$idea_file")"
+  targets_json="$(idea_sync_targets_json "$idea_file")"
+  count="$(jq 'length' <<<"$targets_json")"
+  generic_tmp="$(mktemp "${TMPDIR:-/tmp}/e3d-sync-generic.XXXXXX")"
+  invalidation_tmp="$(mktemp "${TMPDIR:-/tmp}/e3d-sync-invalidation.XXXXXX")"
+  merged_tmp="$(mktemp "${TMPDIR:-/tmp}/e3d-sync-merged.XXXXXX")"
+  closed_tmp="$(mktemp "${TMPDIR:-/tmp}/e3d-sync-closed.XXXXXX")"
+  : > "$generic_tmp"
+  : > "$invalidation_tmp"
+  : > "$merged_tmp"
+  : > "$closed_tmp"
+
+  for ((idx=0; idx<count; idx++)); do
+    target="$(jq -cS --argjson i "$idx" '.[$i]' <<<"$targets_json")"
+    metadata="$(gh_pr_view_json "$(jq -r '.repo' <<<"$target")" "$(jq -r '.pr_url' <<<"$target")" "number,url,isDraft,headRefOid,baseRefName,state,mergeCommit,closeReason,statusCheckRollup")"
+    obs="$(forge_observation_from_metadata "$target" "$metadata")"
+    baseline="$(idea_target_baseline_json "$idea_file" "$(jq -r '.repo' <<<"$obs")" "$(jq -r '.pr_url' <<<"$obs")" "$(jq -r '(.pr_number // "") | tostring' <<<"$obs")")"
+    if [[ -z "$baseline" || "$baseline" == "null" ]]; then
+      printf '%s\n' "$obs" >> "$generic_tmp"
+      continue
+    fi
+
+    if [[ "$(jq -cS . <<<"$baseline")" != "$(jq -cS . <<<"$obs")" ]]; then
+      if [[ "$current_status" == "approved_for_merge" && "$(jq -r '.head_sha // empty' <<<"$obs")" != "$(jq -r '.head_sha // empty' <<<"$baseline")" ]]; then
+        printf '%s\n' "$obs" >> "$invalidation_tmp"
+      elif [[ "$(jq -r '.pr_state // empty' <<<"$obs")" == "MERGED" ]]; then
+        printf '%s\n' "$obs" >> "$merged_tmp"
+      elif [[ "$(jq -r '.pr_state // empty' <<<"$obs")" == "CLOSED" ]]; then
+        printf '%s\n' "$obs" >> "$closed_tmp"
+      else
+        printf '%s\n' "$obs" >> "$generic_tmp"
+      fi
+    fi
+  done
+
+  if [[ -s "$invalidation_tmp" ]]; then
+    source_status="$(jq -r '.merge_approval.source_status // "implemented"' "$idea_file")"
+    case "$source_status" in
+      changes_requested) restore_status="changes_requested" ;;
+      *) restore_status="implemented" ;;
+    esac
+    jq -ncS \
+      --arg restore_status "$restore_status" \
+      --slurpfile observations "$invalidation_tmp" \
+      '{
+        restore_status:$restore_status,
+        observations:$observations
+      }'
+    rm -f "$generic_tmp" "$invalidation_tmp" "$merged_tmp" "$closed_tmp"
+    return 0
+  fi
+
+  if [[ -s "$merged_tmp" ]]; then
+    jq -ncS \
+      --argjson approval_present "$(jq '(.merge_approval.targets // []) | length > 0' "$idea_file")" \
+      --argjson matched_head "$(
+        jq -n --slurpfile merged "$merged_tmp" --slurpfile idea "$idea_file" '
+          any($merged[]; . as $obs | any($idea[0].merge_approval.targets[]?; (.repo == $obs.repo) and ((.pr_url // "") == ($obs.pr_url // "")) and ((.head_sha // "") == ($obs.head_sha // ""))))
+        '
+      )" \
+      --slurpfile observations "$merged_tmp" '
+      {
+        observations:$observations,
+        outcome:{
+          type:"merge_external",
+          status:"merged_external",
+          approval_present:$approval_present,
+          approval_matched_head:$matched_head,
+          targets:$observations
+        }
+      }'
+    rm -f "$generic_tmp" "$invalidation_tmp" "$merged_tmp" "$closed_tmp"
+    return 0
+  fi
+
+  if [[ -s "$closed_tmp" ]]; then
+    jq -ncS \
+      --arg prior_status "$current_status" \
+      --slurpfile observations "$closed_tmp" '
+      {
+        outcome:{
+          type:"closed",
+          prior_status:$prior_status,
+          targets:$observations
+        }
+      }'
+    rm -f "$generic_tmp" "$invalidation_tmp" "$merged_tmp" "$closed_tmp"
+    return 0
+  fi
+
+  if [[ -s "$generic_tmp" ]]; then
+    jq -ncS --slurpfile observations "$generic_tmp" '{observations:$observations}'
+    rm -f "$generic_tmp" "$invalidation_tmp" "$merged_tmp" "$closed_tmp"
+    return 0
+  fi
+
+  rm -f "$generic_tmp" "$invalidation_tmp" "$merged_tmp" "$closed_tmp"
+  printf '{}'
+}
+
+ideas_do_sync() {
+  local kind="$1" workspace="$2" idea_id="${3:-}" canonical actor files=() file scanned=0 changed=0 noop=0
+  canonical="$(ideas_canonical_path "$workspace")" || die "workspace not found: $workspace"
+  actor="system-sync"
+  if [[ -n "$idea_id" ]]; then
+    files=("$(ideas_require_snapshot "$kind" "$canonical" "$idea_id")")
+  else
+    mapfile -t files < <(ideas_snapshot_files "$kind" "$canonical")
+  fi
+  for file in "${files[@]}"; do
+    [[ -n "$file" ]] || continue
+    scanned=$((scanned + 1))
+    local this_id extra_json extra_file event note status
+    this_id="$(jq -r '.idea_id' "$file")"
+    extra_json="$(ideas_collect_sync_changes "$kind" "$canonical" "$this_id" "$file")"
+    if [[ "$extra_json" == "{}" ]]; then
+      noop=$((noop + 1))
+      continue
+    fi
+    extra_file="$(mktemp "${TMPDIR:-/tmp}/e3d-sync-extra.XXXXXX")"
+    printf '%s\n' "$extra_json" > "$extra_file"
+    if jq -e '.restore_status? != null' "$extra_file" >/dev/null; then
+      note="sync observed new PR head; merge approval invalidated"
+      ideas_append_custom_event "$kind" "$canonical" "$this_id" merge_approval_invalidated "$actor" "$note" "$extra_file" >/dev/null
+    elif jq -e '.outcome?.type == "merge_external"' "$extra_file" >/dev/null; then
+      note="sync observed external merge"
+      ideas_append_custom_event "$kind" "$canonical" "$this_id" merge_observed_external "$actor" "$note" "$extra_file" >/dev/null
+    elif jq -e '.outcome?.type == "closed"' "$extra_file" >/dev/null; then
+      note="sync observed PR closure"
+      ideas_append_custom_event "$kind" "$canonical" "$this_id" idea_closed "$actor" "$note" "$extra_file" >/dev/null
+    else
+      note="sync observed forge updates"
+      ideas_append_custom_event "$kind" "$canonical" "$this_id" forge_sync "$actor" "$note" "$extra_file" >/dev/null
+    fi
+    rm -f "$extra_file"
+    changed=$((changed + 1))
+  done
+  sync_summary_output "$kind" "$scanned" "$changed" "$noop" 0
+}
+
+parse_metric_value_json() {
+  local raw="$1"
+  if [[ "$raw" == "true" || "$raw" == "false" ]]; then
+    printf '%s' "$raw"
+  elif [[ "$raw" =~ ^-?[0-9]+([.][0-9]+)?$ ]]; then
+    printf '%s' "$raw"
+  else
+    jq -Rn --arg v "$raw" '$v'
+  fi
+}
+
+ideas_do_outcome() {
+  local kind="$1" workspace="$2" context_dir="$3" idea_id="$4" window="$5" note="$6"; shift 6
+  local canonical actor metrics=("$@") metrics_tmp extra_file
+  [[ "$window" == "7d" || "$window" == "30d" || "$window" == "custom" ]] || die "outcome requires --window <7d|30d|custom>"
+  [[ ${#metrics[@]} -gt 0 ]] || die "outcome requires at least one --metric <key=value>"
+  canonical="$(ideas_canonical_path "$workspace")" || die "workspace not found: $workspace"
+  actor="$(ideas_resolve_actor "$context_dir" "")"
+  metrics_tmp="$(mktemp "${TMPDIR:-/tmp}/e3d-outcome-metrics.XXXXXX")"
+  : > "$metrics_tmp"
+  local pair key value type_json value_json keys_tmp
+  keys_tmp="$(mktemp "${TMPDIR:-/tmp}/e3d-outcome-keys.XXXXXX")"
+  : > "$keys_tmp"
+  for pair in "${metrics[@]}"; do
+    [[ "$pair" == *=* ]] || { rm -f "$metrics_tmp" "$keys_tmp"; die "invalid --metric value: $pair"; }
+    key="${pair%%=*}"
+    value="${pair#*=}"
+    [[ -n "$key" ]] || { rm -f "$metrics_tmp" "$keys_tmp"; die "invalid --metric key in: $pair"; }
+    printf '%s\n' "$key" >> "$keys_tmp"
+    value_json="$(parse_metric_value_json "$value")"
+    type_json="$(jq -nr --argjson v "$value_json" '($v | type)')"
+    jq -ncS \
+      --arg key "$key" \
+      --arg window "$window" \
+      --arg note "$note" \
+      --arg observed_at "$(ideas_utc_now)" \
+      --arg type "$type_json" \
+      --argjson value "$value_json" '
+      {
+        key:$key,
+        type:$type,
+        value:$value,
+        window:$window,
+        observed_at:$observed_at,
+        note:(if $note == "" then null else $note end)
+      }' >> "$metrics_tmp"
+  done
+  if [[ "$(sort "$keys_tmp" | uniq -d | wc -l | tr -d ' ')" != "0" ]]; then
+    rm -f "$metrics_tmp" "$keys_tmp"
+    die "outcome rejects duplicate metric keys in one invocation"
+  fi
+  extra_file="$(mktemp "${TMPDIR:-/tmp}/e3d-outcome-extra.XXXXXX")"
+  jq -s -cS --arg window "$window" --arg note "$note" '
+    {
+      outcome:{
+        type:"metrics",
+        window:$window,
+        note:(if $note == "" then null else $note end),
+        metrics:.
+      }
+    }' "$metrics_tmp" > "$extra_file"
+  ideas_append_custom_event "$kind" "$canonical" "$idea_id" outcome_recorded "$actor" "$note" "$extra_file" >/dev/null
+  rm -f "$metrics_tmp" "$keys_tmp" "$extra_file"
+  printf 'ideas: recorded outcomes for %s window=%s metrics=%s\n' "$idea_id" "$window" "${#metrics[@]}"
+}
+
+ideas_find_revert_commit() {
+  local repo="$1" idea_file="$2" merge_sha
+  while IFS= read -r merge_sha; do
+    [[ -n "$merge_sha" && "$merge_sha" != "null" ]] || continue
+    git -C "$repo" log --format='%H %s' --grep="$merge_sha" -i 2>/dev/null \
+      | awk '/revert/i {print $1; exit}'
+  done < <(jq -r '.outcomes[]?.targets[]?.merge_sha // empty' "$idea_file")
+}
+
+ideas_do_mark_reverted() {
+  local repo="$1" idea_id="$2" reason="$3"
+  local canonical actor idea_file revert_commit extra_file
+  [[ -n "$reason" ]] || die "mark-reverted requires --reason <text>"
+  canonical="$(ideas_canonical_path "$repo")" || die "workspace not found: $repo"
+  actor="$(ideas_resolve_actor "$repo" "")"
+  idea_file="$(ideas_require_snapshot repo "$canonical" "$idea_id")"
+  [[ "$(jq -r '.status' "$idea_file")" == "merged" ]] || die "mark-reverted requires a merged idea"
+  revert_commit="$(ideas_find_revert_commit "$repo" "$idea_file" || true)"
+  extra_file="$(mktemp "${TMPDIR:-/tmp}/e3d-revert-extra.XXXXXX")"
+  jq -ncS \
+    --arg reason "$reason" \
+    --arg revert_commit "$revert_commit" '
+    {
+      outcome:{
+        type:"revert",
+        reason:$reason,
+        revert_commit:(if $revert_commit == "" then null else $revert_commit end)
+      }
+    }' > "$extra_file"
+  ideas_append_custom_event repo "$canonical" "$idea_id" idea_reverted "$actor" "$reason" "$extra_file" >/dev/null
+  rm -f "$extra_file"
+  printf 'ideas: marked reverted %s%s\n' "$idea_id" "$(if [[ -n "$revert_commit" ]]; then printf ' revert_commit=%s' "$revert_commit"; fi)"
 }
 
 # ─── approval gate (Phase 4) ──────────────────────────────────────────────────
@@ -3411,6 +3841,55 @@ cmd_ideas() {
       repo="$(repo_abs_path "$repo")"
       ideas_do_request_changes repo "$repo" "$repo" "${positional[0]}" "$actor" "$reason"
       ;;
+    sync)
+      local repo="" positional=()
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --repo) repo="${2:-}"; shift 2 ;;
+          -h|--help) usage; return 0 ;;
+          --*) die "unknown ideas sync argument: $1" ;;
+          *) positional+=("$1"); shift ;;
+        esac
+      done
+      [[ -n "$repo" ]] || die "ideas sync requires --repo"
+      [[ ${#positional[@]} -le 1 ]] || die "usage: e3d-pilot ideas sync --repo <path> [<idea-id>]"
+      repo="$(repo_abs_path "$repo")"
+      ideas_do_sync repo "$repo" "${positional[0]:-}"
+      ;;
+    outcome)
+      local repo="" window="" note="" metrics=() positional=()
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --repo) repo="${2:-}"; shift 2 ;;
+          --window) window="${2:-}"; shift 2 ;;
+          --metric) metrics+=("${2:-}"); shift 2 ;;
+          --note) note="${2:-}"; shift 2 ;;
+          -h|--help) usage; return 0 ;;
+          --*) die "unknown ideas outcome argument: $1" ;;
+          *) positional+=("$1"); shift ;;
+        esac
+      done
+      [[ -n "$repo" ]] || die "ideas outcome requires --repo"
+      [[ ${#positional[@]} -eq 1 ]] || die "usage: e3d-pilot ideas outcome --repo <path> <idea-id> --window <7d|30d|custom> --metric <key=value>... [--note <text>]"
+      repo="$(repo_abs_path "$repo")"
+      ideas_do_outcome repo "$repo" "$repo" "${positional[0]}" "$window" "$note" "${metrics[@]}"
+      ;;
+    mark-reverted)
+      local repo="" reason="" positional=()
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --repo) repo="${2:-}"; shift 2 ;;
+          --reason) reason="${2:-}"; shift 2 ;;
+          -h|--help) usage; return 0 ;;
+          --*) die "unknown ideas mark-reverted argument: $1" ;;
+          *) positional+=("$1"); shift ;;
+        esac
+      done
+      [[ -n "$repo" ]] || die "ideas mark-reverted requires --repo"
+      [[ ${#positional[@]} -eq 1 ]] || die "usage: e3d-pilot ideas mark-reverted --repo <path> <idea-id> --reason <text>"
+      repo="$(repo_abs_path "$repo")"
+      ideas_do_mark_reverted "$repo" "${positional[0]}" "$reason"
+      ;;
     implement)
       local repo="" positional=()
       while [[ $# -gt 0 ]]; do
@@ -4304,6 +4783,33 @@ cmd_fleet_ideas() {
       done
       [[ ${#positional[@]} -eq 1 ]] || die "usage: e3d-pilot fleet ideas <fleet.json> request-changes <idea-id> --reason <text>"
       ideas_do_request_changes fleet "$workspace" "$workspace" "${positional[0]}" "$actor" "$reason"
+      ;;
+    sync)
+      local positional=()
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          -h|--help) usage; return 0 ;;
+          --*) die "unknown fleet ideas sync argument: $1" ;;
+          *) positional+=("$1"); shift ;;
+        esac
+      done
+      [[ ${#positional[@]} -le 1 ]] || die "usage: e3d-pilot fleet ideas <fleet.json> sync [<idea-id>]"
+      ideas_do_sync fleet "$workspace" "${positional[0]:-}"
+      ;;
+    outcome)
+      local window="" note="" metrics=() positional=()
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --window) window="${2:-}"; shift 2 ;;
+          --metric) metrics+=("${2:-}"); shift 2 ;;
+          --note) note="${2:-}"; shift 2 ;;
+          -h|--help) usage; return 0 ;;
+          --*) die "unknown fleet ideas outcome argument: $1" ;;
+          *) positional+=("$1"); shift ;;
+        esac
+      done
+      [[ ${#positional[@]} -eq 1 ]] || die "usage: e3d-pilot fleet ideas <fleet.json> outcome <idea-id> --window <7d|30d|custom> --metric <key=value>... [--note <text>]"
+      ideas_do_outcome fleet "$workspace" "$workspace" "${positional[0]}" "$window" "$note" "${metrics[@]}"
       ;;
     implement)
       local continue_on_failure=0 positional=()

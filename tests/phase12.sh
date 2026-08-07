@@ -97,17 +97,47 @@ allowed_next_status() {
     implemented:merge_approved) printf 'approved_for_merge' ;;
     implemented:changes_requested) printf 'changes_requested' ;;
     implemented:idea_closed) printf 'closed' ;;
+    implemented:forge_sync) printf 'implemented' ;;
+    implemented:outcome_recorded) printf 'implemented' ;;
+    implemented:merge_observed_external) printf 'merged' ;;
     changes_requested:implementation_started) printf 'implementing' ;;
     changes_requested:merge_approved) printf 'approved_for_merge' ;;
     changes_requested:idea_closed) printf 'closed' ;;
+    changes_requested:forge_sync) printf 'changes_requested' ;;
+    changes_requested:outcome_recorded) printf 'changes_requested' ;;
+    changes_requested:merge_observed_external) printf 'merged' ;;
+    approved_for_merge:changes_requested) printf 'changes_requested' ;;
+    approved_for_merge:idea_closed) printf 'closed' ;;
+    approved_for_merge:merge_target_merged) printf 'approved_for_merge' ;;
+    approved_for_merge:merge_target_failed) printf 'approved_for_merge' ;;
     approved_for_merge:merge_completed) printf 'merged' ;;
     approved_for_merge:merge_partially_completed) printf 'partially_merged' ;;
     approved_for_merge:merge_failed) printf 'merge_failed' ;;
+    approved_for_merge:forge_sync) printf 'approved_for_merge' ;;
+    approved_for_merge:merge_observed_external) printf 'merged' ;;
+    approved_for_merge:outcome_recorded) printf 'approved_for_merge' ;;
+    partially_merged:merge_target_merged) printf 'partially_merged' ;;
+    partially_merged:merge_target_failed) printf 'partially_merged' ;;
     partially_merged:merge_completed) printf 'merged' ;;
     partially_merged:merge_failed) printf 'merge_failed' ;;
+    partially_merged:idea_closed) printf 'closed' ;;
+    partially_merged:forge_sync) printf 'partially_merged' ;;
+    partially_merged:merge_observed_external) printf 'merged' ;;
+    partially_merged:outcome_recorded) printf 'partially_merged' ;;
+    merged:forge_sync) printf 'merged' ;;
+    merged:outcome_recorded) printf 'merged' ;;
     merged:idea_reverted) printf 'reverted' ;;
+    reverted:outcome_recorded) printf 'reverted' ;;
+    closed:outcome_recorded) printf 'closed' ;;
     implementation_failed:implementation_retry_approved) printf 'implementing' ;;
+    implementation_failed:outcome_recorded) printf 'implementation_failed' ;;
     merge_failed:merge_retry_approved) printf 'approved_for_merge' ;;
+    merge_failed:outcome_recorded) printf 'merge_failed' ;;
+    # merge_approval_invalidated is dynamic (needs a restore_status payload
+    # only the internal sync codepath supplies) and is never reachable
+    # through the plain `ideas transition` CLI, so it stays disallowed here
+    # for every status -- that matches its real, always-fails-without-data
+    # behavior through this seam.
     *) return 1 ;;
   esac
 }
@@ -158,24 +188,48 @@ implementing implementation_failed implementation_failed
 implemented merge_approved approved_for_merge
 implemented changes_requested changes_requested
 implemented idea_closed closed
+implemented forge_sync implemented
+implemented outcome_recorded implemented
+implemented merge_observed_external merged
 changes_requested implementation_started implementing
 changes_requested merge_approved approved_for_merge
 changes_requested idea_closed closed
+changes_requested forge_sync changes_requested
+changes_requested outcome_recorded changes_requested
+changes_requested merge_observed_external merged
+approved_for_merge changes_requested changes_requested
+approved_for_merge merge_target_merged approved_for_merge
+approved_for_merge merge_target_failed approved_for_merge
 approved_for_merge merge_completed merged
 approved_for_merge merge_partially_completed partially_merged
 approved_for_merge merge_failed merge_failed
+approved_for_merge forge_sync approved_for_merge
+approved_for_merge merge_observed_external merged
+approved_for_merge outcome_recorded approved_for_merge
+partially_merged merge_target_merged partially_merged
+partially_merged merge_target_failed partially_merged
 partially_merged merge_completed merged
 partially_merged merge_failed merge_failed
+partially_merged idea_closed closed
+partially_merged forge_sync partially_merged
+partially_merged merge_observed_external merged
+partially_merged outcome_recorded partially_merged
+merged forge_sync merged
+merged outcome_recorded merged
 merged idea_reverted reverted
+reverted outcome_recorded reverted
+closed outcome_recorded closed
 implementation_failed implementation_retry_approved implementing
+implementation_failed outcome_recorded implementation_failed
 merge_failed merge_retry_approved approved_for_merge
+merge_failed outcome_recorded merge_failed
 EOF
 }
 
 disallowed_transitions_do_not_mutate() {
   local statuses events status event repo idea_id before_count before_file after_count index=0
   statuses="proposed approved_for_implementation rejected implementing implementation_failed implemented changes_requested approved_for_merge merge_failed partially_merged merged closed reverted"
-  events="implementation_approved idea_rejected implementation_started implementation_completed implementation_failed merge_approved changes_requested idea_closed merge_completed merge_partially_completed merge_failed idea_reverted implementation_retry_approved merge_retry_approved arbitrary_status"
+  events="implementation_approved idea_rejected implementation_started implementation_completed implementation_failed merge_approved changes_requested idea_closed merge_completed merge_partially_completed merge_failed idea_reverted implementation_retry_approved merge_retry_approved forge_sync outcome_recorded merge_observed_external merge_target_merged merge_target_failed merge_approval_invalidated arbitrary_status"
   for status in $statuses; do
     index=$((index + 1))
     repo="$(make_repo)"

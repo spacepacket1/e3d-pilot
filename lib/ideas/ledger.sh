@@ -168,21 +168,43 @@ ideas_allowed_transition() {
     implemented:merge_approved) printf 'approved_for_merge' ;;
     implemented:changes_requested) printf 'changes_requested' ;;
     implemented:idea_closed) printf 'closed' ;;
+    implemented:forge_sync) printf 'implemented' ;;
+    implemented:outcome_recorded) printf 'implemented' ;;
+    implemented:merge_observed_external) printf 'merged' ;;
     changes_requested:implementation_started) printf 'implementing' ;;
     changes_requested:merge_approved) printf 'approved_for_merge' ;;
     changes_requested:idea_closed) printf 'closed' ;;
+    changes_requested:forge_sync) printf 'changes_requested' ;;
+    changes_requested:outcome_recorded) printf 'changes_requested' ;;
+    changes_requested:merge_observed_external) printf 'merged' ;;
+    approved_for_merge:changes_requested) printf 'changes_requested' ;;
+    approved_for_merge:idea_closed) printf 'closed' ;;
     approved_for_merge:merge_target_merged) printf 'approved_for_merge' ;;
     approved_for_merge:merge_target_failed) printf 'approved_for_merge' ;;
     approved_for_merge:merge_completed) printf 'merged' ;;
     approved_for_merge:merge_partially_completed) printf 'partially_merged' ;;
     approved_for_merge:merge_failed) printf 'merge_failed' ;;
+    approved_for_merge:forge_sync) printf 'approved_for_merge' ;;
+    approved_for_merge:merge_observed_external) printf 'merged' ;;
+    approved_for_merge:merge_approval_invalidated) printf 'dynamic' ;;
+    approved_for_merge:outcome_recorded) printf 'approved_for_merge' ;;
     partially_merged:merge_target_merged) printf 'partially_merged' ;;
     partially_merged:merge_target_failed) printf 'partially_merged' ;;
     partially_merged:merge_completed) printf 'merged' ;;
     partially_merged:merge_failed) printf 'merge_failed' ;;
+    partially_merged:idea_closed) printf 'closed' ;;
+    partially_merged:forge_sync) printf 'partially_merged' ;;
+    partially_merged:merge_observed_external) printf 'merged' ;;
+    partially_merged:outcome_recorded) printf 'partially_merged' ;;
+    merged:forge_sync) printf 'merged' ;;
+    merged:outcome_recorded) printf 'merged' ;;
     merged:idea_reverted) printf 'reverted' ;;
+    reverted:outcome_recorded) printf 'reverted' ;;
+    closed:outcome_recorded) printf 'closed' ;;
     implementation_failed:implementation_retry_approved) printf 'implementing' ;;
+    implementation_failed:outcome_recorded) printf 'implementation_failed' ;;
     merge_failed:merge_retry_approved) printf 'approved_for_merge' ;;
+    merge_failed:outcome_recorded) printf 'merge_failed' ;;
     *) return 1 ;;
   esac
 }
@@ -250,20 +272,43 @@ ideas_initial_state_from_event() {
         implementation: {targets: ($c.implementation.targets // [])},
         merge_approval: null,
         outcomes: [],
+        outcomes_latest: {},
+        forge: {targets: []},
+        changes_requested_review: null,
         last_decision_actor: null,
         last_decision_at: null,
         last_event_id: $e.event_id
       }' "$event_file"
 }
 
-ideas_apply_event() {
-  local state_file="$1" event_file="$2" out_file="$3" from event next
+ideas_materialize_next_status() {
+  local state_file="$1" event_file="$2"
+  local from event next restore_status
   from="$(jq -r '.status // "none"' "$state_file")"
   event="$(jq -r '.event' "$event_file")"
   next="$(ideas_allowed_transition "$from" "$event")" || {
     ideas_die "invalid idea lifecycle transition: $from + $event"
     return 1
   }
+  if [[ "$next" == "dynamic" ]]; then
+    restore_status="$(jq -r '.restore_status // empty' "$event_file")"
+    case "$restore_status" in
+      implemented|changes_requested) printf '%s' "$restore_status" ;;
+      *)
+        ideas_die "invalid dynamic restore status for $event: ${restore_status:-<empty>}"
+        return 1
+        ;;
+    esac
+    return 0
+  fi
+  printf '%s' "$next"
+}
+
+ideas_apply_event() {
+  local state_file="$1" event_file="$2" out_file="$3" from event next
+  from="$(jq -r '.status // "none"' "$state_file")"
+  event="$(jq -r '.event' "$event_file")"
+  next="$(ideas_materialize_next_status "$state_file" "$event_file")" || return 1
 
   case "$event" in
     implementation_approved|implementation_retry_approved)
@@ -297,6 +342,7 @@ ideas_apply_event() {
             digest: ($e.approval_digest // null),
             head_sha: ($e.head_sha // null),
             targets: ($e.targets // []),
+            source_status: ($e.source_status // .status),
             note: ($e.note // null),
             event_id: $e.event_id
           }
@@ -315,7 +361,63 @@ ideas_apply_event() {
         | .last_event_id=$e.event_id
       ' "$state_file" "$event_file" > "$out_file"
       ;;
-    idea_rejected|changes_requested|idea_closed|idea_reverted)
+    idea_rejected)
+      jq -cS --arg status "$next" '
+        . as $s | input as $e
+        | $s
+        | .status=$status
+        | .updated_at=$e.timestamp
+        | if ($e.outcome? != null) then .outcomes += [$e.outcome] else . end
+        | .last_decision_actor=$e.actor
+        | .last_decision_at=$e.timestamp
+        | .last_event_id=$e.event_id
+      ' "$state_file" "$event_file" > "$out_file"
+      ;;
+    changes_requested)
+      jq -cS --arg status "$next" '
+        def reviewed_targets_from_event($e):
+          if ($e.targets? // [] | length) > 0 then
+            ($e.targets | map({
+              repo: (.repo // null),
+              pr_url: (.pr_url // null),
+              reviewed_head_sha: (.reviewed_head_sha // .head_sha // null)
+            }))
+          else
+            []
+          end;
+        . as $s | input as $e
+        | $s
+        | .status=$status
+        | .updated_at=$e.timestamp
+        | .merge_approval=null
+        | .changes_requested_review={
+            actor:$e.actor,
+            requested_at:$e.timestamp,
+            reason:($e.note // null),
+            reviewed_head_sha:($e.head_sha // null),
+            targets:reviewed_targets_from_event($e),
+            invalidated_merge_approval: (($s.merge_approval // null) != null),
+            event_id:$e.event_id
+          }
+        | if ($e.outcome? != null) then .outcomes += [$e.outcome] else . end
+        | .last_decision_actor=$e.actor
+        | .last_decision_at=$e.timestamp
+        | .last_event_id=$e.event_id
+      ' "$state_file" "$event_file" > "$out_file"
+      ;;
+    idea_closed)
+      jq -cS --arg status "$next" '
+        . as $s | input as $e
+        | $s
+        | .status=$status
+        | .updated_at=$e.timestamp
+        | if ($e.outcome? != null) then .outcomes += [$e.outcome] else . end
+        | .last_decision_actor=$e.actor
+        | .last_decision_at=$e.timestamp
+        | .last_event_id=$e.event_id
+      ' "$state_file" "$event_file" > "$out_file"
+      ;;
+    idea_reverted)
       jq -cS --arg status "$next" '
         . as $s | input as $e
         | $s
@@ -333,6 +435,95 @@ ideas_apply_event() {
         | $s
         | .status=$status
         | .updated_at=$e.timestamp
+        | if ($e.outcome? != null) then .outcomes += [$e.outcome] else . end
+        | .last_event_id=$e.event_id
+      ' "$state_file" "$event_file" > "$out_file"
+      ;;
+    forge_sync)
+      jq -cS --arg status "$next" '
+        def forge_key($t): [($t.repo // ""), ($t.pr_url // ""), (($t.pr_number // null) | tostring)] | join("|");
+        def upsert_target($targets; $obs):
+          ($targets // []) as $existing
+          | ([$existing[] | forge_key(.)] | index(forge_key($obs))) as $idx
+          | if $idx == null then
+              $existing + [$obs]
+            else
+              ($existing[0:$idx] + [($existing[$idx] + $obs)] + $existing[$idx + 1:])
+            end;
+        . as $s | input as $e
+        | reduce ($e.observations // [])[] as $obs (
+            $s
+            | .status=$status
+            | .updated_at=$e.timestamp;
+            .forge.targets = upsert_target(.forge.targets; $obs)
+          )
+        | .last_event_id=$e.event_id
+      ' "$state_file" "$event_file" > "$out_file"
+      ;;
+    outcome_recorded)
+      jq -cS --arg status "$next" '
+        def reduce_latest($latest; $metrics):
+          reduce ($metrics // [])[] as $metric (
+            ($latest // {});
+            .[$metric.key] = {
+              type: ($metric.type // null),
+              value: $metric.value,
+              window: ($metric.window // null),
+              observed_at: ($metric.observed_at // null),
+              note: ($metric.note // null)
+            }
+          );
+        . as $s | input as $e
+        | $s
+        | .status=$status
+        | .updated_at=$e.timestamp
+        | if ($e.outcome? != null) then .outcomes += [$e.outcome] else . end
+        | .outcomes_latest = reduce_latest(.outcomes_latest; ($e.outcome.metrics // []))
+        | .last_event_id=$e.event_id
+      ' "$state_file" "$event_file" > "$out_file"
+      ;;
+    merge_approval_invalidated)
+      jq -cS --arg status "$next" '
+        def forge_key($t): [($t.repo // ""), ($t.pr_url // ""), (($t.pr_number // null) | tostring)] | join("|");
+        def upsert_target($targets; $obs):
+          ($targets // []) as $existing
+          | ([$existing[] | forge_key(.)] | index(forge_key($obs))) as $idx
+          | if $idx == null then
+              $existing + [$obs]
+            else
+              ($existing[0:$idx] + [($existing[$idx] + $obs)] + $existing[$idx + 1:])
+            end;
+        . as $s | input as $e
+        | reduce ($e.observations // [])[] as $obs (
+            $s
+            | .status=$status
+            | .updated_at=$e.timestamp
+            | .merge_approval=null;
+            .forge.targets = upsert_target(.forge.targets; $obs)
+          )
+        | .last_decision_actor=$e.actor
+        | .last_decision_at=$e.timestamp
+        | .last_event_id=$e.event_id
+      ' "$state_file" "$event_file" > "$out_file"
+      ;;
+    merge_observed_external)
+      jq -cS --arg status "$next" '
+        def forge_key($t): [($t.repo // ""), ($t.pr_url // ""), (($t.pr_number // null) | tostring)] | join("|");
+        def upsert_target($targets; $obs):
+          ($targets // []) as $existing
+          | ([$existing[] | forge_key(.)] | index(forge_key($obs))) as $idx
+          | if $idx == null then
+              $existing + [$obs]
+            else
+              ($existing[0:$idx] + [($existing[$idx] + $obs)] + $existing[$idx + 1:])
+            end;
+        . as $s | input as $e
+        | reduce ($e.observations // [])[] as $obs (
+            $s
+            | .status=$status
+            | .updated_at=$e.timestamp;
+            .forge.targets = upsert_target(.forge.targets; $obs)
+          )
         | if ($e.outcome? != null) then .outcomes += [$e.outcome] else . end
         | .last_event_id=$e.event_id
       ' "$state_file" "$event_file" > "$out_file"
@@ -444,6 +635,33 @@ ideas_append_event() {
   jq -cS . "$event_file" >> "$events_file"
 }
 
+ideas_commit_event_file() {
+  local kind="$1" workspace="$2" idea_id="$3" event_file="$4"
+  local canonical events_file current_file
+  canonical="$(ideas_canonical_path "$workspace")" || return 1
+  events_file="$(ideas_events_file "$kind" "$canonical")" || return 1
+  current_file="$(ideas_snapshots_dir "$kind" "$canonical")/$idea_id/idea.json"
+  [[ -f "$current_file" ]] || { ideas_rebuild "$kind" "$canonical" || return 1; }
+  [[ -f "$current_file" ]] || { ideas_die "idea not found: $idea_id"; return 1; }
+
+  ideas_acquire_lock "$kind" "$canonical" || return 1
+  ideas_validate_stream "$events_file" || { ideas_release_lock "$kind" "$canonical"; return 1; }
+  ideas_rebuild "$kind" "$canonical" || { ideas_release_lock "$kind" "$canonical"; return 1; }
+  current_file="$(ideas_snapshots_dir "$kind" "$canonical")/$idea_id/idea.json"
+  [[ -f "$current_file" ]] || { ideas_release_lock "$kind" "$canonical"; ideas_die "idea not found: $idea_id"; return 1; }
+  ideas_materialize_next_status "$current_file" "$event_file" >/dev/null || {
+    ideas_release_lock "$kind" "$canonical"
+    return 1
+  }
+  ideas_append_event "$events_file" "$event_file" || { ideas_release_lock "$kind" "$canonical"; return 1; }
+  if [[ "${E3D_PILOT_CRASH_AFTER_EVENT:-0}" == "1" ]]; then
+    ideas_release_lock "$kind" "$canonical"
+    return 99
+  fi
+  ideas_materialize_snapshot "$kind" "$canonical" "$idea_id" || { ideas_release_lock "$kind" "$canonical"; return 1; }
+  ideas_release_lock "$kind" "$canonical"
+}
+
 ideas_ingest_candidate() {
   local kind="$1" workspace="$2" source_run_id="$3" candidate_id="$4" candidate_file="$5"
   local canonical idea_id events_file existing_count timestamp candidate_tmp event_tmp
@@ -538,6 +756,7 @@ ideas_transition() {
     --arg note "$note" \
     --arg digest "$current_digest" \
     --arg head_sha "$head_sha" \
+    --arg source_status "$(jq -r '.status' "$current_file")" \
     --argjson targets "$(if [[ -n "$targets_file" ]]; then jq -c 'if type == "array" then . else [.] end' "$targets_file"; else printf '[]'; fi)" \
     --argjson outcome "$(if [[ -n "$outcome_file" ]]; then jq -c '.' "$outcome_file"; else printf 'null'; fi)" \
     '{
@@ -547,8 +766,14 @@ ideas_transition() {
     | if $note != "" then .note=$note else . end
     | if ($event|test("approved|retry")) then .approval_digest=$digest else . end
     | if $head_sha != "" then .head_sha=$head_sha else . end
+    | if $event == "merge_approved" or $event == "merge_retry_approved" then .source_status=$source_status else . end
     | if ($targets|length) > 0 then .targets=$targets else . end
     | if $outcome != null then .outcome=$outcome else . end' > "$event_tmp"
+  ideas_materialize_next_status "$current_file" "$event_tmp" >/dev/null || {
+    rm -f "$event_tmp"
+    ideas_release_lock "$kind" "$canonical"
+    return 1
+  }
   ideas_append_event "$events_file" "$event_tmp" || { rm -f "$event_tmp"; ideas_release_lock "$kind" "$canonical"; return 1; }
   if [[ "${E3D_PILOT_CRASH_AFTER_EVENT:-0}" == "1" ]]; then
     rm -f "$event_tmp"
