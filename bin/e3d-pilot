@@ -17,6 +17,8 @@ source "$REPO_ROOT/lib/providers/common.sh"
 source "$REPO_ROOT/lib/ideas/ledger.sh"
 # shellcheck source=lib/ideas/materialize.sh
 source "$REPO_ROOT/lib/ideas/materialize.sh"
+# shellcheck source=lib/training/export.sh
+source "$REPO_ROOT/lib/training/export.sh"
 
 die() {
   printf 'error: %s\n' "$*" >&2
@@ -64,6 +66,8 @@ Usage:
   e3d-pilot fleet ideas <fleet.json> approve-merge <idea-id> [--actor <actor>] [--note <text>]
   e3d-pilot fleet ideas <fleet.json> merge <idea-id>
   e3d-pilot fleet ideas <fleet.json> merge-approved
+  e3d-pilot fleet train readiness <fleet.json> [--since <RFC3339>]
+  e3d-pilot fleet train export <fleet.json> [--week <YYYY-Www>] [--output <dir>]
   e3d-pilot fleet prs [<repos.json>]
   e3d-pilot fleet prs --approve <repo>
   e3d-pilot fleet prs --merge   <repo>
@@ -4884,6 +4888,48 @@ cmd_fleet_ideas() {
   esac
 }
 
+cmd_fleet_train() {
+  local subcommand="${1:-}"
+  shift || true
+  case "$subcommand" in
+    readiness)
+      local since="" positional=()
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --since) since="${2:-}"; shift 2 ;;
+          -h|--help) usage; return 0 ;;
+          --*) die "unknown fleet train readiness argument: $1" ;;
+          *) positional+=("$1"); shift ;;
+        esac
+      done
+      [[ ${#positional[@]} -eq 1 ]] || die "usage: e3d-pilot fleet train readiness <fleet.json> [--since <RFC3339>]"
+      [[ -f "${positional[0]}" ]] || die "fleet file not found: ${positional[0]}"
+      training_run_readiness "${positional[0]}" "$since"
+      ;;
+    export)
+      local week="" output="" positional=()
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --week) week="${2:-}"; shift 2 ;;
+          --output) output="${2:-}"; shift 2 ;;
+          -h|--help) usage; return 0 ;;
+          --*) die "unknown fleet train export argument: $1" ;;
+          *) positional+=("$1"); shift ;;
+        esac
+      done
+      [[ ${#positional[@]} -eq 1 ]] || die "usage: e3d-pilot fleet train export <fleet.json> [--week <YYYY-Www>] [--output <dir>]"
+      [[ -f "${positional[0]}" ]] || die "fleet file not found: ${positional[0]}"
+      training_run_export "${positional[0]}" "$week" "$output"
+      ;;
+    ""|-h|--help)
+      usage
+      ;;
+    *)
+      die "unknown fleet train subcommand: $subcommand"
+      ;;
+  esac
+}
+
 cmd_fleet() {
   case "${1:-}" in
     discover)
@@ -4897,6 +4943,10 @@ cmd_fleet() {
     prs)
       shift
       cmd_fleet_prs "$@"
+      ;;
+    train)
+      shift
+      cmd_fleet_train "$@"
       ;;
     *)
       cmd_fleet_run "$@"

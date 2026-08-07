@@ -10,5 +10,11 @@
     "marketplace liquidity and two-sided matching",
     "developer-tool CLI ergonomics",
     "fintech trust and verification UX"
-  ]
+  ],
+  "training": {
+    "min_reviewed_ideas": 30,
+    "min_implemented_ideas": 10,
+    "require_negative_examples": true,
+    "outcome_windows": ["7d", "30d"]
+  }
 }
