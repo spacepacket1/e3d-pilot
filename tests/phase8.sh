@@ -406,6 +406,87 @@ github_publish_captures_pr_url_and_notifies() {
   rm -f "$capture_file"
 }
 
+make_fake_gh_create_fails_but_pr_exists() {
+  local bin_dir="$1" pr_url="$2"
+  mkdir -p "$bin_dir"
+  cat > "$bin_dir/gh" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "\${1:-}" == "pr" && "\${2:-}" == "create" ]]; then
+  echo "could not add label: 'e3d-pilot' not found" >&2
+  exit 1
+fi
+if [[ "\${1:-}" == "pr" && "\${2:-}" == "list" ]]; then
+  printf '%s\n' "$pr_url"
+  exit 0
+fi
+exit 1
+EOF
+  chmod +x "$bin_dir/gh"
+}
+
+github_publish_recovers_pr_url_after_partial_create_failure() {
+  local repo run_id worktree bare bin_dir out pr_url
+  repo="$(make_repo_with_commit)"
+  run_id="2026-07-27-phase8-recover"
+  write_phase8_config "$repo" "github" '["test -f README.md"]'
+  bare="$(mktemp -d)"
+  git init -q --bare "$bare"
+  git -C "$repo" remote add origin "$bare"
+  write_phase8_run_artifacts "$repo" "$run_id"
+  worktree="$(make_execute_like_worktree "$repo" "$run_id")"
+
+  "$BIN" run --repo "$repo" --stage review --run-id "$run_id" >/dev/null
+
+  pr_url="https://github.com/example/test-repo/pull/42"
+  bin_dir="$(mktemp -d)"
+  make_fake_gh_create_fails_but_pr_exists "$bin_dir" "$pr_url"
+
+  out="$(PATH="$bin_dir:$PATH" "$BIN" run --repo "$repo" --stage publish --run-id "$run_id")"
+  assert_contains "$out" "pr_url: $pr_url"
+  assert_contains "$(cat "$repo/.e3d-pilot/runs/$run_id/publish-backend.stderr")" "warning: gh pr create reported failure but PR $pr_url already exists"
+
+  rm -rf "$bin_dir" "$bare" "$worktree"
+}
+
+github_publish_fails_when_create_fails_and_no_pr_found() {
+  local repo run_id worktree bare bin_dir out status
+  repo="$(make_repo_with_commit)"
+  run_id="2026-07-27-phase8-nopr"
+  write_phase8_config "$repo" "github" '["test -f README.md"]'
+  bare="$(mktemp -d)"
+  git init -q --bare "$bare"
+  git -C "$repo" remote add origin "$bare"
+  write_phase8_run_artifacts "$repo" "$run_id"
+  worktree="$(make_execute_like_worktree "$repo" "$run_id")"
+
+  "$BIN" run --repo "$repo" --stage review --run-id "$run_id" >/dev/null
+
+  bin_dir="$(mktemp -d)"
+  cat > "$bin_dir/gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == "pr" && "${2:-}" == "create" ]]; then
+  echo "some real gh error" >&2
+  exit 1
+fi
+if [[ "${1:-}" == "pr" && "${2:-}" == "list" ]]; then
+  exit 0
+fi
+exit 1
+EOF
+  chmod +x "$bin_dir/gh"
+
+  set +e
+  out="$(PATH="$bin_dir:$PATH" "$BIN" run --repo "$repo" --stage publish --run-id "$run_id" 2>&1)"
+  status=$?
+  set -e
+  [[ $status -ne 0 ]] || { echo "publish should fail when create fails and no PR is found" >&2; exit 1; }
+  assert_contains "$out" "gh pr create failed and no existing open PR was found"
+
+  rm -rf "$bin_dir" "$bare" "$worktree"
+}
+
 main() {
   install_review_provider_stub
   trap cleanup_review_provider_stub EXIT
@@ -416,6 +497,8 @@ main() {
   local_publish_sends_email_notification_when_configured
   publish_notify_skips_silently_without_config_or_mail_command
   github_publish_captures_pr_url_and_notifies
+  github_publish_recovers_pr_url_after_partial_create_failure
+  github_publish_fails_when_create_fails_and_no_pr_found
 }
 
 main "$@"

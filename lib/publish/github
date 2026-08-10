@@ -37,7 +37,29 @@ fi
 command -v gh >/dev/null 2>&1 || { echo "error: gh CLI unavailable" >&2; exit 1; }
 
 git -C "$worktree" push -u origin "$branch"
+
+set +e
 pr_url="$(cd "$worktree" && gh "${args[@]}")"
+create_status=$?
+set -e
+
+if [[ $create_status -ne 0 || -z "$pr_url" ]]; then
+  # `gh pr create` can create the PR and still exit nonzero on a later step
+  # of the same invocation -- e.g. applying a --label that doesn't exist yet
+  # in the target repo. Before treating this as a hard publish failure
+  # (which would otherwise force a full draft/negotiate/execute redo just to
+  # retry a step that already succeeded on GitHub's side), check whether the
+  # PR actually exists for this exact head branch and recover its URL
+  # instead of erroring out on a publish that already happened.
+  existing_url="$(cd "$worktree" && gh pr list --head "$branch" --base "$base" --state open --json url --jq '.[0].url // empty' 2>/dev/null)"
+  if [[ -n "$existing_url" ]]; then
+    pr_url="$existing_url"
+    printf 'warning: gh pr create reported failure but PR %s already exists for %s; recovered its URL. Labels/draft state may need manual review.\n' "$pr_url" "$branch" >&2
+  else
+    echo "error: gh pr create failed and no existing open PR was found for $branch" >&2
+    exit 1
+  fi
+fi
 
 printf 'outcome: published\n'
 printf 'mode: github\n'

@@ -46,6 +46,7 @@ Usage:
   e3d-pilot ideas mark-reverted --repo <path> <idea-id> --reason <text>
   e3d-pilot ideas implement --repo <path> <idea-id>
   e3d-pilot ideas implement-approved --repo <path>
+  e3d-pilot ideas repair-run --repo <path> --run-id <run-id> [--from-stage <stage>] <idea-id>
   e3d-pilot ideas approve-merge --repo <path> <idea-id> [--actor <actor>] [--note <text>]
   e3d-pilot ideas merge --repo <path> <idea-id>
   e3d-pilot providers list
@@ -3214,12 +3215,55 @@ implementation_outcome_file() {
   printf '%s' "$out_file"
 }
 
+IMPLEMENTATION_STAGE_ORDER="draft negotiate execute review publish"
+
+# Whether $stage's expected on-disk artifact for $run_dir already reflects a
+# successful run of that stage. Shared by the fresh-implement pipeline (as a
+# post-stage sanity check) and `ideas repair-run` (as a pre-flight check that
+# every stage before the resume point genuinely already succeeded, rather
+# than trusting run_id ownership alone).
+implementation_stage_artifact_ok() {
+  local run_dir="$1" stage="$2"
+  case "$stage" in
+    draft) [[ -f "$run_dir/spec-draft.md" ]] ;;
+    negotiate) [[ -f "$run_dir/spec-final.md" ]] ;;
+    execute) [[ -f "$run_dir/execute-worktree.txt" ]] ;;
+    review) [[ "$(review_status_value "$run_dir/review-status.txt" verify_status 2>/dev/null || true)" == passed ]] ;;
+    publish) [[ -f "$run_dir/publish-backend.out" ]] ;;
+    *) return 1 ;;
+  esac
+}
+
+implementation_stage_artifact_failure_reason() {
+  local stage="$1"
+  case "$stage" in
+    draft) printf 'draft did not produce spec-draft.md' ;;
+    negotiate) printf 'negotiate did not produce spec-final.md' ;;
+    execute) printf 'execute did not produce worktree metadata' ;;
+    review) printf 'review verification did not pass' ;;
+    publish) printf 'publish did not produce backend output' ;;
+  esac
+}
+
+# Runs stages $from_stage..publish (default: the full draft..publish
+# pipeline) for $run_id, appending a stage log entry per attempt. A fresh
+# draft-stage run truncates any prior stage log; resuming from a later stage
+# (via `ideas repair-run`) appends, preserving the original run's history
+# instead of erasing evidence of what already succeeded.
 run_repo_implementation_pipeline() {
-  local repo="$1" run_id="$2" approved_base="$3" actual_start="$4" target_out_file="$5" role="${6:-primary}" base_branch="${7:-}"
-  local stage output status run_dir
+  local repo="$1" run_id="$2" approved_base="$3" actual_start="$4" target_out_file="$5" role="${6:-primary}" base_branch="${7:-}" from_stage="${8:-draft}"
+  local stage output status run_dir started=0
   run_dir="$(runs_dir_for_repo "$repo")/$run_id"
-  : > "$run_dir/implementation-stage-log.md"
-  for stage in draft negotiate execute review publish; do
+  if [[ "$from_stage" == "draft" ]]; then
+    : > "$run_dir/implementation-stage-log.md"
+  else
+    printf '\n## resuming from %s\n\n' "$from_stage" >> "$run_dir/implementation-stage-log.md"
+  fi
+  for stage in $IMPLEMENTATION_STAGE_ORDER; do
+    if [[ $started -eq 0 ]]; then
+      [[ "$stage" == "$from_stage" ]] || continue
+      started=1
+    fi
     set +e
     output="$("$0" run --repo "$repo" --stage "$stage" --run-id "$run_id" 2>&1)"
     status=$?
@@ -3232,13 +3276,10 @@ run_repo_implementation_pipeline() {
       implementation_target_outcome_json "$repo" "$run_id" "$approved_base" "$actual_start" failed "$stage" "$output" "$role" "$base_branch" > "$target_out_file"
       return 1
     fi
-    case "$stage" in
-      draft) [[ -f "$run_dir/spec-draft.md" ]] || { implementation_target_outcome_json "$repo" "$run_id" "$approved_base" "$actual_start" failed "$stage" "draft did not produce spec-draft.md" "$role" "$base_branch" > "$target_out_file"; return 1; } ;;
-      negotiate) [[ -f "$run_dir/spec-final.md" ]] || { implementation_target_outcome_json "$repo" "$run_id" "$approved_base" "$actual_start" failed "$stage" "negotiate did not produce spec-final.md" "$role" "$base_branch" > "$target_out_file"; return 1; } ;;
-      execute) [[ -f "$run_dir/execute-worktree.txt" ]] || { implementation_target_outcome_json "$repo" "$run_id" "$approved_base" "$actual_start" failed "$stage" "execute did not produce worktree metadata" "$role" "$base_branch" > "$target_out_file"; return 1; } ;;
-      review) [[ "$(review_status_value "$run_dir/review-status.txt" verify_status 2>/dev/null || true)" == passed ]] || { implementation_target_outcome_json "$repo" "$run_id" "$approved_base" "$actual_start" failed "$stage" "review verification did not pass" "$role" "$base_branch" > "$target_out_file"; return 1; } ;;
-      publish) [[ -f "$run_dir/publish-backend.out" ]] || { implementation_target_outcome_json "$repo" "$run_id" "$approved_base" "$actual_start" failed "$stage" "publish did not produce backend output" "$role" "$base_branch" > "$target_out_file"; return 1; } ;;
-    esac
+    implementation_stage_artifact_ok "$run_dir" "$stage" || {
+      implementation_target_outcome_json "$repo" "$run_id" "$approved_base" "$actual_start" failed "$stage" "$(implementation_stage_artifact_failure_reason "$stage")" "$role" "$base_branch" > "$target_out_file"
+      return 1
+    }
   done
   implementation_target_outcome_json "$repo" "$run_id" "$approved_base" "$actual_start" succeeded "" "" "$role" "$base_branch" > "$target_out_file"
   return 0
@@ -3285,6 +3326,73 @@ ideas_do_implement_repo() {
   ideas_transition repo "$canonical" "$idea_id" implementation_failed "$actor" "implementation failed" "" "" "$outcome_tmp" >/dev/null
   rm -f "$targets_tmp" "$target_tmp" "$outcome_tmp"
   printf 'ideas: implementation failed for %s run=%s\n' "$idea_id" "$run_id"
+  return 1
+}
+
+# Resumes a SPECIFIC prior run from a given stage (default: publish) instead
+# of starting a brand-new run from draft. `ideas implement` always creates a
+# fresh run_id and redoes draft/negotiate/execute from scratch on every
+# retry, including when only the last stage (typically publish, e.g. after a
+# missing forge label or a transient network error) failed on an otherwise
+# fully verified and reviewed run -- discarding real, already-good work and
+# re-spending real provider calls on stages whose output was never the
+# problem. This repairs that one run in place: every stage strictly before
+# `from_stage` must already have its expected success artifact on disk (not
+# just be assumed), so this can't be used to skip real work, only to avoid
+# redoing work that is already provably done.
+ideas_do_repair_run() {
+  local repo="$1" idea_id="$2" run_id="$3" from_stage="${4:-publish}"
+  local canonical idea_file status approved_base actual_start run_dir actor
+  local targets_tmp target_tmp outcome_tmp base_branch link_kind link_workspace link_idea stage
+  case " $IMPLEMENTATION_STAGE_ORDER " in
+    *" $from_stage "*) ;;
+    *) die "unknown --from-stage: $from_stage (expected one of: $IMPLEMENTATION_STAGE_ORDER)" ;;
+  esac
+
+  repo="$(repo_abs_path "$repo")"
+  canonical="$(ideas_canonical_path "$repo")" || die "workspace not found: $repo"
+  idea_file="$(ideas_require_snapshot repo "$canonical" "$idea_id")"
+  run_dir="$(runs_dir_for_repo "$repo")/$run_id"
+  [[ -d "$run_dir" ]] || die "run not found: $run_id"
+
+  [[ -f "$run_dir/idea-link.txt" ]] || die "run $run_id has no idea-link.txt; it was not created by 'ideas implement' and cannot be repaired"
+  IFS=$'\t' read -r link_kind link_workspace link_idea < "$run_dir/idea-link.txt"
+  [[ "$link_kind" == "repo" && "$link_idea" == "$idea_id" ]] || die "run $run_id is linked to idea $link_idea, not $idea_id; refusing to repair"
+
+  status="$(jq -r '.status' "$idea_file")"
+  [[ "$status" == "implementation_failed" ]] || die "ideas repair-run only applies to an idea currently in implementation_failed (status: $status); use 'ideas implement' for a fresh attempt"
+  idea_approval_digest_valid "$idea_file" || die "idea $idea_id does not have a current valid implementation approval; approve again before repairing"
+
+  for stage in $IMPLEMENTATION_STAGE_ORDER; do
+    [[ "$stage" == "$from_stage" ]] && break
+    implementation_stage_artifact_ok "$run_dir" "$stage" || die "run $run_id has no successful $stage output on disk; cannot resume from $from_stage. Use 'ideas implement' for a fresh attempt."
+  done
+
+  approved_base="$(idea_single_approved_base_sha "$repo" "$idea_file")"
+  base_branch="$(config_value "$(config_path_for_repo "$repo")" '.pr.base_branch')"
+  actual_start="$(repo_head_sha "$repo")"
+  if [[ "$actual_start" != "$approved_base" ]] && git_material_changes_since_base "$repo" "$approved_base"; then
+    die "idea $idea_id base SHA changed since approval ($approved_base -> $actual_start); refresh human approval before repairing"
+  fi
+
+  actor="$(ideas_resolve_actor "$repo" "")"
+  ideas_transition repo "$canonical" "$idea_id" implementation_retry_approved "$actor" "repair run $run_id from $from_stage" "" "" >/dev/null
+
+  targets_tmp="$(mktemp "${TMPDIR:-/tmp}/e3d-implementation-targets.XXXXXX")"
+  target_tmp="$(mktemp "${TMPDIR:-/tmp}/e3d-implementation-target.XXXXXX")"
+  if run_repo_implementation_pipeline "$repo" "$run_id" "$approved_base" "$actual_start" "$target_tmp" "primary" "$base_branch" "$from_stage"; then
+    cat "$target_tmp" > "$targets_tmp"
+    outcome_tmp="$(implementation_outcome_file "$idea_id" succeeded "$targets_tmp")"
+    ideas_transition repo "$canonical" "$idea_id" implementation_completed "$actor" "implementation completed (repaired run $run_id from $from_stage)" "" "" "$outcome_tmp" >/dev/null
+    rm -f "$targets_tmp" "$target_tmp" "$outcome_tmp"
+    printf 'ideas: repaired %s run=%s from=%s\n' "$idea_id" "$run_id" "$from_stage"
+    return 0
+  fi
+  cat "$target_tmp" > "$targets_tmp"
+  outcome_tmp="$(implementation_outcome_file "$idea_id" failed "$targets_tmp" "target failed during repair")"
+  ideas_transition repo "$canonical" "$idea_id" implementation_failed "$actor" "implementation failed (repair run $run_id from $from_stage)" "" "" "$outcome_tmp" >/dev/null
+  rm -f "$targets_tmp" "$target_tmp" "$outcome_tmp"
+  printf 'ideas: repair failed for %s run=%s from=%s\n' "$idea_id" "$run_id" "$from_stage"
   return 1
 }
 
@@ -3932,6 +4040,23 @@ cmd_ideas() {
       done
       [[ -n "$repo" ]] || die "ideas implement-approved requires --repo"
       ideas_do_implement_approved_repo "$repo"
+      ;;
+    repair-run)
+      local repo="" run_id="" from_stage="publish" positional=()
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --repo) repo="${2:-}"; shift 2 ;;
+          --run-id) run_id="${2:-}"; shift 2 ;;
+          --from-stage) from_stage="${2:-}"; shift 2 ;;
+          -h|--help) usage; return 0 ;;
+          --*) die "unknown ideas repair-run argument: $1" ;;
+          *) positional+=("$1"); shift ;;
+        esac
+      done
+      [[ -n "$repo" ]] || die "ideas repair-run requires --repo"
+      [[ -n "$run_id" ]] || die "ideas repair-run requires --run-id"
+      [[ ${#positional[@]} -eq 1 ]] || die "usage: e3d-pilot ideas repair-run --repo <path> --run-id <run-id> [--from-stage <stage>] <idea-id>"
+      ideas_do_repair_run "$repo" "${positional[0]}" "$run_id" "$from_stage"
       ;;
     approve-merge)
       local repo="" actor="" note="" positional=()
