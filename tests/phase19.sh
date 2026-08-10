@@ -7,6 +7,14 @@ BIN="$ROOT/bin/e3d-pilot"
 # shellcheck source=../lib/ideas/ledger.sh
 source "$ROOT/lib/ideas/ledger.sh"
 
+# Readiness/export only count events with timestamp <= the target week's
+# cutoff (end of that ISO week, UTC). Synthetic ideas in these tests are
+# ingested with real, current timestamps, so a hardcoded past/future week
+# eventually drifts out of sync with "now" and silently excludes every
+# fixture event from the window. Compute it once, up front, so every call
+# in this file uses the same (always-current) week.
+CURRENT_WEEK="$(date -u '+%G-W%V')"
+
 assert_contains() {
   local haystack="$1" needle="$2"
   [[ "$haystack" == *"$needle"* ]] || {
@@ -140,7 +148,7 @@ mixed_synthetic_export_and_readiness() {
   assert_eq "$(jq -r '.counts.outcomes_7d' <<<"$ready")" "1" "7d outcome counted"
 
   export1="$dir/export-one"
-  out="$("$BIN" fleet train export "$fleet" --week 2026-W32 --output "$export1")"
+  out="$("$BIN" fleet train export "$fleet" --week "$CURRENT_WEEK" --output "$export1")"
   assert_contains "$out" "ready=true"
   [[ -f "$export1/ideation.jsonl" && -f "$export1/preferences.jsonl" && -f "$export1/implementation.jsonl" && -f "$export1/manifest.json" ]] || {
     printf 'missing exported dataset files\n' >&2
@@ -161,7 +169,7 @@ mixed_synthetic_export_and_readiness() {
   }
 
   export2="$dir/export-two"
-  "$BIN" fleet train export "$fleet" --week 2026-W32 --output "$export2" >/dev/null
+  "$BIN" fleet train export "$fleet" --week "$CURRENT_WEEK" --output "$export2" >/dev/null
   for name in ideation.jsonl preferences.jsonl implementation.jsonl; do
     cmp -s "$export1/$name" "$export2/$name" || {
       printf 'non-reproducible export for %s\n' "$name" >&2
@@ -181,7 +189,7 @@ threshold_failures_do_not_block_export() {
   assert_eq "$(jq -r '.ready' <<<"$ready")" "false" "high thresholds should fail"
   assert_contains "$ready" "min_reviewed_ideas"
   export_dir="$dir/threshold-export"
-  "$BIN" fleet train export "$fleet" --week 2026-W32 --output "$export_dir" >/dev/null
+  "$BIN" fleet train export "$fleet" --week "$CURRENT_WEEK" --output "$export_dir" >/dev/null
   assert_eq "$(jq -r '.readiness.ready' "$export_dir/manifest.json")" "false" "export should include false readiness"
 }
 
@@ -192,9 +200,9 @@ default_export_refuses_completed_dataset() {
   fleet="$dir/fleet.json"
   jq -ncS --arg r "$repo" '{repos:[$r],training:{min_reviewed_ideas:0,min_implemented_ideas:0,require_negative_examples:false,outcome_windows:[]}}' > "$fleet"
   repo_ingest "$repo" repo-run candidate-1 "Default export" >/dev/null
-  "$BIN" fleet train export "$fleet" --week 2026-W32 >/dev/null
+  "$BIN" fleet train export "$fleet" --week "$CURRENT_WEEK" >/dev/null
   set +e
-  out="$("$BIN" fleet train export "$fleet" --week 2026-W32 2>&1)"
+  out="$("$BIN" fleet train export "$fleet" --week "$CURRENT_WEEK" 2>&1)"
   status=$?
   set -e
   [[ $status -ne 0 ]] || { printf 'default export overwrite should fail\n' >&2; exit 1; }
@@ -215,7 +223,7 @@ conflicting_ledgers_block_export() {
   printf '%s\n' "$event" > "$repo2/.e3d-pilot/events.jsonl"
   rm -f "$tmp"
   set +e
-  out="$("$BIN" fleet train export "$fleet" --week 2026-W32 --output "$dir/conflict-export" 2>&1)"
+  out="$("$BIN" fleet train export "$fleet" --week "$CURRENT_WEEK" --output "$dir/conflict-export" 2>&1)"
   status=$?
   set -e
   [[ $status -ne 0 ]] || { printf 'conflicting ledgers should block export\n' >&2; exit 1; }
