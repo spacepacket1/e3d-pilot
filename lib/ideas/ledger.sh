@@ -275,6 +275,7 @@ ideas_initial_state_from_event() {
         outcomes_latest: {},
         forge: {targets: []},
         changes_requested_review: null,
+        tracking: {project_item_id: null, project_kind: null, project_status: null},
         last_decision_actor: null,
         last_decision_at: null,
         last_event_id: $e.event_id
@@ -286,6 +287,14 @@ ideas_materialize_next_status() {
   local from event next restore_status
   from="$(jq -r '.status // "none"' "$state_file")"
   event="$(jq -r '.event' "$event_file")"
+  # project_tracking_synced is pure metadata (which board item an idea is
+  # linked to, and what status was last written there) -- it never gates or
+  # represents a lifecycle decision, so unlike every other event it is valid
+  # as a self-loop from any status, "none" included.
+  if [[ "$event" == "project_tracking_synced" ]]; then
+    printf '%s' "$from"
+    return 0
+  fi
   next="$(ideas_allowed_transition "$from" "$event")" || {
     ideas_die "invalid idea lifecycle transition: $from + $event"
     return 1
@@ -528,6 +537,16 @@ ideas_apply_event() {
         | .last_event_id=$e.event_id
       ' "$state_file" "$event_file" > "$out_file"
       ;;
+    project_tracking_synced)
+      jq -cS --arg status "$next" '
+        . as $s | input as $e
+        | $s
+        | .status=$status
+        | .updated_at=$e.timestamp
+        | .tracking = ((.tracking // {}) + ($e.tracking // {}))
+        | .last_event_id=$e.event_id
+      ' "$state_file" "$event_file" > "$out_file"
+      ;;
     *)
       ideas_die "unsupported event: $event"
       return 1
@@ -660,6 +679,61 @@ ideas_commit_event_file() {
   fi
   ideas_materialize_snapshot "$kind" "$canonical" "$idea_id" || { ideas_release_lock "$kind" "$canonical"; return 1; }
   ideas_release_lock "$kind" "$canonical"
+}
+
+# Returns the path to idea_id's materialized snapshot, rebuilding first if
+# it isn't present on disk yet (e.g. right after a concurrent writer's
+# append). Pure ledger read primitive -- no network, no gh -- so it lives
+# here rather than in bin/e3d-pilot, alongside everything else that needs
+# to resolve an idea by ID.
+ideas_require_snapshot() {
+  local kind="$1" workspace="$2" idea_id="$3" file
+  file="$(ideas_snapshots_dir "$kind" "$workspace")/$idea_id/idea.json"
+  if [[ ! -f "$file" ]]; then
+    ideas_rebuild "$kind" "$workspace" || { ideas_die "failed to rebuild idea ledger for $workspace"; return 1; }
+  fi
+  file="$(ideas_snapshots_dir "$kind" "$workspace")/$idea_id/idea.json"
+  [[ -f "$file" ]] || { ideas_die "idea not found: $idea_id"; return 1; }
+  printf '%s' "$file"
+}
+
+# Appends an event whose shape isn't one of ideas_transition's fixed decision
+# events (approval/rejection/etc, which also carry a digest) -- used for
+# forge-observed and other system-authored events (sync, outcomes, project
+# tracking) that just need $extra_file's fields merged onto the standard
+# event envelope.
+ideas_append_custom_event() {
+  local kind="$1" workspace="$2" idea_id="$3" event="$4" actor="$5" note="$6" extra_file="$7"
+  local canonical event_tmp timestamp
+  canonical="$(ideas_canonical_path "$workspace")" || return 1
+  ideas_require_snapshot "$kind" "$canonical" "$idea_id" >/dev/null
+  event_tmp="$(mktemp "${TMPDIR:-/tmp}/e3d-idea-custom-event.XXXXXX")"
+  timestamp="$(ideas_utc_now)"
+  jq -ncS \
+    --argjson schema "$IDEA_SCHEMA_VERSION" \
+    --arg event_id "$(ideas_event_id "$idea_id:$event:$timestamp")" \
+    --arg idea_id "$idea_id" \
+    --arg event "$event" \
+    --arg timestamp "$timestamp" \
+    --arg actor "$actor" \
+    --arg note "$note" \
+    --slurpfile extra "$extra_file" '
+      {
+        schema_version:$schema,
+        event_id:$event_id,
+        idea_id:$idea_id,
+        event:$event,
+        timestamp:$timestamp,
+        actor:$actor
+      }
+      | if $note != "" then .note=$note else . end
+      | . + ($extra[0] // {})
+    ' > "$event_tmp"
+  ideas_commit_event_file "$kind" "$canonical" "$idea_id" "$event_tmp" || {
+    rm -f "$event_tmp"
+    return 1
+  }
+  rm -f "$event_tmp"
 }
 
 ideas_ingest_candidate() {

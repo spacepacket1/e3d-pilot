@@ -311,6 +311,7 @@ ideas_materialize_candidates_from_markdown() {
     fi
     source_candidate="$(jq -r '.provenance.source_candidate' "$candidate_json")"
     idea_id="$(ideas_ingest_candidate "$kind" "$workspace" "$source_run_id" "$source_candidate" "$candidate_json")"
+    project_tracking_sync_idea "$kind" "$workspace" "$idea_id"
     materialized_ids+=("$idea_id")
     rm -f "$candidate_json"
   done

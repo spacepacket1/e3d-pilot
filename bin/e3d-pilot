@@ -17,6 +17,8 @@ source "$REPO_ROOT/lib/providers/common.sh"
 source "$REPO_ROOT/lib/ideas/ledger.sh"
 # shellcheck source=lib/ideas/materialize.sh
 source "$REPO_ROOT/lib/ideas/materialize.sh"
+# shellcheck source=lib/ideas/project_tracking.sh
+source "$REPO_ROOT/lib/ideas/project_tracking.sh"
 # shellcheck source=lib/training/export.sh
 source "$REPO_ROOT/lib/training/export.sh"
 
@@ -2021,6 +2023,8 @@ validate_config_file() {
   json_type_check "$file" 'if has("approval") then (.approval | has("implementation_required") and has("merge_required")) else true end' "config.approval must include implementation_required and merge_required when provided"
   json_type_check "$file" 'if has("approval") then (.approval.implementation_required | type == "boolean") else true end' "config.approval.implementation_required must be a boolean"
   json_type_check "$file" 'if has("approval") then (.approval.merge_required | type == "boolean") else true end' "config.approval.merge_required must be a boolean"
+  json_type_check "$file" 'if has("tracking") then (.tracking | type == "object") else true end' "config.tracking must be an object when provided"
+  json_type_check "$file" 'if (has("tracking") and (.tracking | has("project_url"))) then (.tracking.project_url | type == "string") else true end' "config.tracking.project_url must be a string when provided"
   printf 'config valid: %s\n' "$file"
 }
 
@@ -2230,17 +2234,6 @@ ideas_events_for_idea_json() {
   jq -R -s --arg id "$idea_id" '[split("\n")[] | select(length>0) | fromjson | select(.idea_id==$id)]' "$events_file"
 }
 
-ideas_require_snapshot() {
-  local kind="$1" workspace="$2" idea_id="$3" file
-  file="$(ideas_snapshots_dir "$kind" "$workspace")/$idea_id/idea.json"
-  if [[ ! -f "$file" ]]; then
-    ideas_rebuild "$kind" "$workspace" || die "failed to rebuild idea ledger for $workspace"
-  fi
-  file="$(ideas_snapshots_dir "$kind" "$workspace")/$idea_id/idea.json"
-  [[ -f "$file" ]] || die "idea not found: $idea_id"
-  printf '%s' "$file"
-}
-
 ideas_do_list() {
   local kind="$1" workspace="$2" status_filter="$3" json_flag="$4"
   local canonical dir files=() rows='[]'
@@ -2387,6 +2380,7 @@ ideas_do_approve() {
   fi
 
   ideas_transition "$kind" "$canonical" "$idea_id" implementation_approved "$actor" "$note" "$targets_file" ""
+  project_tracking_sync_idea "$kind" "$canonical" "$idea_id"
   rm -f "$targets_file"
 }
 
@@ -2397,6 +2391,7 @@ ideas_do_reject() {
   canonical="$(ideas_canonical_path "$workspace")" || die "workspace not found: $workspace"
   actor="$(ideas_resolve_actor "$context_dir" "$actor_explicit")"
   ideas_transition "$kind" "$canonical" "$idea_id" idea_rejected "$actor" "$reason" "" ""
+  project_tracking_sync_idea "$kind" "$canonical" "$idea_id"
 }
 
 ideas_do_request_changes() {
@@ -2435,41 +2430,8 @@ ideas_do_request_changes() {
   ' "$idea_file" > "$targets_tmp"
   reviewed_head="$(jq -r '.[0].reviewed_head_sha // empty' "$targets_tmp")"
   ideas_transition "$kind" "$canonical" "$idea_id" changes_requested "$actor" "$reason" "$targets_tmp" "$reviewed_head" >/dev/null
+  project_tracking_sync_idea "$kind" "$canonical" "$idea_id"
   rm -f "$targets_tmp"
-}
-
-ideas_append_custom_event() {
-  local kind="$1" workspace="$2" idea_id="$3" event="$4" actor="$5" note="$6" extra_file="$7"
-  local canonical event_tmp timestamp
-  canonical="$(ideas_canonical_path "$workspace")" || die "workspace not found: $workspace"
-  ideas_require_snapshot "$kind" "$canonical" "$idea_id" >/dev/null
-  event_tmp="$(mktemp "${TMPDIR:-/tmp}/e3d-idea-custom-event.XXXXXX")"
-  timestamp="$(ideas_utc_now)"
-  jq -ncS \
-    --argjson schema "$IDEA_SCHEMA_VERSION" \
-    --arg event_id "$(ideas_event_id "$idea_id:$event:$timestamp")" \
-    --arg idea_id "$idea_id" \
-    --arg event "$event" \
-    --arg timestamp "$timestamp" \
-    --arg actor "$actor" \
-    --arg note "$note" \
-    --slurpfile extra "$extra_file" '
-      {
-        schema_version:$schema,
-        event_id:$event_id,
-        idea_id:$idea_id,
-        event:$event,
-        timestamp:$timestamp,
-        actor:$actor
-      }
-      | if $note != "" then .note=$note else . end
-      | . + ($extra[0] // {})
-    ' > "$event_tmp"
-  ideas_commit_event_file "$kind" "$canonical" "$idea_id" "$event_tmp" || {
-    rm -f "$event_tmp"
-    return 1
-  }
-  rm -f "$event_tmp"
 }
 
 gh_pr_check_summary_json() {
@@ -2740,6 +2702,7 @@ ideas_do_sync() {
       note="sync observed forge updates"
       ideas_append_custom_event "$kind" "$canonical" "$this_id" forge_sync "$actor" "$note" "$extra_file" >/dev/null
     fi
+    project_tracking_sync_idea "$kind" "$canonical" "$this_id"
     rm -f "$extra_file"
     changed=$((changed + 1))
   done
@@ -2842,6 +2805,7 @@ ideas_do_mark_reverted() {
       }
     }' > "$extra_file"
   ideas_append_custom_event repo "$canonical" "$idea_id" idea_reverted "$actor" "$reason" "$extra_file" >/dev/null
+  project_tracking_sync_idea repo "$canonical" "$idea_id"
   rm -f "$extra_file"
   printf 'ideas: marked reverted %s%s\n' "$idea_id" "$(if [[ -n "$revert_commit" ]]; then printf ' revert_commit=%s' "$revert_commit"; fi)"
 }
@@ -3308,6 +3272,7 @@ ideas_do_implement_repo() {
       ideas_transition repo "$canonical" "$idea_id" implementation_started "$actor" "implementation started" "" "" >/dev/null
       ;;
   esac
+  project_tracking_sync_idea repo "$canonical" "$idea_id"
   run_id="$(implementation_next_run_id "$repo" "$idea_id" "repo")"
   run_dir="$(runs_dir_for_repo "$repo")/$run_id"
   prepare_repo_implementation_run "$repo" "$run_id" "$idea_file" "$approved_base" repo "$canonical" "$idea_id"
@@ -3317,6 +3282,7 @@ ideas_do_implement_repo() {
     cat "$target_tmp" > "$targets_tmp"
     outcome_tmp="$(implementation_outcome_file "$idea_id" succeeded "$targets_tmp")"
     ideas_transition repo "$canonical" "$idea_id" implementation_completed "$actor" "implementation completed" "" "" "$outcome_tmp" >/dev/null
+    project_tracking_sync_idea repo "$canonical" "$idea_id"
     rm -f "$targets_tmp" "$target_tmp" "$outcome_tmp"
     printf 'ideas: implemented %s run=%s\n' "$idea_id" "$run_id"
     return 0
@@ -3324,6 +3290,7 @@ ideas_do_implement_repo() {
   cat "$target_tmp" > "$targets_tmp"
   outcome_tmp="$(implementation_outcome_file "$idea_id" failed "$targets_tmp" "target failed")"
   ideas_transition repo "$canonical" "$idea_id" implementation_failed "$actor" "implementation failed" "" "" "$outcome_tmp" >/dev/null
+  project_tracking_sync_idea repo "$canonical" "$idea_id"
   rm -f "$targets_tmp" "$target_tmp" "$outcome_tmp"
   printf 'ideas: implementation failed for %s run=%s\n' "$idea_id" "$run_id"
   return 1
@@ -3377,6 +3344,7 @@ ideas_do_repair_run() {
 
   actor="$(ideas_resolve_actor "$repo" "")"
   ideas_transition repo "$canonical" "$idea_id" implementation_retry_approved "$actor" "repair run $run_id from $from_stage" "" "" >/dev/null
+  project_tracking_sync_idea repo "$canonical" "$idea_id"
 
   targets_tmp="$(mktemp "${TMPDIR:-/tmp}/e3d-implementation-targets.XXXXXX")"
   target_tmp="$(mktemp "${TMPDIR:-/tmp}/e3d-implementation-target.XXXXXX")"
@@ -3384,6 +3352,7 @@ ideas_do_repair_run() {
     cat "$target_tmp" > "$targets_tmp"
     outcome_tmp="$(implementation_outcome_file "$idea_id" succeeded "$targets_tmp")"
     ideas_transition repo "$canonical" "$idea_id" implementation_completed "$actor" "implementation completed (repaired run $run_id from $from_stage)" "" "" "$outcome_tmp" >/dev/null
+    project_tracking_sync_idea repo "$canonical" "$idea_id"
     rm -f "$targets_tmp" "$target_tmp" "$outcome_tmp"
     printf 'ideas: repaired %s run=%s from=%s\n' "$idea_id" "$run_id" "$from_stage"
     return 0
@@ -3391,6 +3360,7 @@ ideas_do_repair_run() {
   cat "$target_tmp" > "$targets_tmp"
   outcome_tmp="$(implementation_outcome_file "$idea_id" failed "$targets_tmp" "target failed during repair")"
   ideas_transition repo "$canonical" "$idea_id" implementation_failed "$actor" "implementation failed (repair run $run_id from $from_stage)" "" "" "$outcome_tmp" >/dev/null
+  project_tracking_sync_idea repo "$canonical" "$idea_id"
   rm -f "$targets_tmp" "$target_tmp" "$outcome_tmp"
   printf 'ideas: repair failed for %s run=%s from=%s\n' "$idea_id" "$run_id" "$from_stage"
   return 1
@@ -3448,6 +3418,7 @@ ideas_do_implement_fleet() {
       ideas_transition fleet "$workspace" "$idea_id" implementation_started "$actor" "implementation started" "" "" >/dev/null
       ;;
   esac
+  project_tracking_sync_idea fleet "$workspace" "$idea_id"
 
   targets_tmp="$(mktemp "${TMPDIR:-/tmp}/e3d-fleet-implementation-targets.XXXXXX")"
   : > "$targets_tmp"
@@ -3489,12 +3460,14 @@ ideas_do_implement_fleet() {
   if (( failed )); then
     outcome_tmp="$(implementation_outcome_file "$idea_id" failed "$targets_tmp" "$failure_reason")"
     ideas_transition fleet "$workspace" "$idea_id" implementation_failed "$actor" "implementation failed" "" "" "$outcome_tmp" >/dev/null
+    project_tracking_sync_idea fleet "$workspace" "$idea_id"
     rm -f "$targets_tmp" "$outcome_tmp"
     printf 'fleet ideas: implementation failed for %s\n' "$idea_id"
     return 1
   fi
   outcome_tmp="$(implementation_outcome_file "$idea_id" succeeded "$targets_tmp")"
   ideas_transition fleet "$workspace" "$idea_id" implementation_completed "$actor" "implementation completed" "" "" "$outcome_tmp" >/dev/null
+  project_tracking_sync_idea fleet "$workspace" "$idea_id"
   rm -f "$targets_tmp" "$outcome_tmp"
   printf 'fleet ideas: implemented %s targets=%s\n' "$idea_id" "$targets_count"
 }
@@ -3670,6 +3643,7 @@ ideas_do_approve_merge() {
   targets_tmp="$(mktemp "${TMPDIR:-/tmp}/e3d-merge-approval-targets.XXXXXX")"
   build_merge_approval_targets_json "$idea_file" "$targets_tmp" "$actor"
   ideas_transition "$kind" "$canonical" "$idea_id" merge_approved "$actor" "$note" "$targets_tmp" "" >/dev/null
+  project_tracking_sync_idea "$kind" "$canonical" "$idea_id"
   rm -f "$targets_tmp"
   printf 'ideas: approved merge for %s targets=%s\n' "$idea_id" "$(jq '.merge_approval.targets | length' "$(ideas_require_snapshot "$kind" "$canonical" "$idea_id")")"
 }
@@ -3757,6 +3731,7 @@ ideas_do_merge() {
     if [[ $status -ne 2 ]]; then
       outcome_tmp="$(merge_outcome_file "$idea_id" failed "$results_tmp" "merge preflight failed")"
       ideas_transition "$kind" "$canonical" "$idea_id" merge_failed "$actor" "merge preflight failed" "" "" "$outcome_tmp" >/dev/null
+      project_tracking_sync_idea "$kind" "$canonical" "$idea_id"
       rm -f "$outcome_tmp"
     fi
     rm -f "$observed_tmp" "$results_tmp"
@@ -3802,6 +3777,7 @@ ideas_do_merge() {
   fi
   outcome_tmp="$(merge_outcome_file "$idea_id" "$status" "$results_tmp" "$failure_reason")"
   ideas_transition "$kind" "$canonical" "$idea_id" "$event" "$actor" "merge $status" "" "" "$outcome_tmp" >/dev/null
+  project_tracking_sync_idea "$kind" "$canonical" "$idea_id"
   rm -f "$observed_tmp" "$results_tmp" "$outcome_tmp"
   if [[ "$event" == "merge_completed" ]]; then
     printf 'ideas: merged %s targets=%s\n' "$idea_id" "$count"
@@ -3860,7 +3836,10 @@ cmd_ideas() {
       [[ -n "$candidate_id" ]] || die "ideas ingest requires --candidate-id"
       [[ -f "$candidate_json" ]] || die "ideas ingest requires --candidate-json <file>"
       repo="$(repo_abs_path "$repo")"
-      ideas_ingest_candidate repo "$repo" "$run_id" "$candidate_id" "$candidate_json"
+      local ingested_idea_id
+      ingested_idea_id="$(ideas_ingest_candidate repo "$repo" "$run_id" "$candidate_id" "$candidate_json")"
+      project_tracking_sync_idea repo "$repo" "$ingested_idea_id"
+      printf '%s\n' "$ingested_idea_id"
       ;;
     transition)
       local repo="" actor="" note="" targets_json="" head_sha=""
@@ -4437,6 +4416,8 @@ validate_fleet_discover_config() {
   json_type_check "$file" 'if has("analogy_domains") then (.analogy_domains | type == "array") else true end' "fleet discover config.analogy_domains must be an array when provided"
   json_type_check "$file" 'if has("analogy_domains") then (.analogy_domains | all(.[]; type == "string")) else true end' "fleet discover config.analogy_domains must be an array of strings when provided"
   json_type_check "$file" 'if has("research_topics") then (.research_topics | type == "string") else true end' "fleet discover config.research_topics must be a string when provided"
+  json_type_check "$file" 'if has("tracking") then (.tracking | type == "object") else true end' "fleet discover config.tracking must be an object when provided"
+  json_type_check "$file" 'if (has("tracking") and (.tracking | has("project_url"))) then (.tracking.project_url | type == "string") else true end' "fleet discover config.tracking.project_url must be a string when provided"
   printf 'fleet discover config valid: %s\n' "$file"
 }
 
@@ -4838,7 +4819,10 @@ cmd_fleet_ideas() {
       [[ -n "$run_id" ]] || die "fleet ideas ingest requires --run-id"
       [[ -n "$candidate_id" ]] || die "fleet ideas ingest requires --candidate-id"
       [[ -f "$candidate_json" ]] || die "fleet ideas ingest requires --candidate-json <file>"
-      ideas_ingest_candidate fleet "$workspace" "$run_id" "$candidate_id" "$candidate_json"
+      local ingested_idea_id
+      ingested_idea_id="$(ideas_ingest_candidate fleet "$workspace" "$run_id" "$candidate_id" "$candidate_json")"
+      project_tracking_sync_idea fleet "$workspace" "$ingested_idea_id"
+      printf '%s\n' "$ingested_idea_id"
       ;;
     transition)
       local actor="" note="" targets_json="" head_sha=""

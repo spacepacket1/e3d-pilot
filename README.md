@@ -133,6 +133,14 @@ e3d-pilot ideas implement-approved --repo /path/to/repository
 
 Successful implementation records the run ID, branch/worktree, changed files and lines, verification results, review result, publish backend, PR URL/number, and final PR head SHA. GitHub publication creates a draft PR; local publication leaves a local review branch and summary.
 
+`ideas implement` always starts a brand-new run and redoes draft, negotiate, and execute from scratch on retry — including when only the last stage (typically publish, e.g. a forge label that didn't exist yet) failed on an otherwise fully verified and reviewed attempt. If a specific run already got that far, resume it in place instead of paying for another draft/negotiate/execute cycle:
+
+```bash
+e3d-pilot ideas repair-run --repo /path/to/repository --run-id <run-id> [--from-stage <stage>] idea-abc123def456
+```
+
+`--from-stage` defaults to `publish`. Every stage strictly before the resume point must already have its real success artifact on disk — this can only skip work that's provably already done, never work that never happened.
+
 After reviewing the draft PR, approve and perform merge with the second gate:
 
 ```bash
@@ -224,6 +232,35 @@ By default it shells out to `mail -s "$E3D_PILOT_EMAIL_SUBJECT" "$E3D_PILOT_EMAI
 ```
 
 If `notify` is absent, or no mail command is configured or found on `PATH`, publish still succeeds — the notification step degrades to a no-op (or a one-line warning) rather than failing the run.
+
+## Project board tracking
+
+Ideas otherwise only live in the local ledger (`ideas list`/`show`) until they reach a PR — there's no visibility into what's proposed or approved unless someone goes and asks. Point e3d-pilot at a GitHub Projects (v2) board and it keeps a card for every idea in sync with its actual lifecycle status, from the moment it's proposed through merge:
+
+| Idea status | Board column |
+| --- | --- |
+| `proposed` | Backlog |
+| `approved_for_implementation`, `changes_requested`, `implementation_failed` | Ready |
+| `implementing` | In progress |
+| `implemented`, `approved_for_merge`, `partially_merged`, `merge_failed` | In review |
+| `merged` | Done |
+| `rejected`, `closed`, `reverted` | archived (not deleted) |
+
+It's opt-in and off by default. Set it once for every repo via an environment variable (same shape as `LOCAL_MODEL_ENDPOINT` — one setting, everywhere):
+
+```bash
+export E3D_PILOT_TRACKING_PROJECT_URL="https://github.com/users/<owner>/projects/<n>"
+```
+
+or per-repo in `.e3d-pilot/config.json` (overrides the env var for that repo):
+
+```json
+"tracking": {
+  "project_url": "https://github.com/orgs/<org>/projects/<n>"
+}
+```
+
+A proposed idea gets a draft card. Once it reaches a real PR, e3d-pilot reuses an existing board item for that PR if one is already there — including one a project's own "auto-add" workflow created — rather than leaving a stale draft alongside it. Every sync is best-effort: a misconfigured URL, missing `project`/`read:project` `gh` auth scope, or a transient API error degrades to a stderr warning, never a failed command. Tracking state is recorded as part of the same append-only ledger everything else uses, so `ideas rebuild` never loses which board item an idea is linked to.
 
 ## Fleet mode
 

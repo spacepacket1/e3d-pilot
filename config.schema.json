@@ -109,6 +109,13 @@
         "implementation_required": { "type": "boolean" },
         "merge_required": { "type": "boolean" }
       }
+    },
+    "tracking": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "project_url": { "type": "string" }
+      }
     }
   }
 }
