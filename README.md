@@ -96,6 +96,8 @@ Create `.e3d-pilot/config.json` in the target repository. Start from [`examples/
 - `live_verify`: optional `{ "command": "..." }` hook. It runs only when repository docs identify a supported E3D paid-API surface and `e3d-agent` is available; otherwise it is skipped.
 - `pr`: `base_branch`, draft flag, labels, and backend (`auto`, `github`, or `local`).
 - `notify`: optional `{ "email": { "to": "...", "command": "..." } }`. See [Notifications](#notifications).
+- `approval`: optional `{ "implementation_required": bool, "merge_required": bool }`. Both default to `true`; see [Approval-gated operator workflow](#approval-gated-operator-workflow).
+- `tracking`: optional `{ "project_url": "..." }`. Overrides `E3D_PILOT_TRACKING_PROJECT_URL` for this repo; see [Project board tracking](#project-board-tracking).
 
 Validate and run:
 
@@ -371,9 +373,11 @@ Discovery and ideation do not mutate source. Draft, negotiate, execute, review, 
 
 Merge is a separate operation. `approve-merge` binds approval to the observed target set and exact PR head SHA. Merge refuses stale heads, changed base branches, draft PRs, closed PRs, missing approvals, and unsupported local merge backends. e3d-pilot never force-pushes or pushes directly to a protected base branch.
 
+Project board tracking (see above) is best-effort and never in the safety path: it's off unless explicitly configured, and a misconfigured URL, missing `gh` auth scope, or transient API failure degrades to a stderr warning rather than blocking ideate, approve, implement, or merge.
+
 Run the repository test suite with:
 
 ```bash
 set -e
-for test_file in tests/phase{1..20}.sh; do bash "$test_file"; done
+for test_file in tests/phase{1..22}.sh; do bash "$test_file"; done
 ```
