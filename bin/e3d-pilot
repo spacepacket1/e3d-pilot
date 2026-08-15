@@ -3082,7 +3082,7 @@ publish_pr_number_from_url() {
 implementation_target_outcome_json() {
   local repo="$1" run_id="$2" approved_base="$3" actual_start="$4" status="$5" failure_stage="$6" failure_reason="$7" role="${8:-primary}" base_branch="${9:-}"
   local run_dir branch="" worktree="" diff_files="" diff_lines="" final_head="" backend="" pr_url="" pr_number="" review_outcome=""
-  local commits_json changed_files_json verification_json
+  local commits_json changed_files_json verification_json failure_reason_file
   run_dir="$(runs_dir_for_repo "$repo")/$run_id"
   if [[ -f "$run_dir/execute-worktree.txt" ]]; then
     branch="$(cut -f1 "$run_dir/execute-worktree.txt")"
@@ -3114,6 +3114,17 @@ implementation_target_outcome_json() {
     printf '[]\n' > "$changed_files_json"
   fi
   implementation_verification_json "$run_dir/review-verify-summary.md" > "$verification_json"
+  # failure_reason can be an entire captured stage's stdout+stderr (e.g. a
+  # verbose provider CLI transcript on execute failure) -- potentially
+  # hundreds of KB. Passing that as a jq --arg risks "Argument list too
+  # long" (E2BIG) on exec. Route it through a capped temp file instead.
+  failure_reason_file="$(mktemp "${TMPDIR:-/tmp}/e3d-implementation-failure-reason.XXXXXX")"
+  if [[ ${#failure_reason} -gt 8000 ]]; then
+    printf '... (truncated, showing last 8000 of %d chars)\n' "${#failure_reason}" > "$failure_reason_file"
+    printf '%s' "$failure_reason" | tail -c 8000 >> "$failure_reason_file"
+  else
+    printf '%s' "$failure_reason" > "$failure_reason_file"
+  fi
   jq -ncS \
     --arg repo "$repo" \
     --arg run_id "$run_id" \
@@ -3125,7 +3136,7 @@ implementation_target_outcome_json() {
     --arg branch "$branch" \
     --arg worktree "$worktree" \
     --arg failure_stage "$failure_stage" \
-    --arg failure_reason "$failure_reason" \
+    --rawfile failure_reason "$failure_reason_file" \
     --arg final_head "$final_head" \
     --arg publish_backend "$backend" \
     --arg pr_url "$pr_url" \
@@ -3158,7 +3169,7 @@ implementation_target_outcome_json() {
       status:$status
     }
     | if $status == "failed" then .failure={stage:$failure_stage,reason:$failure_reason} else . end'
-  rm -f "$commits_json" "$changed_files_json" "$verification_json"
+  rm -f "$commits_json" "$changed_files_json" "$verification_json" "$failure_reason_file"
 }
 
 implementation_outcome_file() {
