@@ -75,6 +75,7 @@ Usage:
   e3d-pilot fleet prs --approve <repo>
   e3d-pilot fleet prs --merge   <repo>
   e3d-pilot fleet prs --close   <repo>
+  e3d-pilot web --repo <path> [--repo <path> ...] [--port <n>]
 
 Run stages:
   discover
@@ -101,6 +102,11 @@ those repos together. It needs its own config (providers.discover/ideate) at
 <dir of repos.json>/.e3d-pilot-fleet/config.json, or pass --config <path>.
 State is written under .e3d-pilot-fleet/runs/<run-id>/ next to the fleet
 file. This is discover+ideate only -- no draft/negotiate/execute/publish.
+
+`web` is an optional dashboard across one or more repos' own idea ledgers
+(not the fleet cross-repo ledger). Requires Node.js on PATH and
+E3D_PILOT_WEB_AUTH_USER/E3D_PILOT_WEB_AUTH_PASS -- every other command needs
+only Bash/git/jq/curl. See README for details.
 EOF
 }
 
@@ -5097,6 +5103,39 @@ cmd_fleet() {
   esac
 }
 
+cmd_web() {
+  local port=4173 repos=() arg repo
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --repo)
+        [[ -n "${2:-}" ]] || die "web --repo requires a path"
+        repos+=("$2")
+        shift 2
+        ;;
+      --port)
+        [[ -n "${2:-}" ]] || die "web --port requires a number"
+        port="$2"
+        shift 2
+        ;;
+      *)
+        die "unknown web argument: $1"
+        ;;
+    esac
+  done
+  [[ ${#repos[@]} -gt 0 ]] || die "web requires at least one --repo <path>"
+  command -v node >/dev/null 2>&1 || die "e3d-pilot web requires Node.js on PATH (optional feature -- every other e3d-pilot command needs only Bash/git/jq/curl)."
+  [[ -n "${E3D_PILOT_WEB_AUTH_USER:-}" && -n "${E3D_PILOT_WEB_AUTH_PASS:-}" ]] || die "e3d-pilot web refuses to start without E3D_PILOT_WEB_AUTH_USER and E3D_PILOT_WEB_AUTH_PASS set (private dashboard, never unauthenticated)."
+
+  local abs_repos=()
+  for repo in "${repos[@]}"; do
+    repo="$(repo_abs_path "$repo")"
+    ensure_git_repo "$repo"
+    abs_repos+=("$repo")
+  done
+
+  exec node "$REPO_ROOT/lib/web/server.js" --port "$port" -- "${abs_repos[@]}"
+}
+
 main() {
   local command="${1:-}"
   case "$command" in
@@ -5122,6 +5161,10 @@ main() {
     fleet)
       shift
       cmd_fleet "$@"
+      ;;
+    web)
+      shift
+      cmd_web "$@"
       ;;
     *)
       die "unknown command: $command"

@@ -82,6 +82,8 @@ export PATH="$PWD/e3d-pilot/bin:$PATH"
 e3d-pilot --help
 ```
 
+Node.js is only needed for the optional `e3d-pilot web` dashboard (see [Web UI](#web-ui-optional) below) — every other command needs only Bash, Git, `jq`, and `curl`.
+
 ## Configure a repository
 
 Create `.e3d-pilot/config.json` in the target repository. Start from [`examples/sample-config.json`](examples/sample-config.json). The fields are:
@@ -326,6 +328,22 @@ e3d-pilot fleet ideas ~/e3d-fleet.json merge-approved
 
 `fleet ideas approve` is implementation approval. `fleet ideas approve-merge` is merge approval for the exact reviewed head SHA. A GitHub review approval or `fleet prs --approve` action must not be treated as either ledger approval.
 
+## Web UI (optional)
+
+`fleet prs` and `ideas list` cover the terminal; `e3d-pilot web` is an optional dashboard for reviewing and deciding on ideas across one or more repos in a browser, for anyone who's fine adding Node.js for it. It is not required — every other e3d-pilot command needs only Bash, Git, `jq`, and `curl`, and `e3d-pilot web` refuses to start with a clear error if Node isn't on `PATH`.
+
+```bash
+export E3D_PILOT_WEB_AUTH_USER=you
+export E3D_PILOT_WEB_AUTH_PASS='a real secret, not this'
+e3d-pilot web --repo /path/to/repo-a --repo /path/to/repo-b --port 4173
+```
+
+Open `http://127.0.0.1:4173` (basic auth, the credentials above) to see every configured repo's own idea ledger merged into one filterable list, and a detail page per idea with its summary, scores, dedup rationale, approval/merge state, event history, linked run artifacts, and action buttons (approve, reject, request changes, approve-merge, sync, implement). Every action is a thin, synchronous shell-out to the exact same `e3d-pilot ideas ...` subcommand you'd type yourself — the web UI never reimplements ledger or approval logic, so it can never drift from the CLI's guarantees.
+
+Clicking **Implement** spawns `e3d-pilot ideas implement` as a detached background process (draft → negotiate → execute → review → publish can take 30+ minutes) and the idea page live-tails its `implementation-stage-log.md` while it runs.
+
+Both `E3D_PILOT_WEB_AUTH_USER` and `E3D_PILOT_WEB_AUTH_PASS` are required; there is no unauthenticated mode. This is meant to run on a trusted machine or behind your own reverse proxy/tunnel — it has no built-in TLS, rate limiting, or multi-user accounts.
+
 ## Running on a schedule
 
 e3d-pilot is deliberately not a daemon — every invocation is a single, short-lived CLI call that runs (or resumes) a stage and exits. There's no built-in scheduler, so "continuous" is up to whatever calls it: cron, a systemd timer, a scheduled CI workflow, or your own orchestrator all work equally well.
@@ -374,6 +392,8 @@ Discovery and ideation do not mutate source. Draft, negotiate, execute, review, 
 Merge is a separate operation. `approve-merge` binds approval to the observed target set and exact PR head SHA. Merge refuses stale heads, changed base branches, draft PRs, closed PRs, missing approvals, and unsupported local merge backends. e3d-pilot never force-pushes or pushes directly to a protected base branch.
 
 Project board tracking (see above) is best-effort and never in the safety path: it's off unless explicitly configured, and a misconfigured URL, missing `gh` auth scope, or transient API failure degrades to a stderr warning rather than blocking ideate, approve, implement, or merge.
+
+The optional web UI (see above) adds no new authority of its own: every action it exposes is a direct shell-out to the same `e3d-pilot ideas ...` subcommand, so the same approval gates, transition guards, and merge-SHA binding apply identically regardless of whether a decision came from a terminal or a browser.
 
 Run the repository test suite with:
 
