@@ -7,13 +7,14 @@ branch="${3:-}"
 summary="${4:-}"
 worktree="${5:-}"
 base="${6:-}"
+title="${7:-}"
 
 [[ -n "$repo" && -n "$run_id" && -n "$branch" && -n "$summary" && -n "$worktree" && -n "$base" ]] || {
-  echo "error: usage: github <repo> <run-id> <branch> <summary> <worktree> <base>" >&2
+  echo "error: usage: github <repo> <run-id> <branch> <summary> <worktree> <base> [title]" >&2
   exit 1
 }
 
-title="e3d-pilot: ${branch}"
+[[ -n "$title" ]] || title="e3d-pilot: ${branch}"
 args=(pr create --draft --base "$base" --head "$branch" --title "$title" --body-file "$summary")
 
 # Apply labels from .e3d-pilot/config.json when present

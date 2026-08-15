@@ -1620,6 +1620,16 @@ publish_stage() {
   audit_dir="${audit_info%%$'\t'*}"
   manifest_name="${audit_info#*$'\t'}"
   summary="$run_dir/publish-summary.md"; build_publish_summary "$run_dir" "$run_id" "$branch" "$manifest_name" "$summary"
+
+  # Prefer the idea's human-readable title for the PR title (matches what
+  # project-board tracking already shows) over the opaque run-id branch name,
+  # which otherwise leaves every PR in the GitHub PR list looking identical.
+  local pr_title="e3d-pilot: $branch" idea_info idea_kind idea_workspace idea_id idea_status idea_approved idea_title
+  if idea_info="$(resolve_run_idea_info "$repo" "$run_id" 2>/dev/null)"; then
+    IFS=$'\t' read -r idea_kind idea_workspace idea_id idea_status idea_approved <<<"$idea_info"
+    idea_title="$(jq -r '.title // empty' "$(ideas_snapshots_dir "$idea_kind" "$idea_workspace")/$idea_id/idea.json" 2>/dev/null || true)"
+    [[ -n "$idea_title" ]] && pr_title="e3d-pilot: $idea_title"
+  fi
   git -C "$worktree" add -A
   while IFS= read -r rel; do
     [[ -n "$rel" ]] || continue
@@ -1631,7 +1641,7 @@ publish_stage() {
   backend="$(publish_backend_for_repo "$repo" "$(config_value "$config_file" '.pr.backend')")"
   backend_script="$REPO_ROOT/lib/publish/$backend"; [[ -x "$backend_script" ]] || die "publish backend unavailable: $backend"
   set +e
-  output="$("$backend_script" "$repo" "$run_id" "$branch" "$summary" "$worktree" "$base" 2>"$run_dir/publish-backend.stderr")"
+  output="$("$backend_script" "$repo" "$run_id" "$branch" "$summary" "$worktree" "$base" "$pr_title" 2>"$run_dir/publish-backend.stderr")"
   backend_status=$?
   set -e
   [[ $backend_status -eq 0 ]] || die "publish backend failed: $(tr '\n' ' ' < "$run_dir/publish-backend.stderr" 2>/dev/null)"
