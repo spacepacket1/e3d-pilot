@@ -2,3 +2,10 @@
 .codex-spec-runner/
 node_modules/
 
+# Local, machine-specific deployment config for running `e3d-pilot web` as a
+# standing service (PM2, etc.) -- bakes in this operator's absolute repo
+# paths, which don't belong in a repo-agnostic tool meant to be cloned onto
+# other machines/orgs. Same reasoning as .e3d-pilot/ being local-only.
+/ecosystem.config.cjs
+/ops/
+
