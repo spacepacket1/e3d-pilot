@@ -160,7 +160,8 @@ ideas_materialize_candidate_record() {
   [[ -n "${title:-}" ]] || warnings+=("Candidate $rank is missing a title")
 
   duplicate_raw="$(ideas_trim "$(ideas_extract_field_value "$block_file" "Duplicate")")"
-  case "${duplicate_raw,,}" in
+  duplicate_raw="$(printf '%s' "$duplicate_raw" | tr '[:upper:]' '[:lower:]')"
+  case "$duplicate_raw" in
     yes) duplicate_value=true ;;
     no) duplicate_value=false ;;
     *)
@@ -317,7 +318,9 @@ ideas_materialize_candidates_from_markdown() {
   done
 
   rm -rf "$block_dir"
-  printf '%s\n' "${materialized_ids[@]}"
+  if (( ${#materialized_ids[@]} > 0 )); then
+    printf '%s\n' "${materialized_ids[@]}"
+  fi
 }
 
 materialize_single_repo_ideas() {

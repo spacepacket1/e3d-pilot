@@ -112,7 +112,7 @@ EOF
 
 slugify() {
   local input="$1"
-  input="${input,,}"
+  input="$(printf '%s' "$input" | tr '[:upper:]' '[:lower:]')"
   input="${input//[^a-z0-9._-]/-}"
   input="${input//--/-}"
   input="${input##[-.]}"
