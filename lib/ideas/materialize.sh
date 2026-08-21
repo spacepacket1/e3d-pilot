@@ -215,9 +215,9 @@ ideas_materialize_candidate_record() {
     eligibility_reason="${warnings[0]}"
   fi
 
-  warn_json="$(ideas_json_string_array "${warnings[@]}")"
+  warn_json="$(ideas_json_string_array "${warnings[@]+"${warnings[@]}"}")"
   if [[ "$kind" == "fleet" ]]; then
-    repos_json="$(ideas_json_string_array "${resolved_repos[@]}")"
+    repos_json="$(ideas_json_string_array "${resolved_repos[@]+"${resolved_repos[@]}"}")"
   else
     repos_json='[]'
   fi
@@ -243,7 +243,7 @@ ideas_materialize_candidate_record() {
     --argjson warnings "$warn_json" \
     --arg approvable "$approvable" \
     --arg eligibility_reason "$eligibility_reason" \
-    --argjson raw_repos "$(ideas_json_string_array "${raw_repos[@]}")" \
+    --argjson raw_repos "$(ideas_json_string_array "${raw_repos[@]+"${raw_repos[@]}"}")" \
     '{
       rank: $rank,
       selected_by_model: $selected_by_model,
