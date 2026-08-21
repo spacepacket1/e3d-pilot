@@ -1,0 +1,147 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+# shellcheck source=lib/providers/common.sh
+source "$REPO_ROOT/lib/providers/common.sh"
+E3D_BENCHMARK_TIMEOUT="${E3D_BENCHMARK_TIMEOUT:-1800}"
+
+usage() {
+  cat <<'EOF'
+Usage: e3d-backend-benchmark --repo <path> --task-id <id> --prompt <file>
+       [--backends codex,claude,grok-build] [--verify <command>] [--output <json>]
+
+Runs the identical prompt in a detached temporary worktree per backend. It
+never commits, pushes, publishes, or merges. Missing token/cost fields are null.
+EOF
+}
+
+die() { printf 'error: %s\n' "$*" >&2; exit 1; }
+
+repo="" task_id="" prompt_file="" backends="codex,claude,grok-build" verify_command="" output_file=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --repo) repo="${2:-}"; shift 2 ;;
+    --task-id) task_id="${2:-}"; shift 2 ;;
+    --prompt) prompt_file="${2:-}"; shift 2 ;;
+    --backends) backends="${2:-}"; shift 2 ;;
+    --verify) verify_command="${2:-}"; shift 2 ;;
+    --output) output_file="${2:-}"; shift 2 ;;
+    -h|--help) usage; exit 0 ;;
+    *) die "unknown argument: $1" ;;
+  esac
+done
+
+[[ -n "$repo" && -n "$task_id" && -n "$prompt_file" ]] || { usage >&2; exit 1; }
+[[ -d "$repo" ]] || die "repository not found: $repo"
+repo="$(cd "$repo" && pwd -P)"
+[[ -f "$prompt_file" ]] || die "prompt file not found: $prompt_file"
+prompt_file="$(cd "$(dirname "$prompt_file")" && pwd -P)/$(basename "$prompt_file")"
+git -C "$repo" rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "not a git repository: $repo"
+command -v jq >/dev/null 2>&1 || die "jq is required"
+[[ "$E3D_BENCHMARK_TIMEOUT" =~ ^[0-9]+$ ]] && (( E3D_BENCHMARK_TIMEOUT > 0 )) \
+  || die "E3D_BENCHMARK_TIMEOUT must be a positive integer"
+
+[[ -n "$output_file" ]] || output_file="$repo/.e3d-pilot/benchmarks/${task_id}.json"
+mkdir -p "$(dirname "$output_file")"
+artifact_dir="${output_file%.json}.artifacts"
+mkdir -p "$artifact_dir"
+results_file="$(mktemp "${TMPDIR:-/tmp}/e3d-benchmark-results.XXXXXX")"
+worktrees_file="$(mktemp "${TMPDIR:-/tmp}/e3d-benchmark-worktrees.XXXXXX")"
+
+cleanup() {
+  local path
+  while IFS= read -r path; do
+    [[ -n "$path" && -d "$path" ]] || continue
+    git -C "$repo" worktree remove --force "$path" >/dev/null 2>&1 || true
+  done < "$worktrees_file"
+  rm -f "$results_file" "$worktrees_file"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM HUP
+
+IFS=',' read -r -a backend_list <<< "$backends"
+for backend in "${backend_list[@]}"; do
+  case "$backend" in codex|claude|grok-build) ;; *) die "unsupported benchmark backend: $backend" ;; esac
+  provider="$REPO_ROOT/lib/providers/$backend"
+  [[ -x "$provider" ]] || die "provider adapter missing or not executable: $provider"
+
+  worktree="$(mktemp -d "${TMPDIR:-/tmp}/e3d-benchmark.${backend}.XXXXXX")"
+  # git worktree add requires the destination not to exist.
+  rmdir "$worktree"
+  git -C "$repo" worktree add --detach "$worktree" HEAD >/dev/null
+  printf '%s\n' "$worktree" >> "$worktrees_file"
+  stdout_file="$artifact_dir/${backend}.stdout"
+  stderr_file="$artifact_dir/${backend}.stderr"
+  verify_stdout_file="$artifact_dir/${backend}.verify.stdout"
+  verify_stderr_file="$artifact_dir/${backend}.verify.stderr"
+
+  start_seconds="$(date +%s)"
+  set +e
+  (cd "$worktree" && provider_run_with_timeout "$E3D_BENCHMARK_TIMEOUT" env \
+    E3D_PILOT_PROVIDER_MODE=execute GROK_BUILD_OUTPUT_FORMAT=json \
+    "$provider" "$prompt_file") >"$stdout_file" 2>"$stderr_file"
+  backend_status=$?
+  set -e
+  end_seconds="$(date +%s)"
+
+  additions=0 deletions=0 files_changed=0
+  while IFS=$'\t' read -r add del path; do
+    [[ -n "$path" ]] || continue
+    files_changed=$((files_changed + 1))
+    [[ "$add" == "-" ]] || additions=$((additions + add))
+    [[ "$del" == "-" ]] || deletions=$((deletions + del))
+  done < <(git -C "$worktree" diff --numstat --no-renames -- .)
+  while IFS= read -r path; do
+    [[ -n "$path" ]] || continue
+    files_changed=$((files_changed + 1))
+    [[ -f "$worktree/$path" ]] && additions=$((additions + $(wc -l < "$worktree/$path")))
+  done < <(git -C "$worktree" ls-files --others --exclude-standard)
+
+  verify_status_json=null
+  verify_exit_json=null
+  if [[ -n "$verify_command" ]]; then
+    set +e
+    (cd "$worktree" && bash -lc "$verify_command") >"$verify_stdout_file" 2>"$verify_stderr_file"
+    verify_status=$?
+    set -e
+    verify_exit_json="$verify_status"
+    if [[ $verify_status -eq 0 ]]; then verify_status_json=true; else verify_status_json=false; fi
+  fi
+
+  tokens_json=null cost_json=null model_json=null usage_partial_json=null
+  if [[ "$backend" == "grok-build" ]] && jq -e 'type == "object"' "$stdout_file" >/dev/null 2>&1; then
+    tokens_json="$(jq -c '.usage.total_tokens // .usage.totalTokens // .total_tokens // null' "$stdout_file")"
+    cost_json="$(jq -c '.total_cost_usd // .usage.total_cost_usd // null' "$stdout_file")"
+    model_json="$(jq -c '.model // ((.usage.models? // {}) | keys[0]?) // null' "$stdout_file")"
+    usage_partial_json="$(jq -c '.cost_is_partial // .usage_is_incomplete // null' "$stdout_file")"
+  fi
+
+  success_json=false
+  if [[ $backend_status -eq 0 && "$verify_status_json" != "false" ]]; then success_json=true; fi
+  stderr_text="$(tail -c 8000 "$stderr_file" 2>/dev/null || true)"
+  jq -n \
+    --arg backend "$backend" --arg task_id "$task_id" --argjson duration "$((end_seconds - start_seconds))" \
+    --argjson success "$success_json" --argjson exit_status "$backend_status" \
+    --argjson files_changed "$files_changed" --argjson lines_added "$additions" --argjson lines_removed "$deletions" \
+    --argjson tests_passed "$verify_status_json" --argjson test_exit_status "$verify_exit_json" \
+    --argjson tokens "$tokens_json" --argjson cost_usd "$cost_json" --argjson model "$model_json" \
+    --argjson usage_partial "$usage_partial_json" --arg stderr "$stderr_text" \
+    --arg stdout_path "$stdout_file" --arg stderr_path "$stderr_file" \
+    --arg verify_stdout_path "$verify_stdout_file" --arg verify_stderr_path "$verify_stderr_file" \
+    '{backend:$backend, task_id:$task_id, duration_seconds:$duration, success:$success,
+      files_changed:$files_changed, lines_added:$lines_added, lines_removed:$lines_removed,
+      tests_passed:$tests_passed, test_exit_status:$test_exit_status, exit_status:$exit_status,
+      retry_count:0, tokens:$tokens, cost_usd:$cost_usd, model:$model,
+      usage_partial:$usage_partial, backend_error:(if $exit_status == 0 or $stderr == "" then null else $stderr end),
+      stdout_path:$stdout_path, stderr_path:$stderr_path,
+      verify_stdout_path:(if $tests_passed == null then null else $verify_stdout_path end),
+      verify_stderr_path:(if $tests_passed == null then null else $verify_stderr_path end),
+      human_review_score:null, review_quality_notes:null}' >> "$results_file"
+done
+
+jq -s --arg generated_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  '{schema_version:1, generated_at:$generated_at, results:.}' "$results_file" > "$output_file"
+printf '%s\n' "$output_file"

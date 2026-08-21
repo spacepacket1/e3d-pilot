@@ -138,7 +138,7 @@ ideas_fleet_repo_map_json() {
 
 ideas_materialize_candidate_record() {
   local kind="$1" workspace="$2" source_run_id="$3" selected="$4" focus="$5" block_file="$6" rank="$7" artifacts_json="$8" fleet_repo_map_json="${9:-}"
-  local title duplicate_raw duplicate_value summary category analogy effort dedup_rationale attraction retention revenue
+  local title duplicate_raw duplicate_value summary category analogy effort dedup_rationale attraction retention revenue ensemble
   local repos_field="" candidate_num="" candidate_id="" source_candidate="" header=""
   local -a warnings=() resolved_repos=() raw_repos=()
   local approvable=true eligibility_reason="" warn_json repos_json tmp_json duplicate_idea_id stable_idea_id
@@ -186,6 +186,7 @@ ideas_materialize_candidate_record() {
   if [[ -z "$revenue" ]]; then
     revenue="$(ideas_trim "$(ideas_extract_field_value "$block_file" "Revenue (1-5)")")"
   fi
+  ensemble="$(ideas_trim "$(ideas_extract_field_value "$block_file" "Ensemble (0-100)")")"
 
   if [[ "$kind" == "fleet" ]]; then
     repos_field="$(ideas_trim "$(ideas_extract_field_value "$block_file" "Repos")")"
@@ -236,6 +237,7 @@ ideas_materialize_candidate_record() {
     --arg attraction "${attraction:-}" \
     --arg retention "${retention:-}" \
     --arg revenue "${revenue:-}" \
+    --arg ensemble "${ensemble:-}" \
     --argjson duplicate "$duplicate_value" \
     --argjson selected_by_model "$( [[ -n "$candidate_id" && "$candidate_id" == "$selected" ]] && printf 'true' || printf 'false' )" \
     --argjson repos "$repos_json" \
@@ -255,7 +257,8 @@ ideas_materialize_candidate_record() {
         attraction: (if $attraction == "" then null else ($attraction | tonumber? // $attraction) end),
         retention: (if $retention == "" then null else ($retention | tonumber? // $retention) end),
         revenue: (if $revenue == "" then null else (if ($revenue | ascii_downcase) == "n/a" then "n/a" else ($revenue | tonumber? // $revenue) end) end),
-        effort: (if $effort == "" then null else $effort end)
+        effort: (if $effort == "" then null else $effort end),
+        ensemble: (if $ensemble == "" then null else ($ensemble | tonumber? // $ensemble) end)
       },
       category: (if $category == "" then null else $category end),
       analogy: (if $analogy == "" then null else $analogy end),
@@ -296,6 +299,9 @@ ideas_materialize_candidates_from_markdown() {
   local -a materialized_ids=()
 
   selected="$(candidates_selected_field "$candidates_file" || true)"
+  local model_selected
+  model_selected="$(awk -F': ' '/^model_selected: / { print $2; exit }' "$candidates_file" || true)"
+  [[ -n "$model_selected" ]] || model_selected="$selected"
   block_dir="$(mktemp -d "${TMPDIR:-/tmp}/e3d-candidate-blocks.XXXXXX")"
   block_count="$(ideas_parse_candidate_blocks "$candidates_file" "$block_dir")"
 
@@ -307,7 +313,7 @@ ideas_materialize_candidates_from_markdown() {
     block_file="$block_dir/candidate-$rank.md"
     [[ -f "$block_file" ]] || continue
     candidate_json=""
-    if ! candidate_json="$(ideas_materialize_candidate_record "$kind" "$workspace" "$source_run_id" "$selected" "$focus" "$block_file" "$rank" "$artifacts_json" "$fleet_repo_map_json")"; then
+    if ! candidate_json="$(ideas_materialize_candidate_record "$kind" "$workspace" "$source_run_id" "$model_selected" "$focus" "$block_file" "$rank" "$artifacts_json" "$fleet_repo_map_json")"; then
       continue
     fi
     source_candidate="$(jq -r '.provenance.source_candidate' "$candidate_json")"
@@ -333,7 +339,9 @@ materialize_single_repo_ideas() {
     "$run_dir/discover-prompt.md" \
     "$run_dir/discover-external-context.md" \
     "$run_dir/ideate-prompt.md" \
-    "$run_dir/ideate-response.md")"
+    "$run_dir/ideate-response.md" \
+    "$run_dir/ideate-scoring.json" \
+    "$run_dir/ideate-response.model.md")"
   ideas_materialize_candidates_from_markdown repo "$workspace" "$run_id" "$run_dir/candidates.md" "$focus" "$artifacts_json"
 }
 
@@ -348,6 +356,8 @@ materialize_fleet_ideas() {
     "$run_dir/fleet-discover-prompt.md" \
     "$run_dir/fleet-discover-response.md" \
     "$run_dir/fleet-ideate-prompt.md" \
-    "$run_dir/fleet-ideate-response.md")"
+    "$run_dir/fleet-ideate-response.md" \
+    "$run_dir/fleet-ideate-scoring.json" \
+    "$run_dir/fleet-ideate-response.model.md")"
   ideas_materialize_candidates_from_markdown fleet "$workspace" "$run_id" "$run_dir/candidates.md" "$focus" "$artifacts_json" "$repo_map_json"
 }

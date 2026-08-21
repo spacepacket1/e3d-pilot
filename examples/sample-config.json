@@ -19,7 +19,8 @@
     "ideate": "devin",
     "draft": "codex",
     "negotiate": ["devin", "codex"],
-    "review": "devin"
+    "review": "devin",
+    "execute": "csr"
   },
   "max_diff_files": 25,
   "max_diff_lines": 600,

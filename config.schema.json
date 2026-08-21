@@ -62,7 +62,12 @@
           "minItems": 1,
           "items": { "type": "string" }
         },
-        "review": { "type": "string" }
+        "review": { "type": "string" },
+        "execute": {
+          "type": "string",
+          "enum": ["csr", "grok-build"],
+          "default": "csr"
+        }
       }
     },
     "max_diff_files": {
@@ -115,6 +120,20 @@
       "additionalProperties": false,
       "properties": {
         "project_url": { "type": "string" }
+      }
+    },
+    "candidate_scoring": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider"],
+      "properties": {
+        "provider": { "type": "string" },
+        "workers": {
+          "type": "integer",
+          "minimum": 3,
+          "maximum": 5,
+          "default": 3
+        }
       }
     }
   }

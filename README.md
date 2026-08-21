@@ -4,7 +4,7 @@
 
 ![e3d-pilot's autonomous agentic loop: discover, ideate, draft, negotiate, execute, review, publish, orbiting a central autonomous pilot core, with gold safety gates before the diff-ceiling check and before publish](docs/images/agentic-loop.svg)
 
-It is a repo-agnostic, Bash-first agentic loop: research a repository, propose durable ideas, wait for explicit implementation approval, get independent models to agree the plan is ready, hand execution to [codex-spec-runner](https://github.com/spacepacket1/codex-spec-runner) (csr), verify the result, publish a draft PR or local review branch, then wait for a separate merge approval bound to the exact reviewed PR head SHA.
+It is a repo-agnostic, Bash-first agentic loop: research a repository, propose durable ideas, optionally re-rank those ideas with a read-only scoring ensemble, wait for explicit implementation approval, get independent models to agree the plan is ready, hand execution to [codex-spec-runner](https://github.com/spacepacket1/codex-spec-runner) (csr) by default, verify the result, publish a draft PR or local review branch, then wait for a separate merge approval bound to the exact reviewed PR head SHA.
 
 ## Why we built this
 
@@ -32,8 +32,9 @@ If you maintain a repository and want a standing second opinion on "what should 
 ```mermaid
 flowchart LR
     A[discover] --> B[ideate]
+    B -->|optional candidate_scoring| S[read-only ensemble]
+    S --> I[[proposed idea ledger]]
     B -->|selected: none| STOP1((nothing to do))
-    B --> I[[proposed idea ledger]]
     I -->|ideas approve| C[draft]
     I -->|ideas reject| STOPR((rejected))
     C --> D[negotiate]
@@ -49,11 +50,11 @@ flowchart LR
 ```
 
 1. **discover** — writes `findings.md`: Git history, branches, issues/PRs, existing docs and TODOs, plus a model-researched "External Context" section that includes an explicit cross-domain "Analogous Patterns" subsection (see [Ideation sourcing](#ideation-sourcing-and-scoring) below).
-2. **ideate** — writes ranked, deduplicated `candidates.md` and materializes every non-duplicate candidate as a `proposed` idea. `selected: none` is a valid, clean stop when everything proposed is already covered.
+2. **ideate** — writes ranked, deduplicated `candidates.md` and materializes every non-duplicate candidate as a `proposed` idea. `selected: none` is a valid, clean stop when everything proposed is already covered. If `candidate_scoring` is configured, an ensemble of read-only workers re-ranks non-duplicate candidates before materialization; the original model pick is stored as `model_selected`.
 3. **approval gate 1** — a human approves or rejects the exact idea. `proposed` never means rejected, and no source-mutating stage can run without current implementation approval.
 4. **draft** — turns the approved candidate into a csr-shaped `spec-draft.md`, with machine-readable `pilot:touches` annotations per phase so later guards can check real paths instead of guessing from prose.
 5. **negotiate** — every configured reviewer must approve the same unchanged draft in one pass; disagreement drives bounded revision rounds, ending in `spec-final.md` on success or a clean "needs human" stop.
-6. **execute** — hands `spec-final.md` to csr inside an isolated worktree on its own branch, then enforces `protected_paths` and the real post-execution `max_diff_files`/`max_diff_lines` ceilings.
+6. **execute** — hands `spec-final.md` to the configured execute backend inside an isolated worktree on its own branch, then enforces `protected_paths` and the real post-execution `max_diff_files`/`max_diff_lines` ceilings. The default backend is csr. `providers.execute: "grok-build"` is an experimental alternative that still uses the same worktree, ceilings, review, and draft-PR path.
 7. **review** — runs (or auto-detects) verification commands and asks an independent review provider to inspect the actual diff.
 8. **publish** — only after verification passes: commits the run's audit artifacts to the branch and hands off to a publish backend (`github` or `local`) to open a draft PR or leave a local review branch.
 9. **approval gate 2** — a human runs `approve-merge` after reviewing the draft PR/local branch. For GitHub targets, e3d-pilot records the current PR head SHA and refuses to merge any later head without a new approval.
@@ -66,6 +67,21 @@ Discover's model call doesn't just summarize "state of the art" — it's asked t
 
 Ideate then scores every non-duplicate candidate on `Attraction` and `Retention` (1-5 each), tags a `Category` (data, workflow, social, gamification, testing, marketing, selling, or other), cites the `Analogy` it drew on, and estimates `Effort`. Ranking is driven primarily by `Attraction + Retention`; an optional `Revenue` score can only break ties between otherwise-equal candidates — it can never outrank a candidate that attracts or retains users better. That priority order is deliberate: growing and keeping users is the point, revenue is a secondary outcome of doing that well.
 
+### Optional ensemble scoring
+
+After the ideate provider writes candidates, an optional `candidate_scoring` block can re-rank them with 3–5 independent read-only workers before ideas are materialized. The original model pick is stored as `model_selected`; `selected` becomes the ensemble winner among non-duplicate candidates. Scoring never executes, publishes, or approves — the two human gates still apply.
+
+Any `lib/providers` adapter can be the scoring provider. `grok-build` is one option, intended as a cheaper fan-out in front of frontier negotiate and csr execute:
+
+```json
+"candidate_scoring": {
+  "provider": "grok-build",
+  "workers": 3
+}
+```
+
+`workers` must be an integer from 3 to 5 (default 3). Artifacts land in the run directory as `ideate-scoring.json`, `ideate-response.model.md`, and per-worker prompts/stdout under `ideate-scoring.artifacts/`. Fleet discover uses the same block in `.e3d-pilot-fleet/config.json`, writing `fleet-ideate-scoring.json`. Each idea record stores the ensemble average as `scores.ensemble` when scoring ran; that field is not part of the approval digest.
+
 ### Revenue-focused runs
 
 Pass `--focus revenue` to `e3d-pilot run` (any stage) to flip that priority for a dedicated pass: `discover` adds a `### Monetization Signals` subsection (existing monetization mechanisms in the repo, plus 2-3 adjacent-industry models that could extend them), and `ideate` ranks candidates by `Revenue` first — `Attraction`/`Retention` only break ties, and `Revenue` becomes a required numeric field instead of an optional tiebreaker. Candidates may be net-new monetization surfaces, not just extensions of existing features; duplicate-checking still applies equally either way.
@@ -74,7 +90,7 @@ Focus is resolved once per run and persisted to `.e3d-pilot/runs/<run-id>/focus`
 
 ## Requirements and installation
 
-Install Bash, Git, `jq`, `curl`, and `codex-spec-runner`; install and authenticate whichever model CLIs and forge CLI your configuration uses. Add this repository's `bin` directory to `PATH`:
+Install Bash, Git, `jq`, `curl`, and `codex-spec-runner`; install and authenticate whichever model CLIs and forge CLI your configuration uses (`claude`, `codex`, `devin`, a local OpenAI-compatible endpoint, and/or `grok` for `grok-build`). Add this repository's `bin` directory to `PATH`:
 
 ```bash
 git clone https://github.com/spacepacket1/e3d-pilot.git
@@ -92,7 +108,15 @@ Create `.e3d-pilot/config.json` in the target repository. Start from [`examples/
 - `protected_paths`: globs that generated specs and execute-time guards reject.
 - `research_topics`: hints for discovery research.
 - `analogy_domains`: optional cross-domain seed list for discovery's analogy pass (see above); falls back to a built-in default when omitted.
-- `providers`: provider names for `discover`, `ideate`, `draft`, ordered `negotiate` reviewers, and independent `review`.
+- `providers`: provider names for `discover`, `ideate`, `draft`, ordered
+  `negotiate` reviewers, independent `review`, and optional `execute` (`csr` by
+  default, or experimental `grok-build`). `grok-build` is a normal adapter for
+  the reasoning stages: put it in the same fields you would use for `claude`,
+  `codex`, `devin`, or `local`.
+- `candidate_scoring`: optional `{ "provider": "grok-build", "workers": 3 }`.
+  After ideate proposes candidates, 3–5 independent read-only workers re-rank
+  them. `provider` is any `lib/providers` adapter; `grok-build` is one option.
+  Scoring never executes, publishes, or approves. Omitted means no scoring.
 - `max_diff_files` and `max_diff_lines`: actual post-execution ceilings.
 - `docs`: optional guidance-document path; otherwise common filenames are detected.
 - `live_verify`: optional `{ "command": "..." }` hook. It runs only when repository docs identify a supported E3D paid-API surface and `e3d-agent` is available; otherwise it is skipped.
@@ -179,7 +203,23 @@ Existing open e3d-pilot PRs should be adopted only through an explicit adoption 
 
 ## Providers and negotiation
 
-Built-in adapters are `claude`, `codex`, `local`, and `devin`; check them with `e3d-pilot providers list`.
+Built-in adapters are `claude`, `codex`, `local`, `devin`, and `grok-build`;
+check them with `e3d-pilot providers list`. `grok-build` is selected the same
+way as the others: name it in `providers.*`. It is available when the `grok`
+binary is on `PATH` (override with `GROK_BUILD_BIN`).
+
+**grok-build** — shells out to the Grok Build CLI in headless mode. Reasoning
+stages use the read-only sandbox. Install with
+`curl -fsSL https://x.ai/cli/install.sh | bash`, then `grok login --device-auth`
+or `XAI_API_KEY`. Override the binary, timeout, or model with `GROK_BUILD_BIN`,
+`GROK_BUILD_TIMEOUT` (seconds, default 900), and `GROK_BUILD_MODEL`. There is
+no extra enable flag: naming `grok-build` in config is the opt-in, the same as
+the other adapters.
+
+To use Grok only as a cheap candidate ranker, keep your existing
+ideate/negotiate providers and add `candidate_scoring` (see
+[Optional ensemble scoring](#optional-ensemble-scoring)). That fan-out never
+executes. Human approval, negotiate, and csr execute stay in place.
 
 **devin** — shells out to the Devin CLI in non-interactive print mode. Defaults to `claude-sonnet-4-6-thinking-1m`; override with environment variables:
 
@@ -202,7 +242,10 @@ Every real call through the local adapter serializes through a machine-wide lock
 
 A negotiate reviewer that omits the optional `reason:` field gets a synthesized `"(no reason provided by reviewer)"` rather than failing the parse — small models that produce a valid `status:` line but drop the reason field are tolerated.
 
-The execute stage is intentionally limited to providers supported by `codex-spec-runner`—currently Codex and Claude. Adding local execution requires a separate csr enhancement; e3d-pilot never emits `runner:model=local` today.
+The execute stage defaults to `codex-spec-runner`, which currently dispatches
+Codex and Claude. An experimental `providers.execute: "grok-build"` path runs
+Grok directly inside the same approval-gated isolated worktree. csr remains the
+recommended executor. See [Grok Build integration and benchmarks](docs/grok-build.md).
 
 ## Publishing
 
@@ -285,7 +328,7 @@ e3d-pilot fleet discover examples/sample-fleet.json
 e3d-pilot fleet discover examples/sample-fleet.json --focus revenue
 ```
 
-It needs its own small config — just `providers.discover` and `providers.ideate` (see [`examples/sample-fleet-config.json`](examples/sample-fleet-config.json)) — at `.e3d-pilot-fleet/config.json` next to the fleet file, or pass `--config <path>` to point elsewhere. Output lands under `.e3d-pilot-fleet/runs/<run-id>/findings.md` and `candidates.md`, mirroring the single-repo run layout: `findings.md` has a per-repo `## Portfolio` digest (README/AGENTS/CLAUDE content, head sha) and a model-researched `## Cross-Repo Context` section; `candidates.md` ranks candidates the same way single-repo `ideate` does, except every candidate must name 2 or more repos in a `Repos:` field, and dedup is checked only against prior `fleet discover` runs in the same workspace — not against each individual repo's own branches or PRs, which is a real scope limit worth knowing about.
+It needs its own small config — `providers.discover` and `providers.ideate`, plus optional `candidate_scoring` (see [`examples/sample-fleet-config.json`](examples/sample-fleet-config.json)) — at `.e3d-pilot-fleet/config.json` next to the fleet file, or pass `--config <path>` to point elsewhere. Output lands under `.e3d-pilot-fleet/runs/<run-id>/findings.md` and `candidates.md`, mirroring the single-repo run layout: `findings.md` has a per-repo `## Portfolio` digest (README/AGENTS/CLAUDE content, head sha) and a model-researched `## Cross-Repo Context` section; `candidates.md` ranks candidates the same way single-repo `ideate` does, except every candidate must name 2 or more repos in a `Repos:` field, and dedup is checked only against prior `fleet discover` runs in the same workspace — not against each individual repo's own branches or PRs, which is a real scope limit worth knowing about.
 
 This stage stops after materializing fleet ideas in `.e3d-pilot-fleet/ideas/`, with events in `.e3d-pilot-fleet/events.jsonl`. Cross-repo implementation still requires explicit approval:
 
@@ -387,7 +430,7 @@ Exports write `ideation.jsonl`, `preferences.jsonl`, `implementation.jsonl`, and
 
 ## Safety model
 
-Discovery and ideation do not mutate source. Draft, negotiate, execute, review, and publish require current implementation approval. Execution uses a separate worktree and per-run branch. Protected paths are checked both when drafting and immediately before csr. Actual file/line ceilings stop before review. Failed verification blocks publish. Publication opens a draft PR or local review branch.
+Discovery, ideation, and optional `candidate_scoring` do not mutate source. Scoring is read-only and cannot execute a candidate. Draft, negotiate, execute, review, and publish require current implementation approval. Execution uses a separate worktree and per-run branch. Protected paths are checked both when drafting and immediately before the execute backend runs. Actual file/line ceilings stop before review. Failed verification blocks publish. Publication opens a draft PR or local review branch. csr is the default execute backend; Grok Build cannot waive those outer gates even if `providers.execute` selects it.
 
 Merge is a separate operation. `approve-merge` binds approval to the observed target set and exact PR head SHA. Merge refuses stale heads, changed base branches, draft PRs, closed PRs, missing approvals, and unsupported local merge backends. e3d-pilot never force-pushes or pushes directly to a protected base branch.
 
@@ -399,5 +442,5 @@ Run the repository test suite with:
 
 ```bash
 set -e
-for test_file in tests/phase{1..22}.sh; do bash "$test_file"; done
+for test_file in tests/phase{1..24}.sh; do bash "$test_file"; done
 ```

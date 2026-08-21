@@ -7,7 +7,12 @@ source "$SCRIPT_DIR/common.sh"
 
 CLAUDE_BIN="${CLAUDE_BIN:-claude}"
 CLAUDE_MODEL="${CLAUDE_MODEL:-sonnet}"
-CLAUDE_PERMISSION_MODE="${CLAUDE_PERMISSION_MODE:-default}"
+CLAUDE_PERMISSION_MODE="${CLAUDE_PERMISSION_MODE:-}"
+CLAUDE_MODE="${E3D_PILOT_PROVIDER_MODE:-analysis}"
+
+if [[ -z "$CLAUDE_PERMISSION_MODE" ]]; then
+  if [[ "$CLAUDE_MODE" == "execute" ]]; then CLAUDE_PERMISSION_MODE="acceptEdits"; else CLAUDE_PERMISSION_MODE="default"; fi
+fi
 
 if [[ "${E3D_PILOT_CHECK:-0}" == "1" ]]; then
   if provider_binary_available "$CLAUDE_BIN"; then

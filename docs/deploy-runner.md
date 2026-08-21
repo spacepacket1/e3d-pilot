@@ -17,13 +17,15 @@ expected to ask you those questions rather than guess.
 Set up e3d-pilot on this machine and get it running on a schedule.
 
 Context: e3d-pilot is a Bash CLI that autonomously researches a target git
-repo, proposes an idea, gets independent AI models to agree on a spec,
-executes it via codex-spec-runner in an isolated worktree, verifies the
-result, and opens a draft PR (or leaves a local review branch) — it never
-merges anything itself. This machine is a dedicated runner for it, separate
-from any production server. Full docs: https://github.com/spacepacket1/e3d-pilot
+repo, proposes an idea (optionally re-ranked by a read-only scoring
+ensemble), gets independent AI models to agree on a spec, executes it via
+codex-spec-runner in an isolated worktree by default, verifies the result,
+and opens a draft PR (or leaves a local review branch) — it never merges
+anything itself. This machine is a dedicated runner for it, separate from
+any production server. Full docs: https://github.com/spacepacket1/e3d-pilot
 (public repo, no auth needed to clone it) — read its README.md first, it's
-authoritative for anything this prompt doesn't cover.
+authoritative for anything this prompt doesn't cover. Grok Build notes:
+docs/grok-build.md.
 
 Do not guess at, invent, or default any of the choices below — ask me
 directly and wait for my answer before proceeding. Treat installing a cron
@@ -42,12 +44,22 @@ with me before doing, same as you would a push or a force-reset.
   and put its `bin/` on PATH. e3d-pilot's execute stage shells out to it via
   `command -v codex-spec-runner`, so it must resolve on PATH, not a fixed
   path.
-- Ask me which model CLI(s) I want available — `claude`, `codex`, or a
-  self-hosted OpenAI-compatible endpoint (e3d-pilot's "local" provider) — and
+- Ask me which model CLI(s) I want available — `claude`, `codex`, `devin`,
+  `grok` (e3d-pilot's `grok-build` provider), or a self-hosted
+  OpenAI-compatible endpoint (e3d-pilot's "local" provider) — and
   install/authenticate only those:
   - `claude`: install, then get it authenticated (ask me how I want to
     authenticate on this machine — subscription login vs. an API key).
   - `codex`: install, then get it authenticated (ask me the same question).
+  - `devin`: install and authenticate if I want it; the sample config uses it
+    for discover/ideate/review.
+  - `grok` / `grok-build`: install with
+    `curl -fsSL https://x.ai/cli/install.sh | bash`, then `grok login
+    --device-auth` or `XAI_API_KEY`. Naming `"grok-build"` in config is the
+    opt-in (no extra enable flag). Ask me whether I want it as a reasoning
+    provider, as `candidate_scoring.provider`, both, or not at all. Default
+    execute stays `csr` unless I explicitly ask for
+    `providers.execute: "grok-build"`.
   - local model: ask me for the endpoint URL and model name; these become
     `LOCAL_MODEL_ENDPOINT` / `LOCAL_MODEL_NAME` env vars. Note today's local
     provider adapter sends no auth header, so this only works against an
@@ -72,8 +84,13 @@ Ask me, explicitly, one at a time if that's easier:
 - Fleet mode (multiple repos via a JSON array) or a single repo?
 - For each target repo: what should `verify` run, any `protected_paths` to
   never touch, `research_topics` / `analogy_domains` hints, which provider(s)
-  for `discover`/`ideate`/`draft`/`negotiate`/`review`, `max_diff_files` /
-  `max_diff_lines`, and `pr.backend` (`auto`, `github`, or `local`).
+  for `discover`/`ideate`/`draft`/`negotiate`/`review`, whether
+  `candidate_scoring` should run (provider + workers 3–5; omitted means no
+  scoring), `providers.execute` (`csr` unless I explicitly choose
+  `grok-build`), `max_diff_files` / `max_diff_lines`, and `pr.backend`
+  (`auto`, `github`, or `local`).
+- For fleet discover: the same `candidate_scoring` question applies to
+  `.e3d-pilot-fleet/config.json`.
 - Do I want email notifications on publish (`notify.email`)? If yes, get the
   `to` address and how mail should actually send — is a local `mail`/
   `sendmail`/`msmtp` already configured on this machine, or do I want a

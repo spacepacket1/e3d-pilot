@@ -223,7 +223,8 @@ ideas_default_candidate_json() {
           attraction: ($c.scores.attraction // $c.attraction // null),
           retention: ($c.scores.retention // $c.retention // null),
           revenue: ($c.scores.revenue // $c.revenue // null),
-          effort: ($c.scores.effort // $c.effort // null)
+          effort: ($c.scores.effort // $c.effort // null),
+          ensemble: ($c.scores.ensemble // $c.ensemble // null)
         },
         category: ($c.category // null),
         analogy: ($c.analogy // null),
@@ -260,7 +261,8 @@ ideas_initial_state_from_event() {
           attraction: ($c.scores.attraction // null),
           retention: ($c.scores.retention // null),
           revenue: ($c.scores.revenue // null),
-          effort: ($c.scores.effort // null)
+          effort: ($c.scores.effort // null),
+          ensemble: ($c.scores.ensemble // null)
         },
         category: ($c.category // null),
         analogy: ($c.analogy // null),

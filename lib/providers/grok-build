@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=./common.sh
+source "$SCRIPT_DIR/common.sh"
+
+GROK_BUILD_BIN="${GROK_BUILD_BIN:-grok}"
+GROK_BUILD_TIMEOUT="${GROK_BUILD_TIMEOUT:-900}"
+GROK_BUILD_MODEL="${GROK_BUILD_MODEL:-}"
+GROK_BUILD_OUTPUT_FORMAT="${GROK_BUILD_OUTPUT_FORMAT:-plain}"
+GROK_BUILD_MODE="${E3D_PILOT_PROVIDER_MODE:-analysis}"
+
+grok_missing_message() {
+  printf 'unavailable: grok binary not found (%s); set GROK_BUILD_BIN to override\n' "$GROK_BUILD_BIN"
+  printf 'Install it with: curl -fsSL https://x.ai/cli/install.sh | bash\n'
+}
+
+if [[ "${E3D_PILOT_CHECK:-0}" == "1" ]]; then
+  if provider_binary_available "$GROK_BUILD_BIN"; then
+    printf 'available (%s)\n' "$GROK_BUILD_BIN"
+    exit "$PROVIDER_EXIT_OK"
+  fi
+  grok_missing_message
+  exit "$PROVIDER_EXIT_UNAVAILABLE"
+fi
+
+PROMPT_FILE="${1:-}"
+provider_require_prompt_file "$PROMPT_FILE"
+
+grok_args=(
+  --no-auto-update
+  --cwd "$PWD"
+  --prompt-file "$PROMPT_FILE"
+  --output-format "$GROK_BUILD_OUTPUT_FORMAT"
+  --no-memory
+  --no-subagents
+)
+if [[ -n "$GROK_BUILD_MODEL" ]]; then
+  grok_args+=(--model "$GROK_BUILD_MODEL")
+fi
+
+case "$GROK_BUILD_MODE" in
+  analysis)
+    # Headless reads must not block for approval; the read-only sandbox is the
+    # enforcement boundary, not an instruction in the prompt.
+    grok_args+=(--always-approve --sandbox read-only)
+    ;;
+  execute)
+    # e3d-pilot owns the worktree and post-run checks. Strict confines writes
+    # to that worktree. Explicit command denies add defense in depth against
+    # publishing or merging from inside the coding agent.
+    grok_args+=(
+      --always-approve
+      --sandbox strict
+      --disable-web-search
+      --deny 'Bash(git push *)'
+      --deny 'Bash(git merge *)'
+      --deny 'Bash(git reset --hard *)'
+      --deny 'Bash(gh pr merge *)'
+      --deny 'Bash(gh release *)'
+    )
+    ;;
+  *)
+    echo "error: invalid E3D_PILOT_PROVIDER_MODE: $GROK_BUILD_MODE (expected analysis or execute)" >&2
+    exit "$PROVIDER_EXIT_FAILURE"
+    ;;
+esac
+
+if [[ "${E3D_PILOT_DRY_RUN:-0}" == "1" ]]; then
+  printf '%q ' "$GROK_BUILD_BIN" "${grok_args[@]}"
+  printf '\n'
+  exit "$PROVIDER_EXIT_OK"
+fi
+
+if ! provider_binary_available "$GROK_BUILD_BIN"; then
+  grok_missing_message >&2
+  exit "$PROVIDER_EXIT_UNAVAILABLE"
+fi
+
+provider_run_with_timeout "$GROK_BUILD_TIMEOUT" "$GROK_BUILD_BIN" "${grok_args[@]}"

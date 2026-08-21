@@ -79,3 +79,38 @@ local_model_lock_acquire() {
 local_model_lock_release() {
   rm -rf "$LOCAL_MODEL_LOCK_DIR"
 }
+
+# Run one provider process with a portable wall-clock timeout. This avoids a
+# dependency on GNU `timeout` (not shipped by macOS), forwards cancellation,
+# and leaves stdout/stderr attached so callers can capture them normally.
+provider_run_with_timeout() {
+  local timeout_seconds="$1"
+  shift
+  [[ "$timeout_seconds" =~ ^[0-9]+$ ]] && (( timeout_seconds > 0 )) || {
+    echo "error: provider timeout must be a positive integer (got: $timeout_seconds)" >&2
+    return "$PROVIDER_EXIT_FAILURE"
+  }
+
+  "$@" &
+  local child_pid=$! elapsed=0 status
+  trap 'kill -TERM "$child_pid" 2>/dev/null || true; exit 130' INT
+  trap 'kill -TERM "$child_pid" 2>/dev/null || true; exit 143' TERM HUP
+
+  while kill -0 "$child_pid" 2>/dev/null; do
+    if (( elapsed >= timeout_seconds )); then
+      kill -TERM "$child_pid" 2>/dev/null || true
+      sleep 1
+      kill -KILL "$child_pid" 2>/dev/null || true
+      wait "$child_pid" 2>/dev/null || true
+      trap - INT TERM HUP
+      echo "error: provider timed out after ${timeout_seconds}s" >&2
+      return 124
+    fi
+    sleep 1
+    elapsed=$((elapsed + 1))
+  done
+
+  if wait "$child_pid"; then status=0; else status=$?; fi
+  trap - INT TERM HUP
+  return "$status"
+}

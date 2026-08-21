@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+# shellcheck source=lib/scoring/fanout.sh
+source "$REPO_ROOT/lib/scoring/fanout.sh"
+
+usage() {
+  cat <<'EOF'
+Usage: e3d-grok-workers --repo <path> --candidates <json> --output <json>
+       [--provider <name>] [--workers <3..5>] [--top <n>]
+
+Read-only candidate scoring. `--provider` defaults to grok-build; any
+lib/providers adapter is accepted. Scoring never executes a candidate.
+EOF
+}
+die() { printf 'error: %s\n' "$*" >&2; exit 1; }
+
+repo="" candidates_file="" output_file="" provider="grok-build" workers=3 top=5
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --repo) repo="${2:-}"; shift 2 ;;
+    --candidates) candidates_file="${2:-}"; shift 2 ;;
+    --output) output_file="${2:-}"; shift 2 ;;
+    --provider) provider="${2:-}"; shift 2 ;;
+    --workers) workers="${2:-}"; shift 2 ;;
+    --top) top="${2:-}"; shift 2 ;;
+    -h|--help) usage; exit 0 ;;
+    *) die "unknown argument: $1" ;;
+  esac
+done
+
+[[ -n "$repo" && -n "$candidates_file" && -n "$output_file" ]] || { usage >&2; exit 1; }
+[[ "$workers" =~ ^[0-9]+$ ]] && (( workers >= 3 && workers <= 5 )) || die "--workers must be between 3 and 5"
+[[ "$top" =~ ^[0-9]+$ ]] && (( top > 0 )) || die "--top must be a positive integer"
+[[ -d "$repo" ]] || die "repository not found: $repo"
+repo="$(cd "$repo" && pwd -P)"
+jq -e 'type == "array" and length > 0 and all(.[]; (.id | type == "string") and (.id | length > 0))' "$candidates_file" >/dev/null \
+  || die "candidates must be a non-empty JSON array with string id fields"
+[[ "$(jq '[.[].id] | length == (unique | length)' "$candidates_file")" == "true" ]] || die "candidate ids must be unique"
+
+artifact_dir="${output_file%.json}.artifacts"
+raw_output="$(mktemp "${TMPDIR:-/tmp}/e3d-scoring-raw.XXXXXX")"
+status=0
+if ! scoring_run_fanout "$repo" "$provider" "$candidates_file" "$workers" "$artifact_dir" "$raw_output"; then
+  status=$?
+fi
+[[ -s "$raw_output" ]] || { rm -f "$raw_output"; die "all scoring workers failed; inspect $artifact_dir"; }
+
+jq --argjson top "$top" '
+  . + {
+    selected: (.ranked[:$top]),
+    downstream:"frontier review then existing negotiation; no automatic execution"
+  }
+' "$raw_output" > "$output_file"
+rm -f "$raw_output"
+printf '%s\n' "$output_file"
+exit "$status"

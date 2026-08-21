@@ -10,10 +10,16 @@ CODEX_MODEL="${CODEX_MODEL:-}"
 # e3d-pilot's own stages (discover/ideate/draft/negotiate/review) reason and
 # write files under .e3d-pilot/, never the target repo's tracked source, so
 # codex is sandboxed read-only/non-interactive by default here. Only the
-# execute stage (via csr) touches tracked source, with csr's own defaults.
-CODEX_SANDBOX_MODE="${CODEX_SANDBOX_MODE:-read-only}"
+# execute modes (CSR or the benchmark harness) touch tracked source inside an
+# isolated worktree, with their own outer safety checks.
+CODEX_SANDBOX_MODE="${CODEX_SANDBOX_MODE:-}"
 CODEX_APPROVAL_POLICY="${CODEX_APPROVAL_POLICY:-never}"
 CODEX_CD="${CODEX_CD:-$PWD}"
+CODEX_MODE="${E3D_PILOT_PROVIDER_MODE:-analysis}"
+
+if [[ -z "$CODEX_SANDBOX_MODE" ]]; then
+  if [[ "$CODEX_MODE" == "execute" ]]; then CODEX_SANDBOX_MODE="workspace-write"; else CODEX_SANDBOX_MODE="read-only"; fi
+fi
 
 if [[ "${E3D_PILOT_CHECK:-0}" == "1" ]]; then
   if provider_binary_available "$CODEX_BIN"; then

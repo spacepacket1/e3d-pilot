@@ -21,6 +21,8 @@ source "$REPO_ROOT/lib/ideas/materialize.sh"
 source "$REPO_ROOT/lib/ideas/project_tracking.sh"
 # shellcheck source=lib/training/export.sh
 source "$REPO_ROOT/lib/training/export.sh"
+# shellcheck source=lib/scoring/fanout.sh
+source "$REPO_ROOT/lib/scoring/fanout.sh"
 
 die() {
   printf 'error: %s\n' "$*" >&2
@@ -675,11 +677,20 @@ build_ideate_prompt() {
 
 write_candidates_markdown() {
   local selected="$1" reason="$2" facts_file="$3" response_file="$4" candidates_file="$5" warnings_file="${6:-}" focus="${7:-$FOCUS_DEFAULT}"
+  local model_selected="${8:-}" scoring_file="${9:-}"
   {
     printf -- '---\n'
     printf 'selected: %s\n' "$selected"
     printf 'reason: %s\n' "$reason"
     printf 'focus: %s\n' "$focus"
+    if [[ -n "$model_selected" ]]; then
+      printf 'model_selected: %s\n' "$model_selected"
+    fi
+    if [[ -n "$scoring_file" && -f "$scoring_file" ]]; then
+      printf 'scoring_provider: %s\n' "$(jq -r '.provider' "$scoring_file")"
+      printf 'scoring_workers: %s\n' "$(jq -r '.requested_workers' "$scoring_file")"
+      printf 'scoring_partial: %s\n' "$(jq -r '.partial' "$scoring_file")"
+    fi
     printf -- '---\n\n'
     printf '# Candidates\n\n'
     if [[ -n "$warnings_file" && -s "$warnings_file" ]]; then
@@ -688,6 +699,18 @@ write_candidates_markdown() {
         [[ -n "$line" ]] && printf -- '- %s\n' "$line"
       done < "$warnings_file"
       printf '\n'
+    fi
+    if [[ -n "$scoring_file" && -f "$scoring_file" ]]; then
+      printf '## Ensemble Scoring\n\n'
+      printf 'Provider `%s` scored candidates with %s worker(s)' \
+        "$(jq -r '.provider' "$scoring_file")" "$(jq -r '.requested_workers' "$scoring_file")"
+      if [[ "$(jq -r '.partial' "$scoring_file")" == "true" ]]; then
+        printf ' (partial: %s valid).\n\n' "$(jq -r '.valid_workers' "$scoring_file")"
+      else
+        printf '.\n\n'
+      fi
+      jq -r '.ranked[] | "- `" + .id + "`: " + (.average_score|tostring)' "$scoring_file"
+      printf '\nScoring never executes a candidate. Downstream remains human approval, then negotiate, then csr execute.\n\n'
     fi
     printf '## Dedup Context\n\n'
     cat "$facts_file"
@@ -819,7 +842,15 @@ ideate_stage() {
     done < "$warnings_file"
   fi
 
-  write_candidates_markdown "$selected" "$reason" "$facts_file" "$run_dir/ideate-response.md" "$candidates_file" "$warnings_file" "$focus"
+  local model_selected="" scoring_file=""
+  scoring_apply_if_configured "$repo" "$config_file" "$run_dir" "$run_dir/ideate-response.md" "ideate" \
+    || die "ideate candidate scoring failed"
+  if [[ -f "$run_dir/ideate-scoring-selection.txt" ]]; then
+    IFS=$'\t' read -r selected reason model_selected < "$run_dir/ideate-scoring-selection.txt"
+    scoring_file="$run_dir/ideate-scoring.json"
+  fi
+
+  write_candidates_markdown "$selected" "$reason" "$facts_file" "$run_dir/ideate-response.md" "$candidates_file" "$warnings_file" "$focus" "$model_selected" "$scoring_file"
   materialize_single_repo_ideas "$repo" "$run_dir" "$run_id" "$focus" >/dev/null
   printf '%s\n' "$run_id"
 }
@@ -1167,6 +1198,24 @@ execute_spec_guard() {
   draft_validate_spec "$spec_file" "$config_file" "$violations_file"
 }
 
+build_direct_execute_prompt() {
+  local spec_file="$1" prompt_file="$2"
+  {
+    printf 'You are the execution backend for an approval-gated coding pipeline.\n'
+    printf 'Implement the approved specification below in the current working directory.\n'
+    printf 'This directory is an isolated git worktree owned by e3d-pilot.\n\n'
+    printf 'Hard boundaries:\n'
+    printf -- '- Modify only files required by the specification and its pilot:touches annotations.\n'
+    printf -- '- Do not commit, push, merge, open or modify pull requests, publish releases, deploy, or modify secrets.\n'
+    printf -- '- Do not create another worktree or delegate to subagents.\n'
+    printf -- '- Run bounded local tests when useful; leave all changes uncommitted for e3d-pilot to inspect.\n'
+    printf -- '- Stop after implementation and verification.\n\n'
+    printf 'Approved specification:\n\n'
+    cat "$spec_file"
+    printf '\n'
+  } > "$prompt_file"
+}
+
 ensure_worktree() {
   local repo="$1" run_dir="$2" run_id="$3" branch worktree_dir start_ref
   branch="e3d-pilot/$run_id"
@@ -1236,7 +1285,7 @@ copy_csr_state_artifacts() {
 execute_stage() {
   local repo="$1" run_id="$2" run_dir config_file spec_final_file violations_file worktree_dir branch
   local max_diff_files max_diff_lines diff_counts diff_files diff_lines csr_bin csr_stdout csr_stderr csr_status
-  local worktree_spec_file csr_command_file
+  local worktree_spec_file csr_command_file execute_backend provider_script execute_prompt execute_stdout execute_stderr execute_status availability_output availability_status
 
   ensure_git_repo "$repo"
   config_file="$(config_path_for_repo "$repo")"
@@ -1260,33 +1309,78 @@ execute_stage() {
     return "$EXECUTE_EXIT_NEEDS_HUMAN"
   fi
 
+  execute_backend="$(jq -r '.providers.execute // "csr"' "$config_file")"
+  if [[ "$execute_backend" == "grok-build" ]]; then
+    provider_script="$REPO_ROOT/lib/providers/grok-build"
+    [[ -x "$provider_script" ]] || die "Grok Build provider script missing or not executable: $provider_script"
+    if availability_output="$(provider_availability_probe "$provider_script")"; then
+      :
+    else
+      availability_status=$?
+      die "Grok Build execute backend unavailable (exit $availability_status): ${availability_output:-no availability details}"
+    fi
+  fi
+
   worktree_dir="$(ensure_worktree "$repo" "$run_dir" "$run_id")"
   branch="e3d-pilot/$run_id"
   worktree_spec_file="$(prepare_execute_spec_in_worktree "$worktree_dir" "$run_id" "$spec_final_file")"
   max_diff_files="$(config_value "$config_file" '.max_diff_files')"
   max_diff_lines="$(config_value "$config_file" '.max_diff_lines')"
+  case "$execute_backend" in
+    csr)
+      csr_bin="$(command -v codex-spec-runner || true)"
+      [[ -n "$csr_bin" ]] || die "codex-spec-runner not found on PATH"
 
-  csr_bin="$(command -v codex-spec-runner || true)"
-  [[ -n "$csr_bin" ]] || die "codex-spec-runner not found on PATH"
+      csr_stdout="$run_dir/execute-csr.stdout"
+      csr_stderr="$run_dir/execute-csr.stderr"
+      csr_command_file="$run_dir/execute-csr.command"
+      printf 'cd %s && %s %s all\n' "$worktree_dir" "$csr_bin" "$worktree_spec_file" > "$csr_command_file"
 
-  csr_stdout="$run_dir/execute-csr.stdout"
-  csr_stderr="$run_dir/execute-csr.stderr"
-  csr_command_file="$run_dir/execute-csr.command"
-  printf 'cd %s && %s %s all\n' "$worktree_dir" "$csr_bin" "$worktree_spec_file" > "$csr_command_file"
+      set +e
+      ( cd "$worktree_dir" && "$csr_bin" "$worktree_spec_file" all ) >"$csr_stdout" 2>"$csr_stderr"
+      csr_status=$?
+      set -e
 
-  set +e
-  ( cd "$worktree_dir" && "$csr_bin" "$worktree_spec_file" all ) >"$csr_stdout" 2>"$csr_stderr"
-  csr_status=$?
-  set -e
+      copy_csr_state_artifacts "$worktree_dir" "$run_dir"
 
-  copy_csr_state_artifacts "$worktree_dir" "$run_dir"
+      if [[ $csr_status -ne 0 ]]; then
+        if [[ -s "$csr_stderr" ]]; then
+          die "execute csr run failed: $(tr '\n' ' ' < "$csr_stderr")"
+        fi
+        die "execute csr run failed with exit status $csr_status"
+      fi
+      ;;
+    grok-build)
+      execute_prompt="$run_dir/execute-grok-build-prompt.md"
+      execute_stdout="$run_dir/execute-grok-build.stdout"
+      execute_stderr="$run_dir/execute-grok-build.stderr"
+      build_direct_execute_prompt "$worktree_spec_file" "$execute_prompt"
 
-  if [[ $csr_status -ne 0 ]]; then
-    if [[ -s "$csr_stderr" ]]; then
-      die "execute csr run failed: $(tr '\n' ' ' < "$csr_stderr")"
-    fi
-    die "execute csr run failed with exit status $csr_status"
-  fi
+      set +e
+      (cd "$worktree_dir" && E3D_PILOT_DRY_RUN=0 E3D_PILOT_PROVIDER_MODE=execute GROK_BUILD_OUTPUT_FORMAT=json \
+        "$provider_script" "$execute_prompt") >"$execute_stdout" 2>"$execute_stderr"
+      execute_status=$?
+      set -e
+      printf 'backend: grok-build\nexit_status: %s\n' "$execute_status" > "$run_dir/execute-backend-status.txt"
+      if [[ $execute_status -ne 0 ]]; then
+        if [[ -s "$execute_stderr" ]]; then
+          die "execute Grok Build run failed (exit $execute_status): $(tr '\n' ' ' < "$execute_stderr")"
+        fi
+        die "execute Grok Build run failed with exit status $execute_status"
+      fi
+      if jq -e 'type == "object"' "$execute_stdout" >/dev/null 2>&1; then
+        jq '{
+          model: (.model // ((.usage.models? // {}) | keys[0]?) // null),
+          tokens: (.usage.total_tokens // .usage.totalTokens // .total_tokens // null),
+          cost_usd: (.total_cost_usd // .usage.total_cost_usd // null),
+          usage_partial: (.cost_is_partial // .usage_is_incomplete // null)
+        }' "$execute_stdout" > "$run_dir/execute-grok-build-usage.json"
+      fi
+      ;;
+    *)
+      die "unsupported providers.execute backend: $execute_backend (expected csr or grok-build)"
+      ;;
+  esac
 
   diff_counts="$(count_git_diff "$worktree_dir")"
   diff_files="${diff_counts%%$'\t'*}"
@@ -1311,7 +1405,7 @@ execute_stage() {
     return "$EXECUTE_EXIT_NEEDS_HUMAN"
   fi
 
-  printf 'execute: completed csr run on %s with diff_files=%s diff_lines=%s\n' "$branch" "$diff_files" "$diff_lines"
+  printf 'execute: completed %s run on %s with diff_files=%s diff_lines=%s\n' "$execute_backend" "$branch" "$diff_files" "$diff_lines"
 }
 
 execute_worktree_fields() {
@@ -2020,6 +2114,7 @@ validate_config_file() {
   json_type_check "$file" '.providers.negotiate | length >= 1' "config.providers.negotiate must be a non-empty array"
   json_type_check "$file" '.providers.negotiate | all(.[]; type == "string")' "config.providers.negotiate must be a non-empty array of strings"
   json_type_check "$file" '.providers.review | type == "string"' "config.providers.review must be a string"
+  json_type_check "$file" 'if (.providers | has("execute")) then (.providers.execute == "csr" or .providers.execute == "grok-build") else true end' "config.providers.execute must be csr or grok-build when provided"
   json_type_check "$file" '.max_diff_files | type == "number"' "config.max_diff_files must be a number"
   json_type_check "$file" '.max_diff_files == (.max_diff_files | floor)' "config.max_diff_files must be an integer value"
   json_type_check "$file" '.max_diff_files >= 0' "config.max_diff_files must be a non-negative integer"
@@ -2041,6 +2136,7 @@ validate_config_file() {
   json_type_check "$file" 'if has("approval") then (.approval.merge_required | type == "boolean") else true end' "config.approval.merge_required must be a boolean"
   json_type_check "$file" 'if has("tracking") then (.tracking | type == "object") else true end' "config.tracking must be an object when provided"
   json_type_check "$file" 'if (has("tracking") and (.tracking | has("project_url"))) then (.tracking.project_url | type == "string") else true end' "config.tracking.project_url must be a string when provided"
+  scoring_validate_config_file "$file"
   printf 'config valid: %s\n' "$file"
 }
 
@@ -2319,7 +2415,8 @@ ideas_do_show() {
     "scores:                  attraction=" + ((.scores.attraction // "-")|tostring) +
       " retention=" + ((.scores.retention // "-")|tostring) +
       " revenue=" + ((.scores.revenue // "-")|tostring) +
-      " effort=" + ((.scores.effort // "-")|tostring),
+      " effort=" + ((.scores.effort // "-")|tostring) +
+      " ensemble=" + ((.scores.ensemble // "-")|tostring),
     "approvable:              " + (.validation.approvable | tostring) +
       (if (.validation.eligibility_reason // null) != null then " (" + .validation.eligibility_reason + ")" else "" end),
     "warnings:                " + ((.validation.warnings // []) | join("; ")),
@@ -4125,7 +4222,7 @@ cmd_ideas() {
 # means adding its name to this list and its script under lib/providers/.
 providers_list() {
   local provider script output status exit_code
-  for provider in claude codex local devin; do
+  for provider in claude codex local devin grok-build; do
     script="$REPO_ROOT/lib/providers/$provider"
     [[ -x "$script" ]] || die "provider script missing or not executable: $script"
     if output="$(provider_availability_probe "$script")"; then
@@ -4445,6 +4542,7 @@ validate_fleet_discover_config() {
   json_type_check "$file" 'if has("research_topics") then (.research_topics | type == "string") else true end' "fleet discover config.research_topics must be a string when provided"
   json_type_check "$file" 'if has("tracking") then (.tracking | type == "object") else true end' "fleet discover config.tracking must be an object when provided"
   json_type_check "$file" 'if (has("tracking") and (.tracking | has("project_url"))) then (.tracking.project_url | type == "string") else true end' "fleet discover config.tracking.project_url must be a string when provided"
+  scoring_validate_config_file "$file"
   printf 'fleet discover config valid: %s\n' "$file"
 }
 
@@ -4741,11 +4839,28 @@ fleet_ideate_stage() {
     done < "$warnings_file"
   fi
 
+  local fleet_workspace model_selected="" scoring_file=""
+  fleet_workspace="$(cd "$(dirname "$run_dir")/.." && pwd -P)"
+  scoring_apply_if_configured "$fleet_workspace" "$config_file" "$run_dir" "$run_dir/fleet-ideate-response.md" "fleet-ideate" \
+    || die "fleet ideate candidate scoring failed"
+  if [[ -f "$run_dir/fleet-ideate-scoring-selection.txt" ]]; then
+    IFS=$'\t' read -r selected reason model_selected < "$run_dir/fleet-ideate-scoring-selection.txt"
+    scoring_file="$run_dir/fleet-ideate-scoring.json"
+  fi
+
   {
     printf -- '---\n'
     printf 'selected: %s\n' "$selected"
     printf 'reason: %s\n' "$reason"
     printf 'focus: %s\n' "$focus"
+    if [[ -n "$model_selected" ]]; then
+      printf 'model_selected: %s\n' "$model_selected"
+    fi
+    if [[ -n "$scoring_file" && -f "$scoring_file" ]]; then
+      printf 'scoring_provider: %s\n' "$(jq -r '.provider' "$scoring_file")"
+      printf 'scoring_workers: %s\n' "$(jq -r '.requested_workers' "$scoring_file")"
+      printf 'scoring_partial: %s\n' "$(jq -r '.partial' "$scoring_file")"
+    fi
     printf -- '---\n\n'
     printf '# Fleet Candidates\n\n'
     if [[ -s "$warnings_file" ]]; then
@@ -4754,6 +4869,13 @@ fleet_ideate_stage() {
         [[ -n "$line" ]] && printf -- '- %s\n' "$line"
       done < "$warnings_file"
       printf '\n'
+    fi
+    if [[ -n "$scoring_file" && -f "$scoring_file" ]]; then
+      printf '## Ensemble Scoring\n\n'
+      printf 'Provider `%s` scored candidates with %s worker(s).\n\n' \
+        "$(jq -r '.provider' "$scoring_file")" "$(jq -r '.requested_workers' "$scoring_file")"
+      jq -r '.ranked[] | "- `" + .id + "`: " + (.average_score|tostring)' "$scoring_file"
+      printf '\nScoring never executes a candidate.\n\n'
     fi
     printf '## Dedup Context\n\n'
     cat "$facts_file"

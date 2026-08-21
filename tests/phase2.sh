@@ -81,6 +81,7 @@ providers_list_reports_claude_and_codex_status() {
   assert_contains "$out" "codex"
   assert_contains "$out" "local"
   assert_contains "$out" "devin"
+  assert_contains "$out" "grok-build"
 }
 
 # --- provider adapters: contract + dry-run -----------------------------
