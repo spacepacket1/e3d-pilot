@@ -34,17 +34,18 @@ the repository config. e3d-pilot never logs or serializes that variable.
 
 ## Configuration
 
-Name `grok-build` anywhere other providers are named. The recommended hybrid
-keeps csr as executor and uses Grok for scoring (or as one reasoning stage):
+Name `grok-build` anywhere other providers are named. `discover`, `ideate`,
+`negotiate`, and `review` accept a string or an array; every listed model
+runs. Draft stays a single provider. csr remains the execute default:
 
 ```json
 {
   "providers": {
-    "discover": "devin",
-    "ideate": "devin",
+    "discover": ["grok-build", "claude", "codex", "devin"],
+    "ideate": ["grok-build", "claude", "codex", "devin"],
     "draft": "codex",
-    "negotiate": ["devin", "codex"],
-    "review": "devin",
+    "negotiate": ["grok-build", "claude", "codex", "devin"],
+    "review": ["grok-build", "claude", "codex", "devin"],
     "execute": "csr"
   },
   "candidate_scoring": {

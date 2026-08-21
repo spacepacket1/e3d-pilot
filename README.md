@@ -110,9 +110,13 @@ Create `.e3d-pilot/config.json` in the target repository. Start from [`examples/
 - `analogy_domains`: optional cross-domain seed list for discovery's analogy pass (see above); falls back to a built-in default when omitted.
 - `providers`: provider names for `discover`, `ideate`, `draft`, ordered
   `negotiate` reviewers, independent `review`, and optional `execute` (`csr` by
-  default, or experimental `grok-build`). `grok-build` is a normal adapter for
-  the reasoning stages: put it in the same fields you would use for `claude`,
-  `codex`, `devin`, or `local`.
+  default, or experimental `grok-build`). `discover`, `ideate`, `negotiate`,
+  and `review` may be a string or an array of provider names; when an array is
+  set, every listed model runs (discover/review concatenate their output;
+  ideate merges candidates; negotiate still requires one unchanged-draft
+  consensus pass). `draft` remains a single provider. `grok-build` is a normal
+  adapter: put it in the same fields you would use for `claude`, `codex`,
+  `devin`, or `local`.
 - `candidate_scoring`: optional `{ "provider": "grok-build", "workers": 3 }`.
   After ideate proposes candidates, 3–5 independent read-only workers re-rank
   them. `provider` is any `lib/providers` adapter; `grok-build` is one option.
@@ -207,6 +211,12 @@ Built-in adapters are `claude`, `codex`, `local`, `devin`, and `grok-build`;
 check them with `e3d-pilot providers list`. `grok-build` is selected the same
 way as the others: name it in `providers.*`. It is available when the `grok`
 binary is on `PATH` (override with `GROK_BUILD_BIN`).
+
+`discover`, `ideate`, `negotiate`, and `review` can each list more than one
+model so every configured adapter gets a turn. A string is still valid and
+means “only this one.” `negotiate` already worked this way; discover, ideate,
+and review now do too. A configured adapter that is missing from `PATH` fails
+the stage instead of being skipped.
 
 **grok-build** — shells out to the Grok Build CLI in headless mode. Reasoning
 stages use the read-only sandbox. Install with
@@ -442,5 +452,5 @@ Run the repository test suite with:
 
 ```bash
 set -e
-for test_file in tests/phase{1..24}.sh; do bash "$test_file"; done
+for test_file in tests/phase{1..25}.sh; do bash "$test_file"; done
 ```

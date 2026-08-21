@@ -54,15 +54,30 @@
       "additionalProperties": false,
       "required": ["discover", "ideate", "draft", "negotiate", "review"],
       "properties": {
-        "discover": { "type": "string" },
-        "ideate": { "type": "string" },
+        "discover": {
+          "oneOf": [
+            { "type": "string" },
+            { "type": "array", "minItems": 1, "items": { "type": "string" } }
+          ]
+        },
+        "ideate": {
+          "oneOf": [
+            { "type": "string" },
+            { "type": "array", "minItems": 1, "items": { "type": "string" } }
+          ]
+        },
         "draft": { "type": "string" },
         "negotiate": {
           "type": "array",
           "minItems": 1,
           "items": { "type": "string" }
         },
-        "review": { "type": "string" },
+        "review": {
+          "oneOf": [
+            { "type": "string" },
+            { "type": "array", "minItems": 1, "items": { "type": "string" } }
+          ]
+        },
         "execute": {
           "type": "string",
           "enum": ["csr", "grok-build"],

@@ -258,6 +258,166 @@ config_value() {
   jq -r "$filter" "$file"
 }
 
+# One provider name per line. A stage field may be a string or a non-empty
+# array of strings; both are valid so adding a second model is config-only.
+providers_for_stage() {
+  local config_file="$1" field="$2"
+  jq -r --arg field "$field" '
+    .providers[$field] |
+    if type == "string" then .
+    elif type == "array" then .[]
+    else empty end
+  ' "$config_file"
+}
+
+stage_providers_type_ok() {
+  local file="$1" field="$2" message="$3"
+  if ! jq -e --arg field "$field" \
+    '(.providers[$field] | type == "string") or ((.providers[$field] | type == "array") and (.providers[$field] | length >= 1) and (.providers[$field] | all(.[]; type == "string")))' \
+    "$file" >/dev/null; then
+    die "$message"
+  fi
+}
+
+require_stage_providers_available() {
+  local label="$1"
+  shift
+  local provider script availability_output status
+  [[ $# -gt 0 ]] || die "$label has no providers configured"
+  for provider in "$@"; do
+    script="$REPO_ROOT/lib/providers/$provider"
+    [[ -x "$script" ]] || die "$label provider script missing or not executable: $script"
+    if availability_output="$(provider_availability_probe "$script")"; then
+      continue
+    fi
+    status=$?
+    if [[ $status -eq "$PROVIDER_EXIT_UNAVAILABLE" ]]; then
+      die "$label provider \"$provider\" unavailable: ${availability_output:-no availability details}"
+    fi
+    # Exit 1 here usually means a stub that does not implement E3D_PILOT_CHECK;
+    # the real invoke will fail clearly if the provider is actually broken.
+  done
+}
+
+invoke_stage_provider() {
+  local cwd="$1" provider="$2" prompt_file="$3" stdout_file="$4" stderr_file="$5" label="$6"
+  local script status err
+  script="$REPO_ROOT/lib/providers/$provider"
+  [[ -x "$script" ]] || die "$label provider script missing or not executable: $script"
+  set +e
+  if [[ -n "$cwd" ]]; then
+    (cd "$cwd" && E3D_PILOT_DRY_RUN=0 "$script" "$prompt_file") >"$stdout_file" 2>"$stderr_file"
+  else
+    (E3D_PILOT_DRY_RUN=0 "$script" "$prompt_file") >"$stdout_file" 2>"$stderr_file"
+  fi
+  status=$?
+  set -e
+  if [[ $status -ne 0 ]]; then
+    err=""
+    [[ -s "$stderr_file" ]] && err="$(<"$stderr_file")"
+    if [[ $status -eq "$PROVIDER_EXIT_UNAVAILABLE" ]]; then
+      die "$label provider \"$provider\" unavailable: ${err:-$provider}"
+    fi
+    die "$label provider \"$provider\" failed: ${err:-$provider}"
+  fi
+}
+
+# Concatenate labeled provider outputs into one markdown file.
+combine_provider_sections() {
+  local out_file="$1"
+  shift
+  local provider section_file
+  : > "$out_file"
+  while [[ $# -ge 2 ]]; do
+    provider="$1"
+    section_file="$2"
+    shift 2
+    printf '### Provider: %s\n\n' "$provider" >> "$out_file"
+    cat "$section_file" >> "$out_file"
+    printf '\n' >> "$out_file"
+  done
+}
+
+# Merge one-or-more ideate responses: renumber candidates globally, stamp a
+# Provider field, and map the first non-none provider selection onto the new
+# candidate-N ids. Writes the combined markdown (including ---IDEATE-STATUS---)
+# to $1 and prints "selected<TAB>reason".
+combine_ideate_responses() {
+  local out_file="$1"
+  shift
+  local provider response_file header n=0 selected="none" reason="" orig_selected orig_reason orig_num
+  local current="" line provider_count=0 first_response=""
+  : > "$out_file"
+  while [[ $# -ge 2 ]]; do
+    provider="$1"
+    response_file="$2"
+    shift 2
+    provider_count=$((provider_count + 1))
+    [[ -n "$first_response" ]] || first_response="$response_file"
+    orig_selected="$(ideate_status_field "selected" < "$response_file" || true)"
+    orig_reason="$(ideate_status_field "reason" < "$response_file" || true)"
+    current=""
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      [[ "$line" == "---IDEATE-STATUS---" ]] && break
+      if [[ "$line" =~ ^###\ Candidate\  ]]; then
+        if [[ -n "$current" ]]; then
+          n=$((n + 1))
+          header="$(printf '%s' "$current" | head -n 1)"
+          orig_num=""
+          if [[ "$header" =~ ^###\ Candidate\ ([0-9]+): ]]; then orig_num="${BASH_REMATCH[1]}"; fi
+          combine_ideate_emit_block "$out_file" "$n" "$provider" "$current"
+          if [[ "$selected" == "none" && -n "$orig_num" && "$orig_selected" == "candidate-$orig_num" ]]; then
+            selected="candidate-$n"
+            reason="${orig_reason:-selected by $provider}"
+          fi
+        fi
+        current="$line"$'\n'
+      elif [[ -n "$current" ]]; then
+        current+="$line"$'\n'
+      fi
+    done < "$response_file"
+    if [[ -n "$current" ]]; then
+      n=$((n + 1))
+      header="$(printf '%s' "$current" | head -n 1)"
+      orig_num=""
+      if [[ "$header" =~ ^###\ Candidate\ ([0-9]+): ]]; then orig_num="${BASH_REMATCH[1]}"; fi
+      combine_ideate_emit_block "$out_file" "$n" "$provider" "$current"
+      if [[ "$selected" == "none" && -n "$orig_num" && "$orig_selected" == "candidate-$orig_num" ]]; then
+        selected="candidate-$n"
+        reason="${orig_reason:-selected by $provider}"
+      fi
+    fi
+  done
+  if [[ "$n" -eq 0 ]]; then
+    [[ $provider_count -eq 1 && -n "$first_response" ]] \
+      || die "ideate produced no candidate blocks from the configured providers"
+    cp "$first_response" "$out_file"
+    printf '%s\t%s\n' "${orig_selected:-none}" "${orig_reason:-}"
+    return 0
+  fi
+  {
+    printf -- '---IDEATE-STATUS---\n'
+    printf 'selected: %s\n' "$selected"
+    printf 'reason: %s\n' "${reason:-merged from configured ideate providers}"
+  } >> "$out_file"
+  printf '%s\t%s\n' "$selected" "${reason:-merged from configured ideate providers}"
+}
+
+combine_ideate_emit_block() {
+  local out_file="$1" number="$2" provider="$3" block="$4" header rest
+  header="$(printf '%s' "$block" | head -n 1)"
+  rest="$(printf '%s' "$block" | tail -n +2)"
+  if [[ "$header" =~ ^###\ Candidate\ [0-9]+:[[:space:]]*(.*)$ ]]; then
+    printf '### Candidate %s: %s\n' "$number" "${BASH_REMATCH[1]}" >> "$out_file"
+  else
+    printf '### Candidate %s:\n' "$number" >> "$out_file"
+  fi
+  printf 'Provider: %s\n' "$provider" >> "$out_file"
+  printf '%s' "$rest" >> "$out_file"
+  [[ "$rest" == *$'\n' ]] || printf '\n' >> "$out_file"
+  printf '\n' >> "$out_file"
+}
+
 findings_head_sha() {
   local file="$1"
   awk -F': ' '/^head_sha: / { print $2; exit }' "$file"
@@ -494,7 +654,9 @@ write_findings_markdown() {
 }
 
 discover_stage() {
-  local repo="$1" run_id="$2" run_dir config_file head_sha facts_file prompt_file external_context_file findings_file previous_findings provider provider_script provider_output provider_status provider_error focus
+  local repo="$1" run_id="$2" run_dir config_file head_sha facts_file prompt_file external_context_file findings_file previous_findings focus
+  local -a discover_providers=()
+  local provider combine_args=()
   ensure_git_repo "$repo"
   config_file="$(config_path_for_repo "$repo")"
   validate_config_file "$config_file"
@@ -517,26 +679,14 @@ discover_stage() {
   build_discover_facts_markdown "$repo" "$config_file" "$facts_file" "$previous_findings"
   build_discover_prompt "$facts_file" "$prompt_file" "$focus"
 
-  provider="$(config_value "$config_file" '.providers.discover')"
-  provider_script="$REPO_ROOT/lib/providers/$provider"
-  [[ -x "$provider_script" ]] || die "discover provider script missing or not executable: $provider_script"
-
-  set +e
-  provider_output="$(cd "$repo" && E3D_PILOT_DRY_RUN=0 "$provider_script" "$prompt_file" 2>"$run_dir/discover-provider.stderr")"
-  provider_status=$?
-  set -e
-  if [[ $provider_status -ne 0 ]]; then
-    provider_error=""
-    if [[ -s "$run_dir/discover-provider.stderr" ]]; then
-      provider_error="$(<"$run_dir/discover-provider.stderr")"
-    fi
-    if [[ $provider_status -eq "$PROVIDER_EXIT_UNAVAILABLE" ]]; then
-      die "discover provider unavailable: ${provider_error:-$provider}"
-    fi
-    die "discover provider failed: ${provider_error:-$provider}"
-  fi
-
-  printf '%s\n' "$provider_output" > "$external_context_file"
+  mapfile -t discover_providers < <(providers_for_stage "$config_file" discover)
+  require_stage_providers_available "discover" "${discover_providers[@]}"
+  for provider in "${discover_providers[@]}"; do
+    invoke_stage_provider "$repo" "$provider" "$prompt_file" \
+      "$run_dir/discover-provider-${provider}.md" "$run_dir/discover-provider-${provider}.stderr" "discover"
+    combine_args+=("$provider" "$run_dir/discover-provider-${provider}.md")
+  done
+  combine_provider_sections "$external_context_file" "${combine_args[@]}"
   write_findings_markdown "$head_sha" "$facts_file" "$external_context_file" "$findings_file" "$focus"
   printf '%s\n' "$run_id"
 }
@@ -809,38 +959,27 @@ ideate_stage() {
   build_ideate_facts_markdown "$repo" "$run_dir" "$run_id" "$facts_file"
   build_ideate_prompt "$facts_file" "$prompt_file" "$focus"
 
-  provider="$(config_value "$config_file" '.providers.ideate')"
-  provider_script="$REPO_ROOT/lib/providers/$provider"
-  [[ -x "$provider_script" ]] || die "ideate provider script missing or not executable: $provider_script"
-
-  set +e
-  provider_output="$(cd "$repo" && E3D_PILOT_DRY_RUN=0 "$provider_script" "$prompt_file" 2>"$run_dir/ideate-provider.stderr")"
-  provider_status=$?
-  set -e
-  if [[ $provider_status -ne 0 ]]; then
-    provider_error=""
-    if [[ -s "$run_dir/ideate-provider.stderr" ]]; then
-      provider_error="$(<"$run_dir/ideate-provider.stderr")"
+  local -a ideate_providers=()
+  local provider merge_args=() merge_status warnings_file="$run_dir/ideate-warnings.txt"
+  : > "$warnings_file"
+  mapfile -t ideate_providers < <(providers_for_stage "$config_file" ideate)
+  require_stage_providers_available "ideate" "${ideate_providers[@]}"
+  for provider in "${ideate_providers[@]}"; do
+    invoke_stage_provider "$repo" "$provider" "$prompt_file" \
+      "$run_dir/ideate-provider-${provider}.md" "$run_dir/ideate-provider-${provider}.stderr" "ideate"
+    if ! ideate_validate_candidates "$run_dir/ideate-provider-${provider}.md" "$run_dir/ideate-warnings-${provider}.txt" "$focus"; then
+      printf 'ideate: warning: %s candidate response did not fully match the expected format:\n' "$provider"
+      while IFS= read -r line; do
+        [[ -n "$line" ]] && printf '  - %s\n' "$line"
+      done < "$run_dir/ideate-warnings-${provider}.txt"
+      cat "$run_dir/ideate-warnings-${provider}.txt" >> "$warnings_file"
     fi
-    if [[ $provider_status -eq "$PROVIDER_EXIT_UNAVAILABLE" ]]; then
-      die "ideate provider unavailable: ${provider_error:-$provider}"
-    fi
-    die "ideate provider failed: ${provider_error:-$provider}"
-  fi
-
-  printf '%s\n' "$provider_output" > "$run_dir/ideate-response.md"
-
-  selected="$(ideate_status_field "selected" <<<"$provider_output" || true)"
-  reason="$(ideate_status_field "reason" <<<"$provider_output" || true)"
+    merge_args+=("$provider" "$run_dir/ideate-provider-${provider}.md")
+  done
+  merge_status="$(combine_ideate_responses "$run_dir/ideate-response.md" "${merge_args[@]}")"
+  selected="${merge_status%%$'\t'*}"
+  reason="${merge_status#*$'\t'}"
   [[ -n "$selected" ]] || die "ideate provider response missing ---IDEATE-STATUS--- selected field"
-
-  local warnings_file="$run_dir/ideate-warnings.txt"
-  if ! ideate_validate_candidates "$run_dir/ideate-response.md" "$warnings_file" "$focus"; then
-    printf 'ideate: warning: candidate response did not fully match the expected format:\n'
-    while IFS= read -r line; do
-      [[ -n "$line" ]] && printf '  - %s\n' "$line"
-    done < "$warnings_file"
-  fi
 
   local model_selected="" scoring_file=""
   scoring_apply_if_configured "$repo" "$config_file" "$run_dir" "$run_dir/ideate-response.md" "ideate" \
@@ -1644,12 +1783,16 @@ review_stage() {
   diff_text="$run_dir/review-diff.patch"; git -C "$worktree" diff --no-ext-diff --binary > "$diff_text"
   prompt="$run_dir/review-prompt.md"; response="$run_dir/review-comment.md"
   build_review_prompt "$diff_text" "$prompt"
-  provider="$(config_value "$config_file" '.providers.review')"; provider_script="$REPO_ROOT/lib/providers/$provider"
-  [[ -x "$provider_script" ]] || die "review provider script missing or not executable: $provider_script"
-  if ! (cd "$worktree" && E3D_PILOT_DRY_RUN=0 "$provider_script" "$prompt" > "$response" 2> "$run_dir/review-provider.stderr"); then
-    printf 'verify_status: failed\nbranch: %s\nworktree: %s\nlive_verify: %s\n' "$branch" "$worktree" "$live_reason" > "$review_status_file"
-    die "review provider failed: $provider"
-  fi
+  local -a review_providers=()
+  local review_provider review_combine=()
+  mapfile -t review_providers < <(providers_for_stage "$config_file" review)
+  require_stage_providers_available "review" "${review_providers[@]}"
+  for review_provider in "${review_providers[@]}"; do
+    invoke_stage_provider "$worktree" "$review_provider" "$prompt" \
+      "$run_dir/review-provider-${review_provider}.md" "$run_dir/review-provider-${review_provider}.stderr" "review"
+    review_combine+=("$review_provider" "$run_dir/review-provider-${review_provider}.md")
+  done
+  combine_provider_sections "$response" "${review_combine[@]}"
   printf 'verify_status: passed\nbranch: %s\nworktree: %s\nlive_verify: %s\n' "$branch" "$worktree" "$live_reason" > "$review_status_file"
   if (( include_live_verify )); then
     printf 'review: verify passed on %s, including live verification, and wrote review-comment.md\n' "$branch"
@@ -2107,13 +2250,13 @@ validate_config_file() {
   json_type_check "$file" 'has("providers")' "config.providers is required"
   json_type_check "$file" '.providers | type == "object"' "config.providers must be an object"
   json_type_check "$file" '.providers | has("discover") and has("ideate") and has("draft") and has("negotiate") and has("review")' "config.providers must include discover, ideate, draft, negotiate, and review"
-  json_type_check "$file" '.providers.discover | type == "string"' "config.providers.discover must be a string"
-  json_type_check "$file" '.providers.ideate | type == "string"' "config.providers.ideate must be a string"
+  stage_providers_type_ok "$file" discover "config.providers.discover must be a string or a non-empty array of strings"
+  stage_providers_type_ok "$file" ideate "config.providers.ideate must be a string or a non-empty array of strings"
   json_type_check "$file" '.providers.draft | type == "string"' "config.providers.draft must be a string"
   json_type_check "$file" '.providers.negotiate | type == "array"' "config.providers.negotiate must be an array"
   json_type_check "$file" '.providers.negotiate | length >= 1' "config.providers.negotiate must be a non-empty array"
   json_type_check "$file" '.providers.negotiate | all(.[]; type == "string")' "config.providers.negotiate must be a non-empty array of strings"
-  json_type_check "$file" '.providers.review | type == "string"' "config.providers.review must be a string"
+  stage_providers_type_ok "$file" review "config.providers.review must be a string or a non-empty array of strings"
   json_type_check "$file" 'if (.providers | has("execute")) then (.providers.execute == "csr" or .providers.execute == "grok-build") else true end' "config.providers.execute must be csr or grok-build when provided"
   json_type_check "$file" '.max_diff_files | type == "number"' "config.max_diff_files must be a number"
   json_type_check "$file" '.max_diff_files == (.max_diff_files | floor)' "config.max_diff_files must be an integer value"
@@ -4535,8 +4678,8 @@ validate_fleet_discover_config() {
   json_type_check "$file" 'has("providers")' "fleet discover config.providers is required"
   json_type_check "$file" '.providers | type == "object"' "fleet discover config.providers must be an object"
   json_type_check "$file" '.providers | has("discover") and has("ideate")' "fleet discover config.providers must include discover and ideate"
-  json_type_check "$file" '.providers.discover | type == "string"' "fleet discover config.providers.discover must be a string"
-  json_type_check "$file" '.providers.ideate | type == "string"' "fleet discover config.providers.ideate must be a string"
+  stage_providers_type_ok "$file" discover "fleet discover config.providers.discover must be a string or a non-empty array of strings"
+  stage_providers_type_ok "$file" ideate "fleet discover config.providers.ideate must be a string or a non-empty array of strings"
   json_type_check "$file" 'if has("analogy_domains") then (.analogy_domains | type == "array") else true end' "fleet discover config.analogy_domains must be an array when provided"
   json_type_check "$file" 'if has("analogy_domains") then (.analogy_domains | all(.[]; type == "string")) else true end' "fleet discover config.analogy_domains must be an array of strings when provided"
   json_type_check "$file" 'if has("research_topics") then (.research_topics | type == "string") else true end' "fleet discover config.research_topics must be a string when provided"
@@ -4646,11 +4789,17 @@ fleet_discover_stage() {
   build_fleet_discover_facts_markdown "$repos_file" "$facts_file"
   build_fleet_discover_prompt "$facts_file" "$prompt_file" "$config_file" "$focus"
 
-  provider="$(config_value "$config_file" '.providers.discover')"
-  provider_output="$(run_stage_provider "$provider" "$prompt_file" "$run_dir/fleet-discover-provider.stderr" "fleet discover")"
-
-  printf '%s\n' "$provider_output" > "$external_context_file"
-  printf '%s\n' "$provider_output" > "$run_dir/fleet-discover-response.md"
+  local -a discover_providers=()
+  local provider combine_args=()
+  mapfile -t discover_providers < <(providers_for_stage "$config_file" discover)
+  require_stage_providers_available "fleet discover" "${discover_providers[@]}"
+  for provider in "${discover_providers[@]}"; do
+    invoke_stage_provider "" "$provider" "$prompt_file" \
+      "$run_dir/fleet-discover-provider-${provider}.md" "$run_dir/fleet-discover-provider-${provider}.stderr" "fleet discover"
+    combine_args+=("$provider" "$run_dir/fleet-discover-provider-${provider}.md")
+  done
+  combine_provider_sections "$external_context_file" "${combine_args[@]}"
+  cp "$external_context_file" "$run_dir/fleet-discover-response.md"
   {
     printf -- '---\n'
     printf 'focus: %s\n' "$focus"
@@ -4822,22 +4971,28 @@ fleet_ideate_stage() {
   build_fleet_ideate_facts_markdown "$run_dir" "$facts_file"
   build_fleet_ideate_prompt "$facts_file" "$prompt_file" "$focus"
 
-  provider="$(config_value "$config_file" '.providers.ideate')"
-  provider_output="$(run_stage_provider "$provider" "$prompt_file" "$run_dir/fleet-ideate-provider.stderr" "fleet ideate")"
-
-  printf '%s\n' "$provider_output" > "$run_dir/fleet-ideate-response.md"
-
-  selected="$(ideate_status_field "selected" <<<"$provider_output" || true)"
-  reason="$(ideate_status_field "reason" <<<"$provider_output" || true)"
-  [[ -n "$selected" ]] || die "fleet ideate provider response missing ---IDEATE-STATUS--- selected field"
-
+  local -a ideate_providers=()
+  local provider merge_args=() merge_status
   warnings_file="$run_dir/fleet-ideate-warnings.txt"
-  if ! fleet_ideate_validate_candidates "$run_dir/fleet-ideate-response.md" "$warnings_file"; then
-    printf 'fleet ideate: warning: candidate response did not fully match the expected format:\n'
-    while IFS= read -r line; do
-      [[ -n "$line" ]] && printf '  - %s\n' "$line"
-    done < "$warnings_file"
-  fi
+  : > "$warnings_file"
+  mapfile -t ideate_providers < <(providers_for_stage "$config_file" ideate)
+  require_stage_providers_available "fleet ideate" "${ideate_providers[@]}"
+  for provider in "${ideate_providers[@]}"; do
+    invoke_stage_provider "" "$provider" "$prompt_file" \
+      "$run_dir/fleet-ideate-provider-${provider}.md" "$run_dir/fleet-ideate-provider-${provider}.stderr" "fleet ideate"
+    if ! fleet_ideate_validate_candidates "$run_dir/fleet-ideate-provider-${provider}.md" "$run_dir/fleet-ideate-warnings-${provider}.txt"; then
+      printf 'fleet ideate: warning: %s candidate response did not fully match the expected format:\n' "$provider"
+      while IFS= read -r line; do
+        [[ -n "$line" ]] && printf '  - %s\n' "$line"
+      done < "$run_dir/fleet-ideate-warnings-${provider}.txt"
+      cat "$run_dir/fleet-ideate-warnings-${provider}.txt" >> "$warnings_file"
+    fi
+    merge_args+=("$provider" "$run_dir/fleet-ideate-provider-${provider}.md")
+  done
+  merge_status="$(combine_ideate_responses "$run_dir/fleet-ideate-response.md" "${merge_args[@]}")"
+  selected="${merge_status%%$'\t'*}"
+  reason="${merge_status#*$'\t'}"
+  [[ -n "$selected" ]] || die "fleet ideate provider response missing ---IDEATE-STATUS--- selected field"
 
   local fleet_workspace model_selected="" scoring_file=""
   fleet_workspace="$(cd "$(dirname "$run_dir")/.." && pwd -P)"
