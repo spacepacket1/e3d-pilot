@@ -1295,7 +1295,7 @@ draft_check_scope_ceiling() {
   [[ -n "$pairs" ]] || return 0
   total_phases="$(printf '%s\n' "$pairs" | wc -l | tr -d '[:space:]')"
 
-  local -A all_touches_seen=()
+  local all_touches_seen=""
   local requirement_bullet_count=0
   local index=0 phase_number start_line
   while IFS=$'\t' read -r phase_number start_line; do
@@ -1312,11 +1312,12 @@ draft_check_scope_ceiling() {
     local glob
     while IFS= read -r glob; do
       [[ -n "$glob" ]] || continue
-      all_touches_seen["$glob"]=1
+      all_touches_seen="${all_touches_seen}${glob}"$'\n'
     done < <(printf '%s\n' "$body" | grep -oE '<!--[[:space:]]*pilot:touches=[^ ]+[[:space:]]*-->' | sed -E 's/^<!--[[:space:]]*pilot:touches=([^ ]+)[[:space:]]*-->$/\1/' || true)
   done <<< "$pairs"
 
-  local unique_touches_count=${#all_touches_seen[@]}
+  local unique_touches_count
+  unique_touches_count="$(printf '%s' "$all_touches_seen" | sed '/^$/d' | sort -u | wc -l | tr -d '[:space:]')"
   if [[ "$max_diff_files" =~ ^[0-9]+$ ]] && (( unique_touches_count > max_diff_files )); then
     printf 'Drafted spec declares %s distinct pilot:touches paths, exceeding max_diff_files=%s\n' \
       "$unique_touches_count" "$max_diff_files" >> "$violations_file"
