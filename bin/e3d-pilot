@@ -682,11 +682,10 @@ discover_stage() {
   while IFS= read -r __mapfile_line; do discover_providers+=("$__mapfile_line"); done < <(providers_for_stage "$config_file" discover)
   [[ ${#discover_providers[@]} -gt 0 ]] || die "discover has no providers configured"
   for provider in "${discover_providers[@]}"; do
-    if ! try_stage_provider "$repo" "$provider" "$prompt_file" \
+    if try_stage_provider "$repo" "$provider" "$prompt_file" \
       "$run_dir/discover-provider-${provider}.md" "$run_dir/discover-provider-${provider}.stderr" "discover"; then
-      die "discover provider \"$provider\" unavailable or failed"
+      combine_args+=("$provider" "$run_dir/discover-provider-${provider}.md")
     fi
-    combine_args+=("$provider" "$run_dir/discover-provider-${provider}.md")
   done
   [[ ${#combine_args[@]} -gt 0 ]] || die "discover: every configured provider failed or was unavailable"
   combine_provider_sections "$external_context_file" "${combine_args[@]}"
@@ -971,7 +970,7 @@ ideate_stage() {
   for provider in "${ideate_providers[@]}"; do
     if ! try_stage_provider "$repo" "$provider" "$prompt_file" \
       "$run_dir/ideate-provider-${provider}.md" "$run_dir/ideate-provider-${provider}.stderr" "ideate"; then
-      die "ideate provider \"$provider\" unavailable or failed"
+      continue
     fi
     if ! ideate_validate_candidates "$run_dir/ideate-provider-${provider}.md" "$run_dir/ideate-warnings-${provider}.txt" "$focus"; then
       printf 'ideate: warning: %s candidate response did not fully match the expected format:\n' "$provider"
@@ -4875,11 +4874,10 @@ fleet_discover_stage() {
   for provider in "${discover_providers[@]}"; do
     # Codex exec requires a git worktree as cwd. $HOME is not one; this
     # checkout is. The prompt already contains the portfolio facts.
-    if ! try_stage_provider "$REPO_ROOT" "$provider" "$prompt_file" \
+    if try_stage_provider "$REPO_ROOT" "$provider" "$prompt_file" \
       "$run_dir/fleet-discover-provider-${provider}.md" "$run_dir/fleet-discover-provider-${provider}.stderr" "fleet discover"; then
-      die "fleet discover provider \"$provider\" unavailable or failed"
+      combine_args+=("$provider" "$run_dir/fleet-discover-provider-${provider}.md")
     fi
-    combine_args+=("$provider" "$run_dir/fleet-discover-provider-${provider}.md")
   done
   [[ ${#combine_args[@]} -gt 0 ]] || die "fleet discover: every configured provider failed or was unavailable"
   combine_provider_sections "$external_context_file" "${combine_args[@]}"
