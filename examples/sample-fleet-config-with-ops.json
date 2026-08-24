@@ -1,0 +1,34 @@
+{
+  "providers": {
+    "discover": "claude",
+    "ideate": "claude"
+  },
+  "research_topics": "cross-repo integration opportunities across this portfolio",
+  "analogy_domains": [
+    "game progression and reward loops",
+    "social feed and notification mechanics",
+    "marketplace liquidity and two-sided matching",
+    "developer-tool CLI ergonomics",
+    "fintech trust and verification UX"
+  ],
+  "training": {
+    "min_reviewed_ideas": 30,
+    "min_implemented_ideas": 10,
+    "require_negative_examples": true,
+    "outcome_windows": ["7d", "30d"]
+  },
+  "live_instances": [
+    {
+      "name": "Netdoctor",
+      "url": "https://netdoctor.example.com/health"
+    },
+    {
+      "name": "Ledger Gateway",
+      "url": "https://ledger-gateway.example.com/status"
+    },
+    {
+      "name": "Search API",
+      "url": "https://search-api.example.com/healthz"
+    }
+  ]
+}

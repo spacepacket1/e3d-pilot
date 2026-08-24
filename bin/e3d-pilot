@@ -293,8 +293,9 @@ try_stage_provider() {
     printf '%s: warning: provider "%s" script missing; skipping\n' "$label" "$provider" >&2
     return 1
   fi
-  if ! availability_output="$(provider_availability_probe "$script")"; then
-    status=$?
+  availability_output="$(provider_availability_probe "$script")"
+  status=$?
+  if [[ $status -ne 0 ]]; then
     if [[ $status -eq "$PROVIDER_EXIT_UNAVAILABLE" ]]; then
       printf '%s: warning: provider "%s" unavailable; skipping: %s\n' "$label" "$provider" "${availability_output:-no details}" >&2
       return 1
@@ -681,10 +682,11 @@ discover_stage() {
   while IFS= read -r __mapfile_line; do discover_providers+=("$__mapfile_line"); done < <(providers_for_stage "$config_file" discover)
   [[ ${#discover_providers[@]} -gt 0 ]] || die "discover has no providers configured"
   for provider in "${discover_providers[@]}"; do
-    if try_stage_provider "$repo" "$provider" "$prompt_file" \
+    if ! try_stage_provider "$repo" "$provider" "$prompt_file" \
       "$run_dir/discover-provider-${provider}.md" "$run_dir/discover-provider-${provider}.stderr" "discover"; then
-      combine_args+=("$provider" "$run_dir/discover-provider-${provider}.md")
+      die "discover provider \"$provider\" unavailable or failed"
     fi
+    combine_args+=("$provider" "$run_dir/discover-provider-${provider}.md")
   done
   [[ ${#combine_args[@]} -gt 0 ]] || die "discover: every configured provider failed or was unavailable"
   combine_provider_sections "$external_context_file" "${combine_args[@]}"
@@ -969,7 +971,7 @@ ideate_stage() {
   for provider in "${ideate_providers[@]}"; do
     if ! try_stage_provider "$repo" "$provider" "$prompt_file" \
       "$run_dir/ideate-provider-${provider}.md" "$run_dir/ideate-provider-${provider}.stderr" "ideate"; then
-      continue
+      die "ideate provider \"$provider\" unavailable or failed"
     fi
     if ! ideate_validate_candidates "$run_dir/ideate-provider-${provider}.md" "$run_dir/ideate-warnings-${provider}.txt" "$focus"; then
       printf 'ideate: warning: %s candidate response did not fully match the expected format:\n' "$provider"
@@ -4702,7 +4704,51 @@ validate_fleet_discover_config() {
   json_type_check "$file" 'if has("tracking") then (.tracking | type == "object") else true end' "fleet discover config.tracking must be an object when provided"
   json_type_check "$file" 'if (has("tracking") and (.tracking | has("project_url"))) then (.tracking.project_url | type == "string") else true end' "fleet discover config.tracking.project_url must be a string when provided"
   scoring_validate_config_file "$file"
+  validate_fleet_discover_live_instances "$file"
   printf 'fleet discover config valid: %s\n' "$file"
+}
+
+validate_fleet_discover_live_instance_url() {
+  local url="$1" lower rest authority
+  lower="$(printf '%s' "$url" | tr '[:upper:]' '[:lower:]')"
+  case "$lower" in
+    http://*|https://*) ;;
+    *) return 1 ;;
+  esac
+  rest="${url#*://}"
+  authority="${rest%%[/?#]*}"
+  [[ -n "$authority" && "$authority" != *"@"* ]]
+}
+
+validate_fleet_discover_live_instance_entry() {
+  local file="$1" entry="$2" name url
+  jq -e '
+    type == "object" and
+    (keys_unsorted | length == 2) and
+    has("name") and has("url") and
+    (.name | type == "string" and length > 0) and
+    (.url | type == "string" and length > 0)
+  ' <<<"$entry" >/dev/null || die "fleet discover config.live_instances entries must contain only non-empty string name and url: $file"
+  name="$(jq -r '.name' <<<"$entry")"
+  url="$(jq -r '.url' <<<"$entry")"
+  validate_fleet_discover_live_instance_url "$url" || die "fleet discover config.live_instances url must be http(s) with a non-empty authority and no userinfo: $file"
+}
+
+validate_fleet_discover_live_instances() {
+  local file="$1" count entry
+  if jq -e 'has("live_instances") and (.live_instances | type != "array")' "$file" >/dev/null; then
+    die "fleet discover config.live_instances must be an array when provided: $file"
+  fi
+  count="$(jq -r 'if has("live_instances") and (.live_instances | type == "array") then (.live_instances | length) else 0 end' "$file")"
+  if [[ "$count" -gt 0 ]]; then
+    while IFS= read -r entry; do
+      validate_fleet_discover_live_instance_entry "$file" "$entry"
+    done < <(jq -c '.live_instances[]' "$file")
+  fi
+}
+
+fleet_live_operations_collector() {
+  printf '%s/lib/ops/collect-fleet-health.sh' "$REPO_ROOT"
 }
 
 # Runs a stage's provider call with the same exit-code handling (0 ok, 2
@@ -4780,6 +4826,10 @@ build_fleet_discover_prompt() {
     printf 'most transferable entries from the analogy domains below across the whole\n'
     printf 'portfolio, and name concretely how each could combine capabilities from 2+\n'
     printf 'of these repos.\n\n'
+    printf 'If the facts include degraded or down live-instance observations under\n'
+    printf '### Live Instance Status, create one recommendation for every degraded or down entry in a "### Operational Recommendations" section. Each recommendation\n'
+    printf 'must name the specific instance, repeat the observed classification and status or failure reason exactly as reported, and give one concrete diagnostic or recovery step grounded in that observation. omit that entire section when all configured live instances are healthy or when no live instances are configured. Never invent an instance, status, latency, cause,\n'
+    printf 'or recommendation entry.\n\n'
     printf 'Analogy domains to consider: %s\n\n' "$(analogy_domains_list "$config_file" | paste -sd ';' - | sed 's/;/; /g')"
     if [[ "$focus" == "revenue" ]]; then
       printf 'This is a revenue-focused pass: also include a "### Monetization Signals"\n'
@@ -4803,6 +4853,18 @@ fleet_discover_stage() {
   findings_file="$run_dir/findings.md"
 
   build_fleet_discover_facts_markdown "$repos_file" "$facts_file"
+  printf '\n## Live Operations\n\n' >> "$facts_file"
+  local collector_script collector_output collector_status
+  collector_script="$(fleet_live_operations_collector)"
+  [[ -x "$collector_script" ]] || die "fleet discover live operations collector missing or not executable: $collector_script"
+  set +e
+  collector_output="$("$collector_script" "$config_file" 2>"$run_dir/fleet-live-operations.stderr")"
+  collector_status=$?
+  set -e
+  if [[ $collector_status -ne 0 ]]; then
+    die "fleet discover live operations collector failed: $(<"$run_dir/fleet-live-operations.stderr")"
+  fi
+  printf '%s\n' "$collector_output" >> "$facts_file"
   build_fleet_discover_prompt "$facts_file" "$prompt_file" "$config_file" "$focus"
 
   local -a discover_providers=()
@@ -4813,10 +4875,11 @@ fleet_discover_stage() {
   for provider in "${discover_providers[@]}"; do
     # Codex exec requires a git worktree as cwd. $HOME is not one; this
     # checkout is. The prompt already contains the portfolio facts.
-    if try_stage_provider "$REPO_ROOT" "$provider" "$prompt_file" \
+    if ! try_stage_provider "$REPO_ROOT" "$provider" "$prompt_file" \
       "$run_dir/fleet-discover-provider-${provider}.md" "$run_dir/fleet-discover-provider-${provider}.stderr" "fleet discover"; then
-      combine_args+=("$provider" "$run_dir/fleet-discover-provider-${provider}.md")
+      die "fleet discover provider \"$provider\" unavailable or failed"
     fi
+    combine_args+=("$provider" "$run_dir/fleet-discover-provider-${provider}.md")
   done
   [[ ${#combine_args[@]} -gt 0 ]] || die "fleet discover: every configured provider failed or was unavailable"
   combine_provider_sections "$external_context_file" "${combine_args[@]}"

@@ -88,6 +88,21 @@ Pass `--focus revenue` to `e3d-pilot run` (any stage) to flip that priority for 
 
 Focus is resolved once per run and persisted to `.e3d-pilot/runs/<run-id>/focus`, so a later stage of the same run (e.g. a standalone `--stage ideate` invocation after `discover` already ran) inherits it automatically unless `--focus` is passed again explicitly, which overwrites it. Default behavior (`--focus default`, i.e. attraction/retention-first) is unchanged.
 
+## Fleet live operations
+
+Fleet discovery can also surface read-only health checks for configured production instances. Add an optional `live_instances` array to `.e3d-pilot-fleet/config.json`, where each entry is an object with exactly these fields:
+
+- `name`: non-empty display name for the instance.
+- `url`: non-empty `http://` or `https://` health URL. The check is read-only, uses one bounded `GET` request per instance, follows at most one redirect, caps each request at 10 seconds, and allows only HTTP/HTTPS on both the initial request and any redirect. No credentials, cookies, request bodies, or retry behavior are used.
+
+Those checks are intended to run on the same daily fleet-discover cadence as the rest of the portfolio pass. When `live_instances` is absent or empty, the collector still appends a `## Live Operations` section, but the facts fragment says `No live instances configured.` and the request path is never touched.
+
+When instances are configured, the collector appends deterministic Markdown under `## Live Operations` and `### Live Instance Status`, one bullet per instance in configuration order. Each bullet records the instance name, URL, classification, final HTTP result or mapped failure reason, and an integer latency in milliseconds. Live health checks can report `healthy`, `degraded`, or `down`; they never fabricate a status or latency, and a failed check does not stop later instances from being checked.
+
+The fleet-discover prompt always tells the model how to use those facts. If any live instance is `degraded` or `down`, it must add a `### Operational Recommendations` section with one concrete recommendation per affected instance. If all configured instances are healthy, or if no instances are configured, that section must be omitted entirely.
+
+Start from [`examples/sample-fleet-config-with-ops.json`](examples/sample-fleet-config-with-ops.json) if you want a ready-made fleet config with fictional `.example.com` live instances. Social engagement signals are a planned follow-on for a later phase; they are not implemented here.
+
 ## Requirements and installation
 
 Install Bash, Git, `jq`, `curl`, and `codex-spec-runner`; install and authenticate whichever model CLIs and forge CLI your configuration uses (`claude`, `codex`, `devin`, a local OpenAI-compatible endpoint, and/or `grok` for `grok-build`). Add this repository's `bin` directory to `PATH`:
