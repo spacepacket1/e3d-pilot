@@ -155,28 +155,44 @@ ideate_merges_candidates_from_every_provider() {
   rm -rf "$repo" "$bin_dir"
 }
 
-unavailable_provider_in_array_fails_fast() {
-  local repo bin_dir run_id out status
+unavailable_provider_in_array_is_skipped() {
+  local repo bin_dir run_id out findings
   repo="$(make_repo)"; mkdir -p "$repo/.e3d-pilot"
   jq '.providers.discover=["claude","grok-build"]' "$SAMPLE_CONFIG" > "$repo/.e3d-pilot/config.json"
-  run_id=phase25-missing
+  run_id=phase25-skip
   bin_dir="$(mktemp -d)"
   make_fake_claude "$bin_dir"
-  set +e
   out="$(PATH="$bin_dir:$PATH" GROK_BUILD_BIN=/definitely/missing/grok "$BIN" run --repo "$repo" --stage discover --run-id "$run_id" 2>&1)"
-  status=$?
-  set -e
-  [[ $status -ne 0 ]] || { echo 'missing array member should fail' >&2; exit 1; }
   assert_contains "$out" 'grok-build'
   assert_contains "$out" 'unavailable'
+  assert_contains "$out" 'skipping'
+  findings="$repo/.e3d-pilot/runs/$run_id/findings.md"
+  assert_contains "$(<"$findings")" '### Provider: claude'
+  assert_contains "$(<"$findings")" 'claude external context'
+  [[ "$(<"$findings")" != *'### Provider: grok-build'* ]] || { echo 'skipped provider should not appear in findings' >&2; exit 1; }
   rm -rf "$repo" "$bin_dir"
+}
+
+all_providers_failing_still_fails_the_stage() {
+  local repo run_id out status
+  repo="$(make_repo)"; mkdir -p "$repo/.e3d-pilot"
+  jq '.providers.discover=["grok-build"]' "$SAMPLE_CONFIG" > "$repo/.e3d-pilot/config.json"
+  run_id=phase25-all-fail
+  set +e
+  out="$(GROK_BUILD_BIN=/definitely/missing/grok "$BIN" run --repo "$repo" --stage discover --run-id "$run_id" 2>&1)"
+  status=$?
+  set -e
+  [[ $status -ne 0 ]] || { echo 'all-failed panel should fail the stage' >&2; exit 1; }
+  assert_contains "$out" 'every configured provider failed'
+  rm -rf "$repo"
 }
 
 main() {
   config_accepts_string_or_array_providers
   discover_runs_every_configured_provider
   ideate_merges_candidates_from_every_provider
-  unavailable_provider_in_array_fails_fast
+  unavailable_provider_in_array_is_skipped
+  all_providers_failing_still_fails_the_stage
   echo 'phase25: all tests passed'
 }
 main "$@"
