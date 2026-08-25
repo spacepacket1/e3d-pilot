@@ -4690,6 +4690,7 @@ new_fleet_run_id() {
 
 validate_fleet_discover_config() {
   local file="$1"
+  [[ -r "$file" ]] || die "fleet discover config not readable: $file"
   jq -e . "$file" >/dev/null || die "invalid JSON: $file"
   json_type_check "$file" 'type == "object"' "fleet discover config must be a JSON object: $file"
   json_type_check "$file" 'has("providers")' "fleet discover config.providers is required"
@@ -4703,7 +4704,10 @@ validate_fleet_discover_config() {
   json_type_check "$file" 'if has("tracking") then (.tracking | type == "object") else true end' "fleet discover config.tracking must be an object when provided"
   json_type_check "$file" 'if (has("tracking") and (.tracking | has("project_url"))) then (.tracking.project_url | type == "string") else true end' "fleet discover config.tracking.project_url must be a string when provided"
   scoring_validate_config_file "$file"
-  validate_fleet_discover_live_instances "$file"
+  local collector_script
+  collector_script="$(fleet_live_operations_collector)"
+  [[ -x "$collector_script" ]] || die "fleet discover live operations collector missing or not executable: $collector_script"
+  "$collector_script" --validate-only "$file" >/dev/null
   printf 'fleet discover config valid: %s\n' "$file"
 }
 
@@ -4748,6 +4752,61 @@ validate_fleet_discover_live_instances() {
 
 fleet_live_operations_collector() {
   printf '%s/lib/ops/collect-fleet-health.sh' "$REPO_ROOT"
+}
+
+fleet_discover_append_operational_recommendations() {
+  local facts_file="$1" line in_ops=0 in_live=0 in_social=0 printed=0
+  while IFS= read -r line; do
+    case "$line" in
+      '## Live Operations')
+        in_ops=1
+        in_live=0
+        in_social=0
+        continue
+        ;;
+    esac
+    [[ $in_ops -eq 1 ]] || continue
+    case "$line" in
+      '### Live Instance Status')
+        in_live=1
+        in_social=0
+        continue
+        ;;
+      '### Social Engagement')
+        in_social=1
+        in_live=0
+        continue
+        ;;
+      '## '*)
+        in_live=0
+        in_social=0
+        continue
+        ;;
+    esac
+    if [[ $in_live -eq 1 && "$line" == "- "* ]]; then
+      case "$line" in
+        *'): degraded — '*|*'): down — '*)
+          if [[ $printed -eq 0 ]]; then
+            printf '\n### Operational Recommendations\n\n'
+            printf 'Provide exactly one recommendation for each bullet below. Repeat the exact reported state and do not guess a cause.\n\n'
+            printed=1
+          fi
+          printf '%s\n' "$line"
+          ;;
+      esac
+    elif [[ $in_social -eq 1 && "$line" == "- "* ]]; then
+      case "$line" in
+        *'collection failure — '*|*'recent messages, 0 total reactions')
+          if [[ $printed -eq 0 ]]; then
+            printf '\n### Operational Recommendations\n\n'
+            printf 'Provide exactly one recommendation for each bullet below. Repeat the exact reported state and do not guess a cause.\n\n'
+            printed=1
+          fi
+          printf '%s\n' "$line"
+          ;;
+      esac
+    fi
+  done < "$facts_file"
 }
 
 # Runs a stage's provider call with the same exit-code handling (0 ok, 2
@@ -4798,7 +4857,7 @@ fleet_repo_digest() {
 }
 
 build_fleet_discover_facts_markdown() {
-  local repos_file="$1" facts_file="$2" repo
+  local repos_file="$1" facts_file="$2" config_file="$3" repo
   {
     printf 'Repositories in this portfolio pass:\n\n'
     while IFS= read -r repo; do
@@ -4806,6 +4865,18 @@ build_fleet_discover_facts_markdown() {
       printf '\n'
     done < <(jq -r '.[]' "$repos_file")
   } > "$facts_file"
+  local collector_script collector_output collector_status
+  collector_script="$(fleet_live_operations_collector)"
+  [[ -x "$collector_script" ]] || die "fleet discover live operations collector missing or not executable: $collector_script"
+  set +e
+  collector_output="$("$collector_script" "$config_file" 2>"$facts_file.live-operations.stderr")"
+  collector_status=$?
+  set -e
+  if [[ $collector_status -ne 0 ]]; then
+    die "fleet discover live operations collector failed: $(<"$facts_file.live-operations.stderr")"
+  fi
+  rm -f "$facts_file.live-operations.stderr"
+  printf '\n## Live Operations\n\n%s\n' "$collector_output" >> "$facts_file"
 }
 
 build_fleet_discover_prompt() {
@@ -4827,7 +4898,10 @@ build_fleet_discover_prompt() {
     printf 'of these repos.\n\n'
     printf 'If the facts include degraded or down live-instance observations under\n'
     printf '### Live Instance Status, create one recommendation for every degraded or down entry in a "### Operational Recommendations" section. Each recommendation\n'
-    printf 'must name the specific instance, repeat the observed classification and status or failure reason exactly as reported, and give one concrete diagnostic or recovery step grounded in that observation. omit that entire section when all configured live instances are healthy or when no live instances are configured. Never invent an instance, status, latency, cause,\n'
+    printf 'must name the specific instance, repeat the observed classification and status or failure reason exactly as reported, and give one concrete diagnostic or recovery step grounded in that observation.\n'
+    printf 'Also add one recommendation to that same section for every Discord account under ### Social Engagement that has at least one considered message and zero total reactions, or that has a collection failure -- name the account, repeat its exact reported state, and do not guess a cause.\n'
+    printf 'omit that entire section when all configured live instances are healthy or when no live instances are configured.\n'
+    printf 'Do not omit it, though, if any Discord account still has zero engagement or a collection failure to report. Never invent an instance, status, latency, cause,\n'
     printf 'or recommendation entry.\n\n'
     printf 'Analogy domains to consider: %s\n\n' "$(analogy_domains_list "$config_file" | paste -sd ';' - | sed 's/;/; /g')"
     if [[ "$focus" == "revenue" ]]; then
@@ -4840,6 +4914,7 @@ build_fleet_discover_prompt() {
     fi
     printf 'Portfolio:\n\n'
     cat "$facts_file"
+    fleet_discover_append_operational_recommendations "$facts_file"
   } > "$prompt_file"
 }
 
@@ -4851,19 +4926,7 @@ fleet_discover_stage() {
   external_context_file="$run_dir/fleet-discover-external-context.md"
   findings_file="$run_dir/findings.md"
 
-  build_fleet_discover_facts_markdown "$repos_file" "$facts_file"
-  printf '\n## Live Operations\n\n' >> "$facts_file"
-  local collector_script collector_output collector_status
-  collector_script="$(fleet_live_operations_collector)"
-  [[ -x "$collector_script" ]] || die "fleet discover live operations collector missing or not executable: $collector_script"
-  set +e
-  collector_output="$("$collector_script" "$config_file" 2>"$run_dir/fleet-live-operations.stderr")"
-  collector_status=$?
-  set -e
-  if [[ $collector_status -ne 0 ]]; then
-    die "fleet discover live operations collector failed: $(<"$run_dir/fleet-live-operations.stderr")"
-  fi
-  printf '%s\n' "$collector_output" >> "$facts_file"
+  build_fleet_discover_facts_markdown "$repos_file" "$facts_file" "$config_file"
   build_fleet_discover_prompt "$facts_file" "$prompt_file" "$config_file" "$focus"
 
   local -a discover_providers=()
