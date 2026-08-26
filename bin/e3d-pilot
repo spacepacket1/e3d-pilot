@@ -4959,26 +4959,68 @@ fleet_discover_stage() {
   } > "$findings_file"
 }
 
+# Extracts just the title, Repos field, and a truncated Description from each
+# "### Candidate N: ..." block under candidates.md's "## Proposed Candidates"
+# section -- enough for a model to recognize a duplicate without re-reading
+# the full prior-run findings dump. candidates.md's own "## Dedup Context"
+# section (everything before "## Proposed Candidates") embeds a full copy of
+# that day's fleet-ideate-facts.md, itself containing prior-run summaries --
+# skipping straight to "## Proposed Candidates" avoids re-extracting those
+# nested echoes, which would otherwise compound in size every day.
+fleet_ideate_prior_run_summary() {
+  local candidates_file="$1"
+  awk '
+    /^## Proposed Candidates/ { in_candidates = 1; next }
+    !in_candidates { next }
+    /^### Candidate [0-9]+:/ {
+      if (title != "") { print title; if (repos != "") print repos; if (desc != "") print desc; print "" }
+      title = $0; repos = ""; desc = ""
+      next
+    }
+    /^Repos:/ { repos = $0; next }
+    /^Description:/ {
+      desc = $0
+      if (length(desc) > 220) desc = substr(desc, 1, 220) "..."
+      next
+    }
+    END {
+      if (title != "") { print title; if (repos != "") print repos; if (desc != "") print desc; print "" }
+    }
+  ' "$candidates_file"
+}
+
 build_fleet_ideate_facts_markdown() {
   local run_dir="$1" facts_file="$2" findings_file fleet_dir prior_dir prior_name found=0
+  local max_prior_runs="${FLEET_IDEATE_MAX_PRIOR_RUNS:-10}" prior_count=0
+  local -a prior_dirs=()
   findings_file="$run_dir/findings.md"
   fleet_dir="$(dirname "$(dirname "$run_dir")")"
   {
     printf '## Current Fleet Findings\n\n```text\n'
     cat "$findings_file"
     printf '\n```\n'
-    printf '\n## Prior Fleet Runs (candidates.md)\n'
+    printf '\n## Prior Fleet Runs (candidate titles, repos, and short summaries -- most recent %s runs)\n' "$max_prior_runs"
     if [[ -d "$fleet_dir/runs" ]]; then
-      for prior_dir in "$fleet_dir"/runs/*/; do
-        [[ -d "$prior_dir" ]] || continue
+      prior_dirs=()
+      while IFS= read -r prior_dir; do
+        prior_dirs+=("$prior_dir")
+      done < <(
+        for prior_dir in "$fleet_dir"/runs/*/; do
+          [[ -d "$prior_dir" ]] || continue
+          prior_name="$(basename "$prior_dir")"
+          [[ "$prior_name" == "$(basename "$run_dir")" ]] && continue
+          [[ -f "$prior_dir/candidates.md" ]] || continue
+          printf '%s\n' "$prior_dir"
+        done | sort -r
+      )
+      for prior_dir in "${prior_dirs[@]}"; do
+        (( prior_count >= max_prior_runs )) && break
+        prior_count=$((prior_count + 1))
         prior_name="$(basename "$prior_dir")"
-        [[ "$prior_name" == "$(basename "$run_dir")" ]] && continue
-        if [[ -f "$prior_dir/candidates.md" ]]; then
-          found=1
-          printf '### %s/candidates.md\n```text\n' "$prior_name"
-          cat "$prior_dir/candidates.md"
-          printf '\n```\n'
-        fi
+        found=1
+        printf '### %s\n```text\n' "$prior_name"
+        fleet_ideate_prior_run_summary "$prior_dir/candidates.md"
+        printf '```\n'
       done
     fi
     [[ $found -eq 1 ]] || printf -- '- none found\n'
