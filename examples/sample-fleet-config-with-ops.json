@@ -30,5 +30,13 @@
       "name": "Search API",
       "url": "https://search-api.example.com/healthz"
     }
+  ],
+  "social_accounts": [
+    {
+      "platform": "discord",
+      "name": "Ops Signals",
+      "channel_id": "123456789012345678",
+      "bot_user_id": "987654321098765432"
+    }
   ]
 }

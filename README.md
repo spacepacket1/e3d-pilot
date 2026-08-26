@@ -90,18 +90,18 @@ Focus is resolved once per run and persisted to `.e3d-pilot/runs/<run-id>/focus`
 
 ## Fleet live operations
 
-Fleet discovery can also surface read-only health checks for configured production instances. Add an optional `live_instances` array to `.e3d-pilot-fleet/config.json`, where each entry is an object with exactly these fields:
+Fleet discovery can surface two read-only operational signals from optional `.e3d-pilot-fleet/config.json` fields:
 
-- `name`: non-empty display name for the instance.
-- `url`: non-empty `http://` or `https://` health URL. The check is read-only, uses one bounded `GET` request per instance, follows at most one redirect, caps each request at 10 seconds, and allows only HTTP/HTTPS on both the initial request and any redirect. No credentials, cookies, request bodies, or retry behavior are used.
+- `live_instances`: an array of objects with exactly `name` and `url`. `name` must be a non-empty display string. `url` must be a non-empty `http://` or `https://` URL with a non-empty authority and no userinfo. The collector makes exactly one `GET` request per instance, follows at most one redirect, caps each request at 10 seconds, allows only HTTP/HTTPS on initial and redirected requests, and never retries.
+- Live classification is deterministic: `healthy` means HTTP 200 at or below 1500 ms; `degraded` means HTTP 200 above 1500 ms or any other 2xx/3xx response; `down` means curl failure, invalid elapsed/status output, or any non-200-399 status, including 000, 1xx, 4xx, 5xx, and 6xx-9xx.
+- `social_accounts`: an array of objects with exactly `platform`, `name`, `channel_id`, and `bot_user_id`. `platform` must be the string `discord`. `bot_user_id` is a public exact-authorship identifier, not a credential. Discord collection reads `DISCORD_BOT_TOKEN` from the environment, makes exactly one messages request per credentialed account, and makes zero requests when the token is missing or empty.
+- Discord collection is read-only and uses `GET https://discord.com/api/v10/channels/{channel_id}/messages?limit=50` with no retries. It distinguishes `no recent messages found`, zero-engagement messages, and collection failures. Reactions are summed only for messages whose `author.id` exactly matches `bot_user_id`.
+- `## Live Operations` is appended only when at least one of those arrays is non-empty. `### Live Instance Status` appears first whenever the section is present; if there are no live instances but Discord is configured, it says `No live instances configured.` `### Social Engagement` appears only when `social_accounts` is non-empty.
+- `### Operational Recommendations` is included only for degraded/down live instances and Discord zero-engagement or collection-failure bullets, in configuration order. It repeats the exact observed state and does not guess a cause. Healthy instances, nonzero Discord engagement, and `no recent messages found` do not get recommendations.
+- Moltbook support is planned as a later sibling branch.
+- Keep credentials out of fleet config; only `DISCORD_BOT_TOKEN` belongs in the runtime environment.
 
-Those checks are intended to run on the same daily fleet-discover cadence as the rest of the portfolio pass. When `live_instances` is absent or empty, the collector still appends a `## Live Operations` section, but the facts fragment says `No live instances configured.` and the request path is never touched.
-
-When instances are configured, the collector appends deterministic Markdown under `## Live Operations` and `### Live Instance Status`, one bullet per instance in configuration order. Each bullet records the instance name, URL, classification, final HTTP result or mapped failure reason, and an integer latency in milliseconds. Live health checks can report `healthy`, `degraded`, or `down`; they never fabricate a status or latency, and a failed check does not stop later instances from being checked.
-
-The fleet-discover prompt always tells the model how to use those facts. If any live instance is `degraded` or `down`, it must add a `### Operational Recommendations` section with one concrete recommendation per affected instance. If all configured instances are healthy, or if no instances are configured, that section must be omitted entirely.
-
-Start from [`examples/sample-fleet-config-with-ops.json`](examples/sample-fleet-config-with-ops.json) if you want a ready-made fleet config with fictional `.example.com` live instances. Social engagement signals are a planned follow-on for a later phase; they are not implemented here.
+Start from [`examples/sample-fleet-config-with-ops.json`](examples/sample-fleet-config-with-ops.json) if you want a ready-made fleet config with fictional `.example.com` live instances and a fictional Discord account.
 
 ## Requirements and installation
 
