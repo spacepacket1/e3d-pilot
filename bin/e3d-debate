@@ -1,0 +1,163 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Prototype: run a question through a multi-round debate across several
+# lib/providers/<name> adapters, then ask one of them to synthesize a final
+# answer from the full transcript. Not wired into bin/e3d-pilot or
+# config.schema.json yet -- this is a standalone experiment to see whether
+# automating the manual "ask several models, compare, decide" loop is worth
+# building out further.
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+PROVIDERS_DIR="$REPO_ROOT/lib/providers"
+
+DEBATE_PROVIDERS=(claude codex)
+DEBATE_ROUNDS=2
+DEBATE_SYNTHESIZER="claude"
+OUT_DIR=""
+QUESTION=""
+
+usage() {
+  cat <<'EOF'
+e3d-debate "<question>" [--providers claude,codex] [--rounds 2] [--synthesizer claude] [--out-dir <dir>]
+
+Runs the question through N rounds across the given lib/providers/<name>
+adapters (round 1: independent answers; round 2+: each provider sees every
+other provider's prior-round answer and is asked to rebut or concede), then
+asks --synthesizer to read the full transcript and produce one final answer.
+Prints the transcript and final answer to stdout; also writes transcript.md
+under --out-dir (default: a mktemp dir, path printed at the end).
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --providers) IFS=',' read -r -a DEBATE_PROVIDERS <<< "$2"; shift 2 ;;
+    --rounds) DEBATE_ROUNDS="$2"; shift 2 ;;
+    --synthesizer) DEBATE_SYNTHESIZER="$2"; shift 2 ;;
+    --out-dir) OUT_DIR="$2"; shift 2 ;;
+    -h|--help) usage; exit 0 ;;
+    *) QUESTION="$1"; shift ;;
+  esac
+done
+
+[[ -n "$QUESTION" ]] || { echo "error: question required (see --help)" >&2; exit 1; }
+[[ "$DEBATE_ROUNDS" =~ ^[0-9]+$ ]] && (( DEBATE_ROUNDS >= 1 )) || { echo "error: --rounds must be a positive integer" >&2; exit 1; }
+(( ${#DEBATE_PROVIDERS[@]} >= 2 )) || { echo "error: need at least 2 --providers to debate" >&2; exit 1; }
+
+for p in "${DEBATE_PROVIDERS[@]}" "$DEBATE_SYNTHESIZER"; do
+  [[ -x "$PROVIDERS_DIR/$p" ]] || { echo "error: no such provider adapter: $PROVIDERS_DIR/$p" >&2; exit 1; }
+done
+
+work_dir="$(mktemp -d "${TMPDIR:-/tmp}/e3d-debate.XXXXXX")"
+transcript_md="$work_dir/transcript.md"
+printf '# Debate\n\n**Question:** %s\n\n' "$QUESTION" > "$transcript_md"
+
+declare -A LAST_ANSWER
+converged=0
+converged_at_round=0
+
+for ((round = 1; round <= DEBATE_ROUNDS; round++)); do
+  echo "=== Round $round ===" >&2
+  pids=()
+  for provider in "${DEBATE_PROVIDERS[@]}"; do
+    prompt_file="$work_dir/round${round}-${provider}.prompt.md"
+    out_file="$work_dir/round${round}-${provider}.out"
+    status_file="$work_dir/round${round}-${provider}.status"
+    {
+      if (( round == 1 )); then
+        printf 'You are one of several AI models independently answering a question, before comparing notes with the others in later rounds.\n\n'
+        printf 'Question: %s\n\n' "$QUESTION"
+        printf 'Give your best direct answer with your key reasoning and any load-bearing assumptions. Be decisive, not hedgy. Under 200 words.\n'
+      else
+        printf 'You are in round %d of a structured debate among several AI models answering one question.\n\n' "$round"
+        printf 'Question: %s\n\n' "$QUESTION"
+        printf 'Here is what each participant said in the previous round:\n\n'
+        for other in "${DEBATE_PROVIDERS[@]}"; do
+          printf -- '--- %s (previous round) ---\n%s\n\n' "$other" "${LAST_ANSWER[$other]}"
+        done
+        printf 'Critically evaluate the other answers against your own. If your prior position holds up, restate it and rebut what'\''s wrong in the others. If you'\''ve changed your mind, say so plainly and why. Under 200 words.\n\n'
+        printf 'End with exactly these two lines, in this exact format:\n'
+        printf 'POSITION: <one-sentence current answer>\n'
+        printf 'status: approved|revise\n'
+        printf '("approved" = a person acting on your answer and a person acting on every other participant'\''s answer would do the same thing -- extra caveats, framing, or added nuance do NOT count as disagreement. "revise" = someone following your answer would act differently than someone following at least one other participant'\''s answer.)\n'
+      fi
+    } > "$prompt_file"
+    (
+      set +e
+      "$PROVIDERS_DIR/$provider" "$prompt_file" > "$out_file" 2>"$work_dir/round${round}-${provider}.stderr"
+      echo $? > "$status_file"
+    ) &
+    pids+=($!)
+  done
+  for pid in "${pids[@]}"; do wait "$pid" || true; done
+
+  for provider in "${DEBATE_PROVIDERS[@]}"; do
+    out_file="$work_dir/round${round}-${provider}.out"
+    status_file="$work_dir/round${round}-${provider}.status"
+    status="$(cat "$status_file" 2>/dev/null || echo 1)"
+    if [[ "$status" == "0" && -s "$out_file" ]]; then
+      answer="$(cat "$out_file")"
+    else
+      answer="(provider $provider failed in round $round -- see $work_dir/round${round}-${provider}.stderr)"
+    fi
+    LAST_ANSWER[$provider]="$answer"
+    printf '## Round %d -- %s\n\n%s\n\n' "$round" "$provider" "$answer" >> "$transcript_md"
+    printf -- '--- Round %d / %s ---\n%s\n\n' "$round" "$provider" "$answer"
+  done
+
+  if (( round >= 2 )); then
+    statuses=()
+    for provider in "${DEBATE_PROVIDERS[@]}"; do
+      s="$(grep -m1 -E '^status: (approved|revise)$' <<< "${LAST_ANSWER[$provider]}" | sed -E 's/^status: //' || true)"
+      [[ "$s" == "approved" || "$s" == "revise" ]] || s="revise"
+      statuses+=("$s")
+    done
+    if "$REPO_ROOT/lib/negotiate/convergence" "${statuses[@]}" >/dev/null 2>&1; then
+      converged=1
+      converged_at_round=$round
+      echo "=== Converged after round $round -- all participants agree, skipping remaining rounds ===" >&2
+      break
+    fi
+  fi
+done
+
+if (( converged == 1 )); then
+  rounds_ran_note="converged after round $converged_at_round of a max $DEBATE_ROUNDS -- all participants ended that round agreeing"
+else
+  rounds_ran_note="ran the full $DEBATE_ROUNDS rounds without every participant converging"
+fi
+
+synth_prompt="$work_dir/synthesis.prompt.md"
+{
+  printf 'Below is the full transcript of a debate between multiple AI models answering one question for a human who needs a single, decisive answer (%s).\n\n' "$rounds_ran_note"
+  printf 'Question: %s\n\n' "$QUESTION"
+  cat "$transcript_md"
+  printf '\nRead the transcript and produce a final answer. Output exactly this format:\n'
+  printf 'FINAL ANSWER: <2-4 decisive sentences>\n'
+  printf 'CONSENSUS: <full | majority | split>\n'
+  printf 'DISSENT: <one line on any remaining disagreement worth flagging, or "none">\n'
+} > "$synth_prompt"
+
+synth_out="$work_dir/synthesis.out"
+set +e
+"$PROVIDERS_DIR/$DEBATE_SYNTHESIZER" "$synth_prompt" > "$synth_out" 2>"$work_dir/synthesis.stderr"
+synth_status=$?
+set -e
+
+echo "=== Synthesis ($DEBATE_SYNTHESIZER) ===" >&2
+if [[ $synth_status -eq 0 && -s "$synth_out" ]]; then
+  cat "$synth_out"
+  printf '\n## Synthesis (%s)\n\n%s\n' "$DEBATE_SYNTHESIZER" "$(cat "$synth_out")" >> "$transcript_md"
+else
+  echo "error: synthesis provider failed -- see $work_dir/synthesis.stderr" >&2
+fi
+
+if [[ -n "$OUT_DIR" ]]; then
+  mkdir -p "$OUT_DIR"
+  cp "$transcript_md" "$OUT_DIR/transcript.md"
+  echo "transcript: $OUT_DIR/transcript.md" >&2
+else
+  echo "transcript: $transcript_md" >&2
+fi

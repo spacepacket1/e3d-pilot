@@ -412,6 +412,19 @@ Clicking **Implement** spawns `e3d-pilot ideas implement` as a detached backgrou
 
 Both `E3D_PILOT_WEB_AUTH_USER` and `E3D_PILOT_WEB_AUTH_PASS` are required; there is no unauthenticated mode. This is meant to run on a trusted machine or behind your own reverse proxy/tunnel — it has no built-in TLS, rate limiting, or multi-user accounts.
 
+## e3d-debate (experimental)
+
+`bin/e3d-debate` is a separate, standalone script — not wired into `bin/e3d-pilot`'s subcommand tree or `config.schema.json`, the same way `bin/e3d-backend-benchmark` and `bin/e3d-grok-workers` already aren't — for the "ask several models a question and see whether they actually agree" loop, applied to any question rather than repo work specifically. It reuses the same `lib/providers/<name>` adapters and the `lib/negotiate/convergence` primitive that discover/ideate/negotiate/review already depend on.
+
+```bash
+bin/e3d-debate "Should this service store timestamps as UTC or local time+offset?" \
+  --providers claude,codex,devin,grok-build --rounds 3
+```
+
+Round 1: every listed provider answers independently. Round 2+: each provider sees every other provider's prior-round answer and is asked to restate its position, rebut, or concede, ending with `POSITION: <one-line answer>` and `status: approved|revise` — "approved" means a person acting on this answer and a person acting on every other participant's current answer would do the same thing; added nuance or extra caveats don't count as disagreement. Once every provider reports `approved`, `lib/negotiate/convergence` stops the debate early instead of burning the remaining rounds. After the last round (early-stopped or not), one designated `--synthesizer` (default `claude`) reads the full transcript and produces a `FINAL ANSWER` / `CONSENSUS` / `DISSENT` summary.
+
+Any `lib/providers` adapter can take part, including `devin` — useful if a Devin/Windsurf subscription would otherwise sit unused. The full transcript (prompts, every round's raw responses, and the synthesis) is written to a temp directory by default, or to `--out-dir <path>` if given.
+
 ## Running on a schedule
 
 e3d-pilot is deliberately not a daemon — every invocation is a single, short-lived CLI call that runs (or resumes) a stage and exits. There's no built-in scheduler, so "continuous" is up to whatever calls it: cron, a systemd timer, a scheduled CI workflow, or your own orchestrator all work equally well.
