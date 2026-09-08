@@ -47,6 +47,36 @@ ingest_idea() {
   printf '%s' "$idea"
 }
 
+make_fleet() {
+  local dir fleet_file member
+  dir="$(mktemp -d)"
+  fleet_file="$dir/fleet.json"
+  for member in repo-a repo-b; do
+    git init -q "$dir/$member"
+    git -C "$dir/$member" config user.email "test@example.com"
+    git -C "$dir/$member" config user.name "Test User"
+    printf '# %s\n' "$member" > "$dir/$member/README.md"
+    git -C "$dir/$member" add README.md
+    git -C "$dir/$member" commit -q -m init
+  done
+  jq -ncS '["repo-a","repo-b"]' > "$fleet_file"
+  printf '%s' "$fleet_file"
+}
+
+ingest_fleet_idea() {
+  local fleet_file="$1" title="$2" fleet_dir candidate idea
+  fleet_dir="$(dirname "$fleet_file")"
+  candidate="$(mktemp)"
+  jq -ncS --arg title "$title" --arg repo_a "$fleet_dir/repo-a" --arg repo_b "$fleet_dir/repo-b" '{
+    focus:"revenue",title:$title,summary:"Phase 23 fleet fixture.",repos:[$repo_a,$repo_b],
+    scores:{attraction:3,retention:3,revenue:5,effort:"low"},
+    category:"testing",dedup_rationale:"new",validation:{approvable:true,eligibility_reason:null,warnings:[]}
+  }' > "$candidate"
+  idea="$("$BIN" fleet ideas "$fleet_file" ingest --run-id run-1 --candidate-id candidate-1 --candidate-json "$candidate")"
+  rm -f "$candidate"
+  printf '%s' "$idea"
+}
+
 extract_csrf() {
   local page="$1"
   echo "$page" | grep -o 'name="_csrf" value="[^"]*"' | head -1 | sed 's/.*value="//;s/"$//'
@@ -61,6 +91,13 @@ start_server() {
     env -u E3D_PILOT_WEB_AUTH_USER -u E3D_PILOT_WEB_AUTH_PASS \
       "$BIN" web --repo "$repo" --port "$port" >"$log" 2>&1 &
   fi
+  printf '%s' "$!"
+}
+
+start_fleet_server() {
+  local fleet_file="$1" port="$2" log="$3"
+  E3D_PILOT_WEB_AUTH_USER=testuser E3D_PILOT_WEB_AUTH_PASS=testpass \
+    "$BIN" web --fleet "$fleet_file" --port "$port" >"$log" 2>&1 &
   printf '%s' "$!"
 }
 
@@ -156,11 +193,64 @@ full_round_trip() {
   rm -rf "$repo"; rm -f "$log" "$jar"
 }
 
+refuses_missing_fleet_file() {
+  local out status
+  set +e
+  out="$(E3D_PILOT_WEB_AUTH_USER=u E3D_PILOT_WEB_AUTH_PASS=p "$BIN" web --fleet /nonexistent/fleet.json 2>&1)"
+  status=$?
+  set -e
+  [[ $status -ne 0 ]] || { echo "expected web to refuse a nonexistent fleet file" >&2; exit 1; }
+  assert_contains "$out" "fleet file not found"
+}
+
+fleet_round_trip() {
+  local fleet_file port pid log idea page token status
+  fleet_file="$(make_fleet)"
+  idea="$(ingest_fleet_idea "$fleet_file" "Fleet web UI fixture idea")"
+  port=$(( (RANDOM % 5000) + 30000 ))
+  log="$(mktemp)"
+
+  pid="$(start_fleet_server "$fleet_file" "$port" "$log")"
+  if ! wait_for_server "$port"; then
+    kill "$pid" 2>/dev/null || true
+    cat "$log" >&2
+    echo "fleet web server never became reachable" >&2
+    exit 1
+  fi
+
+  # fleet ideas show up in the merged list under the "fleet" alias
+  page="$(curl -s -u testuser:testpass "http://127.0.0.1:$port/ideas")"
+  assert_contains "$page" "Fleet web UI fixture idea"
+  assert_contains "$page" "fleet"
+
+  # detail page renders, including the cross-repo "Repos touched" field
+  page="$(curl -s -u testuser:testpass "http://127.0.0.1:$port/ideas/fleet/$idea")"
+  assert_contains "$page" "Fleet web UI fixture idea"
+  assert_contains "$page" "repo-a"
+  assert_contains "$page" "repo-b"
+
+  # approve via the web UI actually mutates the fleet ledger
+  local jar
+  jar="$(mktemp)"
+  page="$(curl -s -c "$jar" -b "$jar" -u testuser:testpass "http://127.0.0.1:$port/ideas/fleet/$idea")"
+  token="$(extract_csrf "$page")"
+  [[ -n "$token" ]] || { echo "failed to extract csrf token from fleet detail page" >&2; exit 1; }
+  status="$(curl -s -c "$jar" -b "$jar" -u testuser:testpass -o /dev/null -w '%{http_code}' -X POST --data-urlencode "_csrf=$token" "http://127.0.0.1:$port/ideas/fleet/$idea/approve")"
+  assert_eq "$status" "302" "POST fleet approve with valid csrf token"
+  assert_eq "$("$BIN" fleet ideas "$fleet_file" show "$idea" --json | jq -r '.status')" "approved_for_implementation" "fleet approve actually mutated the ledger"
+
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  rm -rf "$(dirname "$fleet_file")"; rm -f "$log" "$jar"
+}
+
 main() {
   syntax_checks
   refuses_to_start_without_auth_env_vars
   refuses_unknown_repo
+  refuses_missing_fleet_file
   full_round_trip
+  fleet_round_trip
   echo "phase23: all tests passed"
 }
 

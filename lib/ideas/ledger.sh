@@ -289,14 +289,18 @@ ideas_materialize_next_status() {
   local from event next restore_status
   from="$(jq -r '.status // "none"' "$state_file")"
   event="$(jq -r '.event' "$event_file")"
-  # project_tracking_synced is pure metadata (which board item an idea is
-  # linked to, and what status was last written there) -- it never gates or
-  # represents a lifecycle decision, so unlike every other event it is valid
-  # as a self-loop from any status, "none" included.
-  if [[ "$event" == "project_tracking_synced" ]]; then
-    printf '%s' "$from"
-    return 0
-  fi
+  # project_tracking_synced and note_appended are pure metadata -- the former
+  # is which board item an idea is linked to, the latter is a freeform
+  # finding or decision attached to an idea for cross-session context
+  # handoff. Neither gates or represents a lifecycle decision, so unlike
+  # every other event both are valid as a self-loop from any status, "none"
+  # included.
+  case "$event" in
+    project_tracking_synced|note_appended)
+      printf '%s' "$from"
+      return 0
+      ;;
+  esac
   next="$(ideas_allowed_transition "$from" "$event")" || {
     ideas_die "invalid idea lifecycle transition: $from + $event"
     return 1
@@ -546,6 +550,25 @@ ideas_apply_event() {
         | .status=$status
         | .updated_at=$e.timestamp
         | .tracking = ((.tracking // {}) + ($e.tracking // {}))
+        | .last_event_id=$e.event_id
+      ' "$state_file" "$event_file" > "$out_file"
+      ;;
+    note_appended)
+      jq -cS --arg status "$next" '
+        . as $s | input as $e
+        | $s
+        | .status=$status
+        | .updated_at=$e.timestamp
+        | .notes=((.notes // []) + [{
+            event_id: $e.event_id,
+            timestamp: $e.timestamp,
+            actor: $e.actor,
+            kind: ($e.kind // "finding"),
+            text: $e.text
+          }])
+        | (if (($e.kind // "finding") == "decision")
+           then (.last_decision_actor=$e.actor | .last_decision_at=$e.timestamp)
+           else . end)
         | .last_event_id=$e.event_id
       ' "$state_file" "$event_file" > "$out_file"
       ;;

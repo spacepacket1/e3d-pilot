@@ -14,6 +14,8 @@ e3d-pilot exists to be that missing half: a small, auditable layer that sits *ab
 
 The other reason: good ideas rarely come from staring harder at the same backlog. e3d-pilot's discover stage explicitly borrows from domains outside a repo's own category — a game's progression loop, a marketplace's liquidity trick, a social feed's notification mechanics — and its ideate stage grades every candidate on attraction and retention (does this bring people in, does it bring them back) with revenue treated as a secondary tiebreaker, never the deciding factor. The goal is features people actually want, not just the next item on an internal TODO list.
 
+A third reason, less about any single run and more about what accumulates across many of them: a decision made once shouldn't have to be re-explained from scratch to the next session that picks the work back up. Every tracked idea's ledger record is a durable, cross-session target — `ideas context`/`ideas handoff` let a fresh Claude Code, ChatGPT, or Codex session read exactly what's already known about an idea (its decisions, its findings, its current state) instead of replaying a whole prior conversation, and `ideas note` lets that session write back what it just learned. The same instinct — don't trust a single pass of reasoning on a genuinely contested question — is why `e3d-debate` exists as a standalone tool: run any question through several models across rounds until they converge or leave a named, specific dissent, the same mechanism e3d-pilot's own negotiate stage already depends on internally, available for any decision, not just code changes.
+
 ## What it does differently
 
 - **Never repeats work.** Every idea is checked against the target repo's open branches, its PR history (open and closed), and every prior e3d-pilot run before it's allowed to proceed.
@@ -22,6 +24,7 @@ The other reason: good ideas rarely come from staring harder at the same backlog
 - **Never touches source before the first gate.** Execution happens in an isolated worktree on its own branch only after implementation approval. A path denylist and real post-execution diff ceilings are enforced before anything is reviewed or published.
 - **Never merges a different revision.** Merge approval is separate from GitHub review approval and is bound to the observed PR URL, base branch, and head SHA. A pushed commit invalidates the approval until a human reviews and approves the new head.
 - **Never assumes it's talking to spacepacket1's repos.** The entire contract with a target repository is one JSON config file. No fixed org, no fixed remote host, no `e3d-*` naming assumptions baked into the pipeline.
+- **Never lets an idea's context evaporate between sessions.** `ideas note`/`ideas context`/`ideas handoff` give any AI session — not just e3d-pilot's own pipeline runs — a durable place to read and write what's been learned or decided about a tracked idea, independent of its lifecycle status.
 
 ## How it can help others
 
@@ -171,6 +174,30 @@ e3d-pilot ideas reject  --repo /path/to/repository idea-abc123def456 --reason "N
 
 `ideas approve` is the first gate. It authorizes drafting, negotiation, execution, review, and publication for the exact idea content and approved target plan. It is not a GitHub PR review, and it does not authorize merge.
 
+Record findings and decisions on an idea, and pull them back out as compact context, independent of the idea's lifecycle status:
+
+```bash
+e3d-pilot ideas note     --repo /path/to/repository idea-abc123def456 "Discovered the API rate-limits at 50 req/min" --actor you@example.com
+e3d-pilot ideas note     --repo /path/to/repository idea-abc123def456 --decision "Ship the read-only slice first" --actor you@example.com
+e3d-pilot ideas context  --repo /path/to/repository idea-abc123def456 [--json]
+e3d-pilot ideas handoff  --repo /path/to/repository idea-abc123def456
+```
+
+These exist to close one specific gap: nothing outside e3d-pilot's own pipeline invocations ever writes to `.e3d-pilot/`, so context discovered in an ad hoc Claude Code, ChatGPT, or Codex session about a tracked idea has nowhere durable to go. `ideas note` appends a freeform finding (or, with `--decision`, a decision) to the idea's existing ledger record via a pure self-loop event (`note_appended`) that never gates and is never gated by lifecycle status — it works on an idea in any state, including `proposed`, `implemented`, or `merged`. `ideas context` reads that idea back as a short summary plus its accumulated decisions and findings, separated. `ideas handoff` renders the same information as a compact packet (GOAL / STATUS / RELEVANT DECISIONS / RELATED CONTEXT / RECENT FINDINGS) sized to hand to a fresh model session instead of re-explaining everything from scratch. None of this adds a new schema or a new idea type — it's three thin verbs over the existing per-idea ledger.
+
+### Provenance export and trace experiment
+
+The provenance commands derive a disposable graph or a single-idea trace directly from the same event ledger:
+
+```bash
+e3d-pilot provenance export --repo /path/to/repository [--out /path/to/provenance.jsonl]
+e3d-pilot provenance trace  --repo /path/to/repository idea-abc123def456 [--json]
+e3d-pilot fleet provenance export /path/to/fleet.json [--out /path/to/provenance.jsonl]
+e3d-pilot fleet provenance trace  /path/to/fleet.json idea-abc123def456 [--json]
+```
+
+`provenance export` regenerates canonical nodes and edges, including the repositories a fleet idea proposed; `provenance trace` reads `events.jsonl` directly and separates decisions, findings, work Pilot produced, external commits it merely observed, outcomes, and failures. Add `--evidence <path-or-url>` to `ideas note` to retain a pointer to supporting material in repo-mode traces and exports without copying that material into the ledger. This is the deliberately UI-free experiment agreed in the e3d-graph debate: validate that the trace answers real attribution questions faster and more accurately than reading the ledger by hand before doing any visualization work.
+
 Implement approved ideas:
 
 ```bash
@@ -230,8 +257,10 @@ binary is on `PATH` (override with `GROK_BUILD_BIN`).
 `discover`, `ideate`, `negotiate`, and `review` can each list more than one
 model so every configured adapter gets a turn. A string is still valid and
 means “only this one.” `negotiate` already worked this way; discover, ideate,
-and review now do too. A configured adapter that is missing from `PATH` fails
-the stage instead of being skipped.
+and review now do too. If one discover/ideate/review adapter is missing or
+fails, the others still run and the stage continues; the stage only fails if
+every listed adapter fails. Negotiate still fails fast on an unavailable
+reviewer, because consensus is the point of that stage.
 
 **grok-build** — shells out to the Grok Build CLI in headless mode. Reasoning
 stages use the read-only sandbox. Install with
@@ -414,7 +443,7 @@ Both `E3D_PILOT_WEB_AUTH_USER` and `E3D_PILOT_WEB_AUTH_PASS` are required; there
 
 ## e3d-debate (experimental)
 
-`bin/e3d-debate` is a separate, standalone script — not wired into `bin/e3d-pilot`'s subcommand tree or `config.schema.json`, the same way `bin/e3d-backend-benchmark` and `bin/e3d-grok-workers` already aren't — for the "ask several models a question and see whether they actually agree" loop, applied to any question rather than repo work specifically. It reuses the same `lib/providers/<name>` adapters and the `lib/negotiate/convergence` primitive that discover/ideate/negotiate/review already depend on.
+`bin/e3d-debate` is a separate, standalone script — not wired into `bin/e3d-pilot`'s subcommand tree or `config.schema.json`, the same way `bin/e3d-backend-benchmark` and `bin/e3d-grok-workers` already aren't — for the "ask several models a question and see whether they actually agree" loop, applied to any question rather than repo work specifically. It reuses the same `lib/providers/<name>` adapters and the `lib/negotiate/convergence` primitive that discover/ideate/negotiate/review already depend on. "Experimental" here means untested by this repo's own test suite (no `tests/phase*.sh` coverage yet) — not unused: it has already been the deciding mechanism behind several real architecture and product-direction calls for this project, not just a demo.
 
 ```bash
 bin/e3d-debate "Should this service store timestamps as UTC or local time+offset?" \

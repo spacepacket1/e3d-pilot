@@ -59,11 +59,12 @@ training_fleet_repos_json() {
 training_config_json() {
   local fleet_file="$1"
   jq -cS '
-    {
-      min_reviewed_ideas: (.training.min_reviewed_ideas // 30),
-      min_implemented_ideas: (.training.min_implemented_ideas // 10),
-      require_negative_examples: (.training.require_negative_examples // true),
-      outcome_windows: (.training.outcome_windows // ["7d","30d"])
+    (if type == "object" then (.training // {}) else {} end) as $t
+    | {
+      min_reviewed_ideas: ($t.min_reviewed_ideas // 30),
+      min_implemented_ideas: ($t.min_implemented_ideas // 10),
+      require_negative_examples: ($t.require_negative_examples // true),
+      outcome_windows: ($t.outcome_windows // ["7d","30d"])
     }
     | if (.min_reviewed_ideas | type) != "number" or (.min_reviewed_ideas < 0) then error("training.min_reviewed_ideas must be a non-negative number") else . end
     | if (.min_implemented_ideas | type) != "number" or (.min_implemented_ideas < 0) then error("training.min_implemented_ideas must be a non-negative number") else . end

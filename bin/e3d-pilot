@@ -21,6 +21,8 @@ source "$REPO_ROOT/lib/ideas/materialize.sh"
 source "$REPO_ROOT/lib/ideas/project_tracking.sh"
 # shellcheck source=lib/training/export.sh
 source "$REPO_ROOT/lib/training/export.sh"
+# shellcheck source=lib/provenance/graph.sh
+source "$REPO_ROOT/lib/provenance/graph.sh"
 # shellcheck source=lib/scoring/fanout.sh
 source "$REPO_ROOT/lib/scoring/fanout.sh"
 
@@ -42,6 +44,9 @@ Usage:
   e3d-pilot ideas rebuild --repo <path>
   e3d-pilot ideas list --repo <path> [--status <status>] [--json]
   e3d-pilot ideas show --repo <path> <idea-id> [--json]
+  e3d-pilot ideas note --repo <path> [--decision] [--evidence <path-or-url>] <idea-id> <text> [--actor <actor>]
+  e3d-pilot ideas context --repo <path> <idea-id> [--json]
+  e3d-pilot ideas handoff --repo <path> <idea-id>
   e3d-pilot ideas approve --repo <path> <idea-id> [--actor <actor>] [--note <text>]
   e3d-pilot ideas reject --repo <path> <idea-id> --reason <text> [--actor <actor>]
   e3d-pilot ideas request-changes --repo <path> <idea-id> --reason <text> [--actor <actor>]
@@ -53,6 +58,8 @@ Usage:
   e3d-pilot ideas repair-run --repo <path> --run-id <run-id> [--from-stage <stage>] <idea-id>
   e3d-pilot ideas approve-merge --repo <path> <idea-id> [--actor <actor>] [--note <text>]
   e3d-pilot ideas merge --repo <path> <idea-id>
+  e3d-pilot provenance export --repo <path> [--out <file>]
+  e3d-pilot provenance trace --repo <path> <idea-id> [--json]
   e3d-pilot providers list
   e3d-pilot fleet <repos.json>
   e3d-pilot fleet discover <repos.json> [--run-id <id>] [--focus default|revenue] [--config <path>]
@@ -71,13 +78,15 @@ Usage:
   e3d-pilot fleet ideas <fleet.json> approve-merge <idea-id> [--actor <actor>] [--note <text>]
   e3d-pilot fleet ideas <fleet.json> merge <idea-id>
   e3d-pilot fleet ideas <fleet.json> merge-approved
+  e3d-pilot fleet provenance export <fleet.json> [--out <file>]
+  e3d-pilot fleet provenance trace <fleet.json> <idea-id> [--json]
   e3d-pilot fleet train readiness <fleet.json> [--since <RFC3339>]
   e3d-pilot fleet train export <fleet.json> [--week <YYYY-Www>] [--output <dir>]
   e3d-pilot fleet prs [<repos.json>]
   e3d-pilot fleet prs --approve <repo>
   e3d-pilot fleet prs --merge   <repo>
   e3d-pilot fleet prs --close   <repo>
-  e3d-pilot web --repo <path> [--repo <path> ...] [--port <n>]
+  e3d-pilot web --repo <path> [--repo <path> ...] [--fleet <fleet.json>] [--port <n>]
 
 Run stages:
   discover
@@ -1395,11 +1404,29 @@ prepare_execute_spec_in_worktree() {
   printf '%s' "$target_spec"
 }
 
+# Build caches, bytecode, and runner state are not product diff. csr/Go
+# often write GOCACHE under the worktree (go/.tmp/...) which would otherwise
+# blow the file/line ceilings by tens of thousands of files.
+count_git_diff_skip_path() {
+  local path="$1"
+  case "$path" in
+    .codex-spec-runner|.codex-spec-runner/*) return 0 ;;
+    .e3d-pilot|.e3d-pilot/*) return 0 ;;
+    node_modules|node_modules/*) return 0 ;;
+    go/.tmp|go/.tmp/*) return 0 ;;
+    *.pyc) return 0 ;;
+  esac
+  [[ "$path" == *"/.tmp/"* ]] && return 0
+  [[ "$path" == *"/__pycache__/"* || "$path" == __pycache__/* ]] && return 0
+  return 1
+}
+
 count_git_diff() {
   local worktree_dir="$1" diff_output untracked files_changed=0 lines_changed=0 add del path
   diff_output="$(git -C "$worktree_dir" diff --numstat --no-renames -- . 2>/dev/null || true)"
   while IFS=$'\t' read -r add del path; do
     [[ -n "$path" ]] || continue
+    count_git_diff_skip_path "$path" && continue
     files_changed=$((files_changed + 1))
     if [[ "$add" != "-" ]]; then
       lines_changed=$((lines_changed + add))
@@ -1411,6 +1438,7 @@ count_git_diff() {
   untracked="$(git -C "$worktree_dir" ls-files --others --exclude-standard 2>/dev/null || true)"
   while IFS= read -r path; do
     [[ -n "$path" ]] || continue
+    count_git_diff_skip_path "$path" && continue
     files_changed=$((files_changed + 1))
     if [[ -f "$worktree_dir/$path" ]]; then
       lines_changed=$((lines_changed + $(wc -l < "$worktree_dir/$path")))
@@ -1480,10 +1508,18 @@ execute_stage() {
       csr_stdout="$run_dir/execute-csr.stdout"
       csr_stderr="$run_dir/execute-csr.stderr"
       csr_command_file="$run_dir/execute-csr.command"
-      printf 'cd %s && %s %s all\n' "$worktree_dir" "$csr_bin" "$worktree_spec_file" > "$csr_command_file"
+      printf 'cd %s && MAX_PHASES_PER_RUN=%s MAX_PROVIDER_TOKENS_PER_PHASE=%s CODEX_CONTEXT_WINDOW=%s CODEX_AUTO_COMPACT_TOKEN_LIMIT=%s %s %s all\n' \
+        "$worktree_dir" "${E3D_PILOT_CSR_MAX_PHASES:-8}" "${E3D_PILOT_CSR_MAX_TOKENS_PER_PHASE:-120000}" \
+        "${E3D_PILOT_CODEX_CONTEXT_WINDOW:-128000}" "${E3D_PILOT_CODEX_AUTO_COMPACT_LIMIT:-96000}" \
+        "$csr_bin" "$worktree_spec_file" > "$csr_command_file"
 
       set +e
-      ( cd "$worktree_dir" && "$csr_bin" "$worktree_spec_file" all ) >"$csr_stdout" 2>"$csr_stderr"
+      ( cd "$worktree_dir" && \
+        MAX_PHASES_PER_RUN="${E3D_PILOT_CSR_MAX_PHASES:-8}" \
+        MAX_PROVIDER_TOKENS_PER_PHASE="${E3D_PILOT_CSR_MAX_TOKENS_PER_PHASE:-120000}" \
+        CODEX_CONTEXT_WINDOW="${E3D_PILOT_CODEX_CONTEXT_WINDOW:-128000}" \
+        CODEX_AUTO_COMPACT_TOKEN_LIMIT="${E3D_PILOT_CODEX_AUTO_COMPACT_LIMIT:-96000}" \
+        "$csr_bin" "$worktree_spec_file" all ) >"$csr_stdout" 2>"$csr_stderr"
       csr_status=$?
       set -e
 
@@ -2094,7 +2130,7 @@ negotiate_stage() {
 
   negotiation_log_file="$run_dir/negotiation-log.md"
   init_negotiation_log "$negotiation_log_file" "$run_id"
-  max_rounds="${NEGOTIATE_MAX_ROUNDS:-4}"
+  max_rounds="${NEGOTIATE_MAX_ROUNDS:-2}"
 
   providers=()
   while IFS= read -r __mapfile_line; do providers+=("$__mapfile_line"); done < <(jq -r '.providers.negotiate[]' "$config_file")
@@ -2588,6 +2624,104 @@ ideas_do_show() {
   printf 'outcomes:                %s\n' "$(jq -c '.outcomes' "$file")"
   printf '\nevent history:\n'
   jq -r '.[] | "  " + .timestamp + "  " + .event + "  actor=" + .actor + (if (.note // null) != null then "  note=" + .note else "" end)' <<<"$events_json"
+}
+
+# Appends a freeform finding or decision to an idea, independent of its
+# lifecycle status (see note_appended in ledger.sh -- a pure self-loop, never
+# gates or is gated by approval/implementation state). This is the smallest
+# piece of the "shared cognition" primitive: any session working on a
+# problem this idea already tracks can record what it learned or decided
+# without going through a full pipeline run.
+ideas_do_note() {
+  local kind="$1" workspace="$2" idea_id="$3" text="$4" note_kind="$5" actor="$6" evidence_ref="${7:-}"
+  local canonical extra_file evidence_size
+  canonical="$(ideas_canonical_path "$workspace")" || die "workspace not found: $workspace"
+  ideas_require_snapshot "$kind" "$canonical" "$idea_id" >/dev/null
+  if [[ -n "$evidence_ref" ]]; then
+    evidence_size="$(jq -nr --arg evidence_ref "$evidence_ref" '$evidence_ref | tojson | utf8bytelength')"
+    [[ "$evidence_size" -le 1024 ]] || die "ideas note --evidence must serialize to at most 1024 bytes"
+  fi
+  extra_file="$(mktemp "${TMPDIR:-/tmp}/e3d-idea-note.XXXXXX")"
+  jq -ncS --arg text "$text" --arg kind "$note_kind" --arg evidence_ref "$evidence_ref" '
+    {text:$text, kind:$kind}
+    + if $evidence_ref == "" then {} else {evidence_ref:$evidence_ref} end
+  ' > "$extra_file"
+  ideas_append_custom_event "$kind" "$canonical" "$idea_id" note_appended "$actor" "" "$extra_file" || {
+    rm -f "$extra_file"
+    return 1
+  }
+  rm -f "$extra_file"
+  printf '%s recorded on %s\n' "$note_kind" "$idea_id"
+}
+
+# get_context: a compact read of what's known about one idea, meant to be
+# pulled mid-conversation by any AI session (not just e3d-pilot's own
+# pipeline) that needs to pick a problem back up without replaying history.
+ideas_do_context() {
+  local kind="$1" workspace="$2" idea_id="$3" json_flag="$4"
+  local canonical file
+  canonical="$(ideas_canonical_path "$workspace")" || die "workspace not found: $workspace"
+  file="$(ideas_require_snapshot "$kind" "$canonical" "$idea_id")"
+  if [[ "$json_flag" == "1" ]]; then
+    jq -cS '{
+      idea_id, status, title, summary, dedup_rationale, scores,
+      decisions: ((.notes // []) | map(select(.kind == "decision"))),
+      findings: ((.notes // []) | map(select(.kind != "decision"))),
+      updated_at
+    }' "$file"
+    return 0
+  fi
+  jq -r '
+    "idea:            " + .idea_id,
+    "status:          " + .status,
+    "title:           " + (.title // "-"),
+    "summary:         " + (.summary // "-"),
+    "dedup_rationale: " + (.dedup_rationale // "-"),
+    "updated_at:      " + .updated_at
+  ' "$file"
+  printf '\ndecisions:\n'
+  jq -r '
+    (.notes // []) | map(select(.kind == "decision"))
+    | if length == 0 then "  (none recorded)"
+      else (map("  [" + .timestamp + "] " + .text + "  (" + .actor + ")") | join("\n"))
+      end
+  ' "$file"
+  printf '\nfindings:\n'
+  jq -r '
+    (.notes // []) | map(select(.kind != "decision"))
+    | if length == 0 then "  (none recorded)"
+      else (map("  [" + .timestamp + "] " + .text + "  (" + .actor + ")") | join("\n"))
+      end
+  ' "$file"
+}
+
+# build_handoff: renders a compact context packet from an idea's accumulated
+# state -- goal, current status, decisions already made, related context,
+# and recent findings -- sized to hand to a fresh model session instead of
+# replaying the full conversation history that produced it.
+ideas_do_handoff() {
+  local kind="$1" workspace="$2" idea_id="$3"
+  local canonical file
+  canonical="$(ideas_canonical_path "$workspace")" || die "workspace not found: $workspace"
+  file="$(ideas_require_snapshot "$kind" "$canonical" "$idea_id")"
+  printf 'GOAL\n'
+  jq -r '(.title // .idea_id) + "\n\n" + (.summary // "-")' "$file"
+  printf '\nSTATUS\n%s (updated %s)\n' "$(jq -r '.status' "$file")" "$(jq -r '.updated_at' "$file")"
+  printf '\nRELEVANT DECISIONS\n'
+  jq -r '
+    (.notes // []) | map(select(.kind == "decision"))
+    | if length == 0 then "  (none recorded)"
+      else (map("  - [" + .timestamp + "] " + .text + "  (" + .actor + ")") | join("\n"))
+      end
+  ' "$file"
+  printf '\nRELATED CONTEXT\n  %s\n' "$(jq -r '.dedup_rationale // "(none recorded)"' "$file")"
+  printf '\nRECENT FINDINGS\n'
+  jq -r '
+    (.notes // []) | map(select(.kind != "decision")) | .[-5:]
+    | if length == 0 then "  (none recorded)"
+      else (map("  - [" + .timestamp + "] " + .text + "  (" + .actor + ")") | join("\n"))
+      end
+  ' "$file"
 }
 
 # Builds the ordered per-repo implementation target plan for a fleet idea at
@@ -4178,6 +4312,60 @@ cmd_ideas() {
       repo="$(repo_abs_path "$repo")"
       ideas_do_show repo "$repo" "${positional[0]}" "$json_flag"
       ;;
+    note)
+      local repo="" actor="" note_kind="finding" evidence_ref="" positional=()
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --repo) repo="${2:-}"; shift 2 ;;
+          --actor) actor="${2:-}"; shift 2 ;;
+          --evidence)
+            [[ $# -ge 2 && -n "$2" ]] || die "ideas note --evidence requires a non-empty path or URL"
+            evidence_ref="$2"
+            shift 2
+            ;;
+          --decision) note_kind="decision"; shift ;;
+          -h|--help) usage; return 0 ;;
+          --*) die "unknown ideas note argument: $1" ;;
+          *) positional+=("$1"); shift ;;
+        esac
+      done
+      [[ -n "$repo" ]] || die "ideas note requires --repo"
+      [[ ${#positional[@]} -eq 2 ]] || die "usage: e3d-pilot ideas note --repo <path> [--decision] [--evidence <path-or-url>] <idea-id> <text>"
+      repo="$(repo_abs_path "$repo")"
+      actor="$(ideas_resolve_actor "$repo" "$actor")"
+      ideas_do_note repo "$repo" "${positional[0]}" "${positional[1]}" "$note_kind" "$actor" "$evidence_ref"
+      ;;
+    context)
+      local repo="" json_flag="0" positional=()
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --repo) repo="${2:-}"; shift 2 ;;
+          --json) json_flag="1"; shift ;;
+          -h|--help) usage; return 0 ;;
+          --*) die "unknown ideas context argument: $1" ;;
+          *) positional+=("$1"); shift ;;
+        esac
+      done
+      [[ -n "$repo" ]] || die "ideas context requires --repo"
+      [[ ${#positional[@]} -eq 1 ]] || die "usage: e3d-pilot ideas context --repo <path> <idea-id>"
+      repo="$(repo_abs_path "$repo")"
+      ideas_do_context repo "$repo" "${positional[0]}" "$json_flag"
+      ;;
+    handoff)
+      local repo="" positional=()
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --repo) repo="${2:-}"; shift 2 ;;
+          -h|--help) usage; return 0 ;;
+          --*) die "unknown ideas handoff argument: $1" ;;
+          *) positional+=("$1"); shift ;;
+        esac
+      done
+      [[ -n "$repo" ]] || die "ideas handoff requires --repo"
+      [[ ${#positional[@]} -eq 1 ]] || die "usage: e3d-pilot ideas handoff --repo <path> <idea-id>"
+      repo="$(repo_abs_path "$repo")"
+      ideas_do_handoff repo "$repo" "${positional[0]}"
+      ;;
     approve)
       local repo="" actor="" note="" positional=()
       while [[ $# -gt 0 ]]; do
@@ -4410,6 +4598,108 @@ cmd_providers() {
       ;;
     *)
       die "unknown providers subcommand: $subcommand"
+      ;;
+  esac
+}
+
+cmd_provenance() {
+  local subcommand="${1:-}"
+  shift || true
+  case "$subcommand" in
+    export)
+      local repo="" out=""
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --repo)
+            [[ -n "${2:-}" ]] || die "provenance export --repo requires a path"
+            repo="$2"; shift 2
+            ;;
+          --out)
+            [[ -n "${2:-}" ]] || die "provenance export --out requires a file"
+            out="$2"; shift 2
+            ;;
+          -h|--help) usage; return 0 ;;
+          *) die "unknown provenance export argument: $1" ;;
+        esac
+      done
+      [[ -n "$repo" ]] || die "provenance export requires --repo"
+      repo="$(repo_abs_path "$repo")"
+      provenance_export_repo repo "$repo" "$out" >/dev/null
+      printf 'provenance: exported %s\n' "${out:-$repo/.e3d-pilot/provenance.jsonl}"
+      ;;
+    trace)
+      local repo="" json_flag="0" positional=()
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --repo)
+            [[ -n "${2:-}" ]] || die "provenance trace --repo requires a path"
+            repo="$2"; shift 2
+            ;;
+          --json) json_flag="1"; shift ;;
+          -h|--help) usage; return 0 ;;
+          --*) die "unknown provenance trace argument: $1" ;;
+          *) positional+=("$1"); shift ;;
+        esac
+      done
+      [[ -n "$repo" ]] || die "provenance trace requires --repo"
+      [[ ${#positional[@]} -eq 1 ]] || die "usage: e3d-pilot provenance trace --repo <path> <idea-id> [--json]"
+      repo="$(repo_abs_path "$repo")"
+      provenance_trace_repo repo "$repo" "${positional[0]}" "$json_flag"
+      ;;
+    ""|-h|--help)
+      usage
+      ;;
+    *)
+      die "unknown provenance subcommand: $subcommand"
+      ;;
+  esac
+}
+
+cmd_fleet_provenance() {
+  local subcommand="${1:-}"
+  shift || true
+  case "$subcommand" in
+    export)
+      local fleet_file="${1:-}" out="" workspace
+      [[ -n "$fleet_file" ]] || die "usage: e3d-pilot fleet provenance export <fleet.json> [--out <file>]"
+      shift
+      [[ -f "$fleet_file" ]] || die "fleet file not found: $fleet_file"
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --out)
+            [[ -n "${2:-}" ]] || die "fleet provenance export --out requires a file"
+            out="$2"; shift 2
+            ;;
+          -h|--help) usage; return 0 ;;
+          *) die "unknown fleet provenance export argument: $1" ;;
+        esac
+      done
+      workspace="$(cd "$(dirname "$fleet_file")" && pwd -P)"
+      provenance_export_repo fleet "$workspace" "$out" >/dev/null
+      printf 'fleet provenance: exported %s\n' "${out:-$workspace/.e3d-pilot-fleet/provenance.jsonl}"
+      ;;
+    trace)
+      local fleet_file="${1:-}" json_flag="0" workspace positional=()
+      [[ -n "$fleet_file" ]] || die "usage: e3d-pilot fleet provenance trace <fleet.json> <idea-id> [--json]"
+      shift
+      [[ -f "$fleet_file" ]] || die "fleet file not found: $fleet_file"
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --json) json_flag="1"; shift ;;
+          -h|--help) usage; return 0 ;;
+          --*) die "unknown fleet provenance trace argument: $1" ;;
+          *) positional+=("$1"); shift ;;
+        esac
+      done
+      [[ ${#positional[@]} -eq 1 ]] || die "usage: e3d-pilot fleet provenance trace <fleet.json> <idea-id> [--json]"
+      workspace="$(cd "$(dirname "$fleet_file")" && pwd -P)"
+      provenance_trace_repo fleet "$workspace" "${positional[0]}" "$json_flag"
+      ;;
+    ""|-h|--help)
+      usage
+      ;;
+    *)
+      die "unknown fleet provenance subcommand: $subcommand"
       ;;
   esac
 }
@@ -4992,7 +5282,6 @@ fleet_ideate_prior_run_summary() {
 build_fleet_ideate_facts_markdown() {
   local run_dir="$1" facts_file="$2" findings_file fleet_dir prior_dir prior_name found=0
   local max_prior_runs="${FLEET_IDEATE_MAX_PRIOR_RUNS:-10}" prior_count=0
-  local -a prior_dirs=()
   findings_file="$run_dir/findings.md"
   fleet_dir="$(dirname "$(dirname "$run_dir")")"
   {
@@ -5001,9 +5290,14 @@ build_fleet_ideate_facts_markdown() {
     printf '\n```\n'
     printf '\n## Prior Fleet Runs (candidate titles, repos, and short summaries -- most recent %s runs)\n' "$max_prior_runs"
     if [[ -d "$fleet_dir/runs" ]]; then
-      prior_dirs=()
       while IFS= read -r prior_dir; do
-        prior_dirs+=("$prior_dir")
+        (( prior_count >= max_prior_runs )) && break
+        prior_count=$((prior_count + 1))
+        prior_name="$(basename "$prior_dir")"
+        found=1
+        printf '### %s\n```text\n' "$prior_name"
+        fleet_ideate_prior_run_summary "$prior_dir/candidates.md"
+        printf '```\n'
       done < <(
         for prior_dir in "$fleet_dir"/runs/*/; do
           [[ -d "$prior_dir" ]] || continue
@@ -5013,15 +5307,6 @@ build_fleet_ideate_facts_markdown() {
           printf '%s\n' "$prior_dir"
         done | sort -r
       )
-      for prior_dir in "${prior_dirs[@]}"; do
-        (( prior_count >= max_prior_runs )) && break
-        prior_count=$((prior_count + 1))
-        prior_name="$(basename "$prior_dir")"
-        found=1
-        printf '### %s\n```text\n' "$prior_name"
-        fleet_ideate_prior_run_summary "$prior_dir/candidates.md"
-        printf '```\n'
-      done
     fi
     [[ $found -eq 1 ]] || printf -- '- none found\n'
   } > "$facts_file"
@@ -5557,6 +5842,10 @@ cmd_fleet() {
       shift
       cmd_fleet_ideas "$@"
       ;;
+    provenance)
+      shift
+      cmd_fleet_provenance "$@"
+      ;;
     prs)
       shift
       cmd_fleet_prs "$@"
@@ -5572,12 +5861,17 @@ cmd_fleet() {
 }
 
 cmd_web() {
-  local port=4173 repos=() arg repo
+  local port=4173 repos=() fleet="" arg repo
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --repo)
         [[ -n "${2:-}" ]] || die "web --repo requires a path"
         repos+=("$2")
+        shift 2
+        ;;
+      --fleet)
+        [[ -n "${2:-}" ]] || die "web --fleet requires a path"
+        fleet="$2"
         shift 2
         ;;
       --port)
@@ -5590,7 +5884,7 @@ cmd_web() {
         ;;
     esac
   done
-  [[ ${#repos[@]} -gt 0 ]] || die "web requires at least one --repo <path>"
+  [[ ${#repos[@]} -gt 0 || -n "$fleet" ]] || die "web requires at least one --repo <path> or --fleet <fleet.json>"
   command -v node >/dev/null 2>&1 || die "e3d-pilot web requires Node.js on PATH (optional feature -- every other e3d-pilot command needs only Bash/git/jq/curl)."
   [[ -n "${E3D_PILOT_WEB_AUTH_USER:-}" && -n "${E3D_PILOT_WEB_AUTH_PASS:-}" ]] || die "e3d-pilot web refuses to start without E3D_PILOT_WEB_AUTH_USER and E3D_PILOT_WEB_AUTH_PASS set (private dashboard, never unauthenticated)."
 
@@ -5601,7 +5895,14 @@ cmd_web() {
     abs_repos+=("$repo")
   done
 
-  exec node "$REPO_ROOT/lib/web/server.js" --port "$port" -- "${abs_repos[@]}"
+  local fleet_args=()
+  if [[ -n "$fleet" ]]; then
+    [[ -f "$fleet" ]] || die "fleet file not found: $fleet"
+    fleet="$(cd "$(dirname "$fleet")" && pwd -P)/$(basename "$fleet")"
+    fleet_args=(--fleet "$fleet")
+  fi
+
+  exec node "$REPO_ROOT/lib/web/server.js" --port "$port" "${fleet_args[@]}" -- "${abs_repos[@]}"
 }
 
 main() {
@@ -5625,6 +5926,10 @@ main() {
     providers)
       shift
       cmd_providers "$@"
+      ;;
+    provenance)
+      shift
+      cmd_provenance "$@"
       ;;
     fleet)
       shift
