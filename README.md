@@ -198,6 +198,10 @@ e3d-pilot fleet provenance trace  /path/to/fleet.json idea-abc123def456 [--json]
 
 `provenance export` regenerates canonical nodes and edges, including the repositories a fleet idea proposed; `provenance trace` reads `events.jsonl` directly and separates decisions, findings, work Pilot produced, external commits it merely observed, outcomes, and failures. Add `--evidence <path-or-url>` to `ideas note` to retain a pointer to supporting material in repo-mode traces and exports without copying that material into the ledger. This is the deliberately UI-free experiment agreed in the e3d-graph debate: validate that the trace answers real attribution questions faster and more accurately than reading the ledger by hand before doing any visualization work.
 
+Every `provenance export` also writes a sibling `<name>.manifest.json` (node/edge counts by type, orphan nodes, the highest-degree node, and a `graph_events_ratio` of derived graph size against source ledger size) — engineering telemetry to catch the graph quietly bloating or losing structure, not product analytics.
+
+The fixed `provenance query` subcommands summarize idea-to-outcome `lineage`, repeated review `reversals`, implementation `failures`, and fleet-only `cross-repo` propagation; each supports `--json`, fleet mode uses `e3d-pilot fleet provenance query <name> /path/to/fleet.json`, and repo mode uses `e3d-pilot provenance query <name> --repo /path/to/repository` (where `cross-repo` intentionally returns an empty result).
+
 Implement approved ideas:
 
 ```bash

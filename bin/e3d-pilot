@@ -60,6 +60,10 @@ Usage:
   e3d-pilot ideas merge --repo <path> <idea-id>
   e3d-pilot provenance export --repo <path> [--out <file>]
   e3d-pilot provenance trace --repo <path> <idea-id> [--json]
+  e3d-pilot provenance query lineage --repo <path> [--json]
+  e3d-pilot provenance query reversals --repo <path> [--json]
+  e3d-pilot provenance query failures --repo <path> [--json]
+  e3d-pilot provenance query cross-repo --repo <path> [--json]
   e3d-pilot providers list
   e3d-pilot fleet <repos.json>
   e3d-pilot fleet discover <repos.json> [--run-id <id>] [--focus default|revenue] [--config <path>]
@@ -80,6 +84,10 @@ Usage:
   e3d-pilot fleet ideas <fleet.json> merge-approved
   e3d-pilot fleet provenance export <fleet.json> [--out <file>]
   e3d-pilot fleet provenance trace <fleet.json> <idea-id> [--json]
+  e3d-pilot fleet provenance query lineage <fleet.json> [--json]
+  e3d-pilot fleet provenance query reversals <fleet.json> [--json]
+  e3d-pilot fleet provenance query failures <fleet.json> [--json]
+  e3d-pilot fleet provenance query cross-repo <fleet.json> [--json]
   e3d-pilot fleet train readiness <fleet.json> [--since <RFC3339>]
   e3d-pilot fleet train export <fleet.json> [--week <YYYY-Www>] [--output <dir>]
   e3d-pilot fleet prs [<repos.json>]
@@ -4624,8 +4632,12 @@ cmd_provenance() {
       done
       [[ -n "$repo" ]] || die "provenance export requires --repo"
       repo="$(repo_abs_path "$repo")"
-      provenance_export_repo repo "$repo" "$out" >/dev/null
-      printf 'provenance: exported %s\n' "${out:-$repo/.e3d-pilot/provenance.jsonl}"
+      local export_paths out_file manifest_file
+      export_paths="$(provenance_export_repo repo "$repo" "$out")" || die "provenance export failed"
+      out_file="$(sed -n '1p' <<<"$export_paths")"
+      manifest_file="$(sed -n '2p' <<<"$export_paths")"
+      printf 'provenance: exported %s\n' "$out_file"
+      printf 'provenance: manifest %s\n' "$manifest_file"
       ;;
     trace)
       local repo="" json_flag="0" positional=()
@@ -4645,6 +4657,28 @@ cmd_provenance() {
       [[ ${#positional[@]} -eq 1 ]] || die "usage: e3d-pilot provenance trace --repo <path> <idea-id> [--json]"
       repo="$(repo_abs_path "$repo")"
       provenance_trace_repo repo "$repo" "${positional[0]}" "$json_flag"
+      ;;
+    query)
+      local query_name="${1:-}" repo="" json_flag="0"
+      case "$query_name" in
+        lineage|reversals|failures|cross-repo) ;;
+        *) die "unknown provenance query: ${query_name:-<missing>}" ;;
+      esac
+      shift
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --repo)
+            [[ -n "${2:-}" ]] || die "provenance query $query_name --repo requires a path"
+            repo="$2"; shift 2
+            ;;
+          --json) json_flag="1"; shift ;;
+          -h|--help) usage; return 0 ;;
+          *) die "unknown provenance query $query_name argument: $1" ;;
+        esac
+      done
+      [[ -n "$repo" ]] || die "provenance query $query_name requires --repo"
+      repo="$(repo_abs_path "$repo")"
+      "provenance_query_${query_name//-/_}" repo "$repo" "$json_flag"
       ;;
     ""|-h|--help)
       usage
@@ -4675,8 +4709,12 @@ cmd_fleet_provenance() {
         esac
       done
       workspace="$(cd "$(dirname "$fleet_file")" && pwd -P)"
-      provenance_export_repo fleet "$workspace" "$out" >/dev/null
-      printf 'fleet provenance: exported %s\n' "${out:-$workspace/.e3d-pilot-fleet/provenance.jsonl}"
+      local export_paths out_file manifest_file
+      export_paths="$(provenance_export_repo fleet "$workspace" "$out")" || die "fleet provenance export failed"
+      out_file="$(sed -n '1p' <<<"$export_paths")"
+      manifest_file="$(sed -n '2p' <<<"$export_paths")"
+      printf 'fleet provenance: exported %s\n' "$out_file"
+      printf 'fleet provenance: manifest %s\n' "$manifest_file"
       ;;
     trace)
       local fleet_file="${1:-}" json_flag="0" workspace positional=()
@@ -4694,6 +4732,25 @@ cmd_fleet_provenance() {
       [[ ${#positional[@]} -eq 1 ]] || die "usage: e3d-pilot fleet provenance trace <fleet.json> <idea-id> [--json]"
       workspace="$(cd "$(dirname "$fleet_file")" && pwd -P)"
       provenance_trace_repo fleet "$workspace" "${positional[0]}" "$json_flag"
+      ;;
+    query)
+      local query_name="${1:-}" fleet_file="${2:-}" json_flag="0" workspace
+      case "$query_name" in
+        lineage|reversals|failures|cross-repo) ;;
+        *) die "unknown fleet provenance query: ${query_name:-<missing>}" ;;
+      esac
+      [[ -n "$fleet_file" ]] || die "usage: e3d-pilot fleet provenance query $query_name <fleet.json> [--json]"
+      shift 2
+      [[ -f "$fleet_file" ]] || die "fleet file not found: $fleet_file"
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --json) json_flag="1"; shift ;;
+          -h|--help) usage; return 0 ;;
+          *) die "unknown fleet provenance query $query_name argument: $1" ;;
+        esac
+      done
+      workspace="$(cd "$(dirname "$fleet_file")" && pwd -P)"
+      "provenance_query_${query_name//-/_}" fleet "$workspace" "$json_flag"
       ;;
     ""|-h|--help)
       usage

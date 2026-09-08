@@ -497,3 +497,54 @@ exposure), not a default "sure, why not."
 - Extend `README.md`'s provenance section with the two new commands and the
   `--evidence` flag, one short paragraph, matching the existing section's
   register — no new top-level heading needed.
+
+## Phase 6 - Graph Health Metrics (Implemented Directly, Not via codex-spec-runner)
+
+Small and well-understood enough, after Phases 1-5, to implement directly
+rather than round-trip through another codex-spec-runner phase. Documented
+here for the same reason every other phase is: so the spec matches what's
+actually built.
+
+**What it adds:** `provenance_manifest_json` in `lib/provenance/graph.sh`,
+called automatically by `provenance_export_repo` after every export (repo-
+and fleet-mode both). Writes a sibling `<name>.manifest.json` next to
+`<name>.jsonl` (default `provenance.manifest.json` next to
+`provenance.jsonl`) with:
+
+```json
+{
+  "nodes": 28, "edges": 59,
+  "nodes_by_type": {"idea": 10, "actor": 8, "model": 1, "target_commit": 9},
+  "edges_by_relation": {"proposed_by": 10, "finding": 14, "...": "..."},
+  "orphan_nodes": 8,
+  "max_degree": {"node_id": "idea:idea-b1644c7c0f66", "degree": 32},
+  "graph_size_bytes": 26739,
+  "source_events_count": 141,
+  "graph_events_ratio": 0.617
+}
+```
+
+`graph_events_ratio` is `(nodes + edges) / source_events_count` — how many
+derived graph lines exist per source ledger event. This is the concrete
+number that would have caught the 240KB bloat bug immediately (it moved from
+~0.6 to several times higher once the full candidate object leaked onto
+every `proposed_by` edge) — engineering telemetry, not product analytics,
+exactly per the motivating ask.
+
+Both `cmd_provenance` and `cmd_fleet_provenance`'s `export` subcommands now
+print two lines (`provenance: exported <path>` / `provenance: manifest
+<path>`) instead of one. The manifest is fully derived from
+`provenance.jsonl` + `events.jsonl` — never a new source of truth, never read
+by any other command as an input, safe to regenerate any time, subject to
+the same never-overwrite-the-ledger guard as the main export.
+
+**Verified:** `tests/phase32.sh` (5 cases — shape/counts, orphan/max_degree
+accuracy, determinism + ledger-overwrite guard, fleet-mode `repo` node
+counts, empty-ledger zeroed manifest). Real run against this repo's own
+141-event ledger: 28 nodes, 59 edges, 8 orphans (7 unreached `target_commit`
+snapshots + one `system-tracking` actor that only appears on an event type
+this schema doesn't edge), `graph_events_ratio` 0.617. Real run against the
+60-idea fleet ledger: `graph_events_ratio` **5.0** — the fleet's
+`proposes_repo` fan-out (each idea names 2+ repos) dominates the graph size,
+exactly the kind of ratio spike this metric exists to surface, confirmed on
+the first real use.
