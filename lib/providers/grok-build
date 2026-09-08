@@ -8,8 +8,10 @@ source "$SCRIPT_DIR/common.sh"
 GROK_BUILD_BIN="${GROK_BUILD_BIN:-grok}"
 GROK_BUILD_TIMEOUT="${GROK_BUILD_TIMEOUT:-900}"
 GROK_BUILD_MODEL="${GROK_BUILD_MODEL:-}"
+GROK_BUILD_REASONING_EFFORT="${GROK_BUILD_REASONING_EFFORT:-}"
 GROK_BUILD_OUTPUT_FORMAT="${GROK_BUILD_OUTPUT_FORMAT:-plain}"
 GROK_BUILD_MODE="${E3D_PILOT_PROVIDER_MODE:-analysis}"
+GROK_BUILD_MAX_TURNS="${GROK_BUILD_MAX_TURNS:-6}"
 
 grok_missing_message() {
   printf 'unavailable: grok binary not found (%s); set GROK_BUILD_BIN to override\n' "$GROK_BUILD_BIN"
@@ -35,9 +37,13 @@ grok_args=(
   --output-format "$GROK_BUILD_OUTPUT_FORMAT"
   --no-memory
   --no-subagents
+  --max-turns "$GROK_BUILD_MAX_TURNS"
 )
 if [[ -n "$GROK_BUILD_MODEL" ]]; then
   grok_args+=(--model "$GROK_BUILD_MODEL")
+fi
+if [[ -n "$GROK_BUILD_REASONING_EFFORT" ]]; then
+  grok_args+=(--reasoning-effort "$GROK_BUILD_REASONING_EFFORT")
 fi
 
 case "$GROK_BUILD_MODE" in

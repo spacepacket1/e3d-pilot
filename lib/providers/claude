@@ -9,6 +9,8 @@ CLAUDE_BIN="${CLAUDE_BIN:-claude}"
 CLAUDE_MODEL="${CLAUDE_MODEL:-sonnet}"
 CLAUDE_PERMISSION_MODE="${CLAUDE_PERMISSION_MODE:-}"
 CLAUDE_MODE="${E3D_PILOT_PROVIDER_MODE:-analysis}"
+CLAUDE_MAX_BUDGET_USD="${CLAUDE_MAX_BUDGET_USD:-0.50}"
+PROVIDER_TOKEN_LIMIT="${E3D_PILOT_PROVIDER_TOKEN_LIMIT:-200000}"
 
 if [[ -z "$CLAUDE_PERMISSION_MODE" ]]; then
   if [[ "$CLAUDE_MODE" == "execute" ]]; then CLAUDE_PERMISSION_MODE="acceptEdits"; else CLAUDE_PERMISSION_MODE="default"; fi
@@ -31,6 +33,8 @@ claude_args=(
   --model "$CLAUDE_MODEL"
   --permission-mode "$CLAUDE_PERMISSION_MODE"
   --no-session-persistence
+  --output-format json
+  --max-budget-usd "$CLAUDE_MAX_BUDGET_USD"
 )
 
 if [[ "${E3D_PILOT_DRY_RUN:-0}" == "1" ]]; then
@@ -44,4 +48,32 @@ if ! provider_binary_available "$CLAUDE_BIN"; then
   exit "$PROVIDER_EXIT_FAILURE"
 fi
 
-exec "$CLAUDE_BIN" "${claude_args[@]}" < "$PROMPT_FILE"
+response_file="$(mktemp "${TMPDIR:-/tmp}/e3d-pilot-claude.XXXXXX")"
+trap 'rm -f "$response_file"' EXIT
+set +e
+"$CLAUDE_BIN" "${claude_args[@]}" < "$PROMPT_FILE" > "$response_file"
+status=$?
+set -e
+
+if [[ $status -ne 0 ]]; then
+  cat "$response_file"
+  exit "$status"
+fi
+
+if ! jq -e 'type == "object" and (.result | type == "string")' "$response_file" >/dev/null 2>&1; then
+  # Test doubles and older compatible CLIs may still emit plain text even when
+  # passed the JSON flag. Preserve their response, but mark usage unmeasured.
+  cat "$response_file"
+  printf 'e3d_provider_usage={"provider":"claude","tokens":null,"unmeasured":true}\n' >&2
+  exit 0
+fi
+
+tokens="$(jq '[.usage.input_tokens // 0, .usage.cache_creation_input_tokens // 0, .usage.cache_read_input_tokens // 0, .usage.output_tokens // 0] | add' "$response_file")"
+usage_json="$(jq -c '{provider:"claude",model:(.model // null),tokens:([.usage.input_tokens // 0, .usage.cache_creation_input_tokens // 0, .usage.cache_read_input_tokens // 0, .usage.output_tokens // 0] | add),usage:(.usage // null),cost_usd:(.total_cost_usd // null)}' "$response_file")"
+printf 'e3d_provider_usage=%s\n' "$usage_json" >&2
+jq -r '.result' "$response_file"
+
+if [[ "$PROVIDER_TOKEN_LIMIT" =~ ^[0-9]+$ ]] && (( tokens > PROVIDER_TOKEN_LIMIT )); then
+  printf 'error: claude provider token ceiling exceeded (%s > %s)\n' "$tokens" "$PROVIDER_TOKEN_LIMIT" >&2
+  exit "$PROVIDER_EXIT_FAILURE"
+fi

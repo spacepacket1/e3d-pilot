@@ -107,6 +107,34 @@ claude_provider_dry_run_prints_command() {
   rm -f "$prompt_file"
 }
 
+claude_provider_captures_usage_and_enforces_ceiling() {
+  local dir fake prompt_file out err status
+  dir="$(mktemp -d)"
+  fake="$dir/claude"
+  prompt_file="$(make_prompt_file)"
+  err="$dir/stderr"
+  cat > "$fake" <<'EOF'
+#!/usr/bin/env bash
+cat >/dev/null
+printf '%s\n' '{"result":"measured response","model":"fixture","usage":{"input_tokens":40,"cache_creation_input_tokens":10,"cache_read_input_tokens":20,"output_tokens":5},"total_cost_usd":0.01}'
+EOF
+  chmod +x "$fake"
+
+  out="$(CLAUDE_BIN="$fake" E3D_PILOT_PROVIDER_TOKEN_LIMIT=75 \
+    "$PROVIDERS_DIR/claude" "$prompt_file" 2> "$err")"
+  assert_eq "$out" "measured response"
+  assert_contains "$(<"$err")" '"tokens":75'
+
+  set +e
+  CLAUDE_BIN="$fake" E3D_PILOT_PROVIDER_TOKEN_LIMIT=74 \
+    "$PROVIDERS_DIR/claude" "$prompt_file" >/dev/null 2> "$err"
+  status=$?
+  set -e
+  [[ $status -ne 0 ]] || { echo "expected Claude token ceiling failure" >&2; exit 1; }
+  assert_contains "$(<"$err")" 'token ceiling exceeded (75 > 74)'
+  rm -rf "$dir" "$prompt_file"
+}
+
 devin_provider_requires_prompt_file_argument() {
   local status
   set +e
@@ -302,6 +330,27 @@ EOF
   rm -f "$file"
 }
 
+parse_status_extracts_marker_glued_to_reasoning_prefix() {
+  local file status reason spec
+  file="$(mktemp)"
+  cat > "$file" <<'EOF'
+I'll review the draft against the repository.I'll check existing modules next.---STATUS---
+status: revise
+reason: SDK paths would double-prefix /api
+```spec
+# Replacement Spec
+Body.
+```
+EOF
+  status="$("$NEGOTIATE_DIR/parse-status" "$file" status)"
+  assert_eq "$status" "revise"
+  reason="$("$NEGOTIATE_DIR/parse-status" "$file" reason)"
+  assert_eq "$reason" "SDK paths would double-prefix /api"
+  spec="$("$NEGOTIATE_DIR/parse-status" "$file" spec)"
+  assert_contains "$spec" "# Replacement Spec"
+  rm -f "$file"
+}
+
 parse_status_fails_on_missing_status_block() {
   local file status
   file="$(mktemp)"
@@ -359,6 +408,7 @@ main() {
   providers_list_reports_claude_and_codex_status
   claude_provider_requires_prompt_file_argument
   claude_provider_dry_run_prints_command
+  claude_provider_captures_usage_and_enforces_ceiling
   devin_provider_requires_prompt_file_argument
   devin_provider_dry_run_prints_command
   devin_provider_dry_run_respects_model_override
@@ -370,6 +420,7 @@ main() {
   parse_status_extracts_approved_without_spec
   parse_status_extracts_revise_and_spec_block_even_when_fenced
   parse_status_synthesizes_reason_when_missing
+  parse_status_extracts_marker_glued_to_reasoning_prefix
   parse_status_fails_on_missing_status_block
   convergence_two_entries_all_approved_converges
   convergence_two_entries_one_dissenting_does_not_converge

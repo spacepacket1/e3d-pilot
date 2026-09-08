@@ -36,7 +36,9 @@ the repository config. e3d-pilot never logs or serializes that variable.
 
 Name `grok-build` anywhere other providers are named. `discover`, `ideate`,
 `negotiate`, and `review` accept a string or an array; every listed model
-runs. Draft stays a single provider. csr remains the execute default:
+runs. If one discover/ideate/review adapter fails, the others still run.
+Negotiate still fails fast on an unavailable reviewer. Draft stays a single
+provider. csr remains the execute default:
 
 ```json
 {
@@ -77,6 +79,11 @@ When scoring runs, the run directory also gets:
 
 Fleet discover writes the same files with a `fleet-ideate-` prefix.
 
+Grok CLI `--output-format json` wraps model output in `{ "text": "...", ... }`.
+The model often puts a short planning prefix in `text` before the
+`{"scores":[...]}` object. Scoring extracts that object; it does not require
+`text` itself to be JSON.
+
 `providers.execute` defaults to `csr`. Direct Grok execution is a separate,
 explicit choice:
 
@@ -94,6 +101,7 @@ recommended executor.
 | `GROK_BUILD_BIN` | `grok` | Executable name or absolute path |
 | `GROK_BUILD_TIMEOUT` | `900` | Positive wall-clock seconds |
 | `GROK_BUILD_MODEL` | unset | Optional CLI model; unset preserves Grok's configured default |
+| `GROK_BUILD_REASONING_EFFORT` | unset | Optional `--reasoning-effort` (`low`/`medium`/`high`); unset preserves Grok's configured default. Lower effort spends fewer reasoning tokens per call -- useful for high-volume stages like `candidate_scoring`'s multi-worker fan-out -- at some quality cost; benchmark before relying on it for judgment-heavy stages like `negotiate`. |
 
 When unavailable, `e3d-pilot providers list` and a configured-but-missing
 Grok call print the installer command. No model is hardcoded because xAI's

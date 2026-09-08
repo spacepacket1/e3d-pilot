@@ -26,39 +26,93 @@ scoring_validate_config_file() {
     "config.candidate_scoring.workers must be an integer from 3 to 5 when provided"
 }
 
-scoring_extract_first_json_object() {
-  awk '
-    BEGIN { acc=""; n=0 }
-    {
-      line=$0
-      for (i=1; i<=length(line); i++) {
-        c=substr(line,i,1)
+# Write every balanced `{...}` in stdin to $1/0001.json, 0002.json, ...
+# Starts a candidate at every `{` so a scores object after prose is found even
+# when the prose itself contains braces. String-aware so `{` / `}` inside JSON
+# strings do not close the object.
+scoring_write_json_objects() {
+  local dir="$1"
+  awk -v dir="$dir" '
+    function extract_from(start,    i, c, n, in_str, esc, acc) {
+      n=0; in_str=0; esc=0; acc=""
+      for (i=start; i<=length(s); i++) {
+        c=substr(s,i,1)
+        if (in_str) {
+          acc=acc c
+          if (esc) { esc=0; continue }
+          if (c=="\\") { esc=1; continue }
+          if (c=="\"") in_str=0
+          continue
+        }
+        if (c=="\"") { acc=acc c; in_str=1; continue }
         if (c=="{") { n++; acc=acc c; continue }
         if (n>0) {
           acc=acc c
           if (c=="}") {
             n--
-            if (n==0) { print acc; exit }
+            if (n==0) return acc
           }
         }
       }
-      if (n>0) acc=acc "\n"
+      return ""
     }
-  ' "$1"
+    { s=s $0 "\n" }
+    END {
+      k=0
+      for (i=1; i<=length(s); i++) {
+        if (substr(s,i,1)=="{") {
+          obj=extract_from(i)
+          if (obj != "") {
+            k++
+            out=dir "/" sprintf("%04d.json", k)
+            printf "%s\n", obj > out
+            close(out)
+          }
+        }
+      }
+    }
+  '
 }
 
+# Last JSON object on stdin that has a `.scores` array, printed compact.
+scoring_extract_scores_array() {
+  local dir scores="" i f
+  dir="$(mktemp -d "${TMPDIR:-/tmp}/e3d-scoring-json.XXXXXX")"
+  scoring_write_json_objects "$dir"
+  i=1
+  while true; do
+    f="$(printf '%s/%04d.json' "$dir" "$i")"
+    [[ -f "$f" ]] || break
+    if jq -e '.scores | type == "array"' "$f" >/dev/null 2>&1; then
+      scores="$(jq -c '.scores' "$f")"
+    fi
+    i=$((i + 1))
+  done
+  rm -rf "$dir"
+  [[ -n "$scores" ]] || return 1
+  printf '%s\n' "$scores"
+}
+
+# Worker stdout is either a scores object, a Grok CLI wrapper `{text: "..."}`,
+# or prose with an embedded `{"scores":[...]}`. Grok's `.text` is often a
+# planning prefix plus the scores object, not JSON on its own.
 scoring_read_scores_json() {
-  local file="$1"
-  if jq -e 'type == "object" and (.text | type == "string")' "$file" >/dev/null 2>&1; then
-    jq -c '.text | fromjson | .scores' "$file" 2>/dev/null && return 0
-  fi
+  local file="$1" scores
   if jq -e 'type == "object" and (.scores | type == "array")' "$file" >/dev/null 2>&1; then
-    jq -c '.scores' "$file" && return 0
+    jq -c '.scores' "$file"
+    return 0
   fi
-  local extracted
-  extracted="$(scoring_extract_first_json_object "$file")"
-  [[ -n "$extracted" ]] || return 1
-  jq -c '.scores' <<<"$extracted" 2>/dev/null
+  if jq -e 'type == "object" and (.text | type == "string")' "$file" >/dev/null 2>&1; then
+    if scores="$(jq -ce '.text | fromjson | .scores | select(type=="array")' "$file" 2>/dev/null)"; then
+      printf '%s\n' "$scores"
+      return 0
+    fi
+    if scores="$(jq -r '.text' "$file" | scoring_extract_scores_array)"; then
+      printf '%s\n' "$scores"
+      return 0
+    fi
+  fi
+  scoring_extract_scores_array < "$file"
 }
 
 scoring_candidates_json_from_markdown() {

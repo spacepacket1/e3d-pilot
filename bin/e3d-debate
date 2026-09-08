@@ -15,12 +15,14 @@ PROVIDERS_DIR="$REPO_ROOT/lib/providers"
 DEBATE_PROVIDERS=(claude codex)
 DEBATE_ROUNDS=2
 DEBATE_SYNTHESIZER="claude"
+DEBATE_MAX_WORDS=200
 OUT_DIR=""
 QUESTION=""
+QUESTION_FILE=""
 
 usage() {
   cat <<'EOF'
-e3d-debate "<question>" [--providers claude,codex] [--rounds 2] [--synthesizer claude] [--out-dir <dir>]
+e3d-debate "<question>" [--providers claude,codex] [--rounds 2] [--synthesizer claude] [--max-words 200] [--question-file <path>] [--out-dir <dir>]
 
 Runs the question through N rounds across the given lib/providers/<name>
 adapters (round 1: independent answers; round 2+: each provider sees every
@@ -28,6 +30,12 @@ other provider's prior-round answer and is asked to rebut or concede), then
 asks --synthesizer to read the full transcript and produce one final answer.
 Prints the transcript and final answer to stdout; also writes transcript.md
 under --out-dir (default: a mktemp dir, path printed at the end).
+
+--question-file reads the question from a file instead of argv -- use it for
+long or heavily quoted/formatted questions that are awkward to pass as a
+single shell argument. --max-words caps each provider's per-round answer
+length (raise it for questions that need real depth, e.g. a multi-part
+strategic review).
 EOF
 }
 
@@ -36,13 +44,21 @@ while [[ $# -gt 0 ]]; do
     --providers) IFS=',' read -r -a DEBATE_PROVIDERS <<< "$2"; shift 2 ;;
     --rounds) DEBATE_ROUNDS="$2"; shift 2 ;;
     --synthesizer) DEBATE_SYNTHESIZER="$2"; shift 2 ;;
+    --max-words) DEBATE_MAX_WORDS="$2"; shift 2 ;;
+    --question-file) QUESTION_FILE="$2"; shift 2 ;;
     --out-dir) OUT_DIR="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) QUESTION="$1"; shift ;;
   esac
 done
 
+if [[ -n "$QUESTION_FILE" ]]; then
+  [[ -f "$QUESTION_FILE" ]] || { echo "error: --question-file not found: $QUESTION_FILE" >&2; exit 1; }
+  QUESTION="$(cat "$QUESTION_FILE")"
+fi
+
 [[ -n "$QUESTION" ]] || { echo "error: question required (see --help)" >&2; exit 1; }
+[[ "$DEBATE_MAX_WORDS" =~ ^[0-9]+$ ]] && (( DEBATE_MAX_WORDS >= 1 )) || { echo "error: --max-words must be a positive integer" >&2; exit 1; }
 [[ "$DEBATE_ROUNDS" =~ ^[0-9]+$ ]] && (( DEBATE_ROUNDS >= 1 )) || { echo "error: --rounds must be a positive integer" >&2; exit 1; }
 (( ${#DEBATE_PROVIDERS[@]} >= 2 )) || { echo "error: need at least 2 --providers to debate" >&2; exit 1; }
 
@@ -69,7 +85,7 @@ for ((round = 1; round <= DEBATE_ROUNDS; round++)); do
       if (( round == 1 )); then
         printf 'You are one of several AI models independently answering a question, before comparing notes with the others in later rounds.\n\n'
         printf 'Question: %s\n\n' "$QUESTION"
-        printf 'Give your best direct answer with your key reasoning and any load-bearing assumptions. Be decisive, not hedgy. Under 200 words.\n'
+        printf 'Give your best direct answer with your key reasoning and any load-bearing assumptions. Be decisive, not hedgy. Under %d words.\n' "$DEBATE_MAX_WORDS"
       else
         printf 'You are in round %d of a structured debate among several AI models answering one question.\n\n' "$round"
         printf 'Question: %s\n\n' "$QUESTION"
@@ -77,7 +93,7 @@ for ((round = 1; round <= DEBATE_ROUNDS; round++)); do
         for other in "${DEBATE_PROVIDERS[@]}"; do
           printf -- '--- %s (previous round) ---\n%s\n\n' "$other" "${LAST_ANSWER[$other]}"
         done
-        printf 'Critically evaluate the other answers against your own. If your prior position holds up, restate it and rebut what'\''s wrong in the others. If you'\''ve changed your mind, say so plainly and why. Under 200 words.\n\n'
+        printf 'Critically evaluate the other answers against your own. If your prior position holds up, restate it and rebut what'\''s wrong in the others. If you'\''ve changed your mind, say so plainly and why. Under %d words.\n\n' "$DEBATE_MAX_WORDS"
         printf 'End with exactly these two lines, in this exact format:\n'
         printf 'POSITION: <one-sentence current answer>\n'
         printf 'status: approved|revise\n'

@@ -44,12 +44,15 @@ if [[ -n "\${FAKE_GROK_SCORES:-}" ]]; then
 fi
 case "$mode" in
   worker)
-    jq -cn --arg text '{"scores":[{"id":"a","score":90,"reason":"strong"},{"id":"b","score":40,"reason":"weak"}]}' '{text:\$text,usage:{total_tokens:12},total_cost_usd:0.002}'
+    # Real grok --output-format json wraps model output in {text}. The model
+    # prepends planning prose before the scores object; the parser must
+    # extract that object rather than requiring .text itself to be JSON.
+    jq -cn --arg text 'I will inspect the fleet repos, then return JSON only.{"scores":[{"id":"a","score":90,"reason":"strong"},{"id":"b","score":40,"reason":"weak"}]}' '{text:\$text,usage:{total_tokens:12},total_cost_usd:0.002}'
     exit 0
     ;;
 esac
 if [[ -n "\$prompt" && -f "\$prompt" ]] && grep -q 'Act as a read-only' "\$prompt"; then
-  jq -cn --arg text '{"scores":[{"id":"candidate-1","score":40,"reason":"weak"},{"id":"candidate-2","score":90,"reason":"strong"}]}' \
+  jq -cn --arg text 'I will inspect the fleet repos, then return JSON only.{"scores":[{"id":"candidate-1","score":40,"reason":"weak"},{"id":"candidate-2","score":90,"reason":"strong"}]}' \
     '{text:\$text,usage:{total_tokens:12},total_cost_usd:0.002}'
   exit 0
 fi
@@ -269,6 +272,32 @@ grok_build_is_a_normal_ideate_provider() {
   rm -rf "$repo" "$fake_dir"
 }
 
+scoring_read_scores_json_extracts_from_grok_reasoning_prefix() {
+  # shellcheck source=lib/scoring/fanout.sh
+  source "$ROOT/lib/scoring/fanout.sh"
+  local wrapper scores
+
+  wrapper="$(mktemp)"
+  # Schema echo in the prose, braces in both the prefix and a reason string;
+  # last {"scores":[...]} object wins.
+  jq -n --arg text $'I will inspect {maps} next, then return JSON only.\nReturn JSON only: {"scores":[{"id":"...","score":0,"reason":"..."}]}.\n{"scores":[{"id":"candidate-1","score":40,"reason":"weak {draft}"},{"id":"candidate-2","score":90,"reason":"strong"}]}' \
+    '{text:$text,usage:{total_tokens:12}}' > "$wrapper"
+  scores="$(scoring_read_scores_json "$wrapper")"
+  assert_eq "$(jq -c . <<<"$scores")" \
+    '[{"id":"candidate-1","score":40,"reason":"weak {draft}"},{"id":"candidate-2","score":90,"reason":"strong"}]'
+
+  jq -n --arg text $'Planning.\n{\n  "scores": [\n    {"id":"candidate-1","score":11,"reason":"a"},\n    {"id":"candidate-2","score":22,"reason":"b"}\n  ]\n}\n' \
+    '{text:$text}' > "$wrapper"
+  scores="$(scoring_read_scores_json "$wrapper")"
+  assert_eq "$(jq -c 'map(.score)' <<<"$scores")" '[11,22]'
+
+  printf '%s\n' '{"scores":[{"id":"candidate-1","score":1,"reason":"x"},{"id":"candidate-2","score":2,"reason":"y"}]}' > "$wrapper"
+  scores="$(scoring_read_scores_json "$wrapper")"
+  assert_eq "$(jq -c '.[1].score' <<<"$scores")" '2'
+
+  rm -f "$wrapper"
+}
+
 candidate_scoring_reranks_with_grok_and_does_not_execute() {
   local repo bin_dir fake_dir fake_bin run_id out candidates idea_dir
   repo="$(make_repo)"; mkdir -p "$repo/.e3d-pilot"
@@ -359,6 +388,7 @@ main() {
   benchmark_serializes_measured_and_unavailable_fields
   worker_fanout_is_bounded_and_serialized
   grok_build_is_a_normal_ideate_provider
+  scoring_read_scores_json_extracts_from_grok_reasoning_prefix
   candidate_scoring_reranks_with_grok_and_does_not_execute
   candidate_scoring_accepts_claude_like_other_providers
   candidate_scoring_unavailable_provider_fails

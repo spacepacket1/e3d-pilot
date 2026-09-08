@@ -16,6 +16,9 @@ CODEX_SANDBOX_MODE="${CODEX_SANDBOX_MODE:-}"
 CODEX_APPROVAL_POLICY="${CODEX_APPROVAL_POLICY:-never}"
 CODEX_CD="${CODEX_CD:-$PWD}"
 CODEX_MODE="${E3D_PILOT_PROVIDER_MODE:-analysis}"
+CODEX_CONTEXT_WINDOW="${E3D_PILOT_CODEX_CONTEXT_WINDOW:-128000}"
+CODEX_AUTO_COMPACT_TOKEN_LIMIT="${E3D_PILOT_CODEX_AUTO_COMPACT_LIMIT:-96000}"
+PROVIDER_TOKEN_LIMIT="${E3D_PILOT_PROVIDER_TOKEN_LIMIT:-200000}"
 
 if [[ -z "$CODEX_SANDBOX_MODE" ]]; then
   if [[ "$CODEX_MODE" == "execute" ]]; then CODEX_SANDBOX_MODE="workspace-write"; else CODEX_SANDBOX_MODE="read-only"; fi
@@ -38,7 +41,16 @@ codex_args=(
   exec
   --sandbox "$CODEX_SANDBOX_MODE"
   --cd "$CODEX_CD"
+  -c "model_context_window=${CODEX_CONTEXT_WINDOW}"
+  -c "model_auto_compact_token_limit=${CODEX_AUTO_COMPACT_TOKEN_LIMIT}"
 )
+# `codex exec` refuses a cwd that is not a git worktree unless this flag is
+# set. Fleet discover/ideate often start from $HOME (cron). Analysis is
+# read-only and already sandboxed; execute still requires a real worktree.
+if [[ "$CODEX_MODE" != "execute" ]] \
+  && ! git -C "$CODEX_CD" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  codex_args+=(--skip-git-repo-check)
+fi
 if [[ -n "$CODEX_MODEL" ]]; then
   codex_args+=(--model "$CODEX_MODEL")
 fi
@@ -55,4 +67,19 @@ if ! provider_binary_available "$CODEX_BIN"; then
   exit "$PROVIDER_EXIT_FAILURE"
 fi
 
-exec "$CODEX_BIN" "${codex_args[@]}" < "$PROMPT_FILE"
+stderr_file="$(mktemp "${TMPDIR:-/tmp}/e3d-pilot-codex.XXXXXX")"
+trap 'rm -f "$stderr_file"' EXIT
+set +e
+"$CODEX_BIN" "${codex_args[@]}" < "$PROMPT_FILE" 2> "$stderr_file"
+status=$?
+set -e
+cat "$stderr_file" >&2
+tokens="$(awk 'take { gsub(/,/,"",$0); if ($0 ~ /^[0-9]+$/) total += $0; take=0 } /^tokens used$/ { take=1 } END { print total+0 }' "$stderr_file")"
+printf 'e3d_provider_usage={"provider":"codex","tokens":%s}\n' "$tokens" >&2
+
+if [[ $status -eq 0 && "$PROVIDER_TOKEN_LIMIT" =~ ^[0-9]+$ ]] \
+  && (( PROVIDER_TOKEN_LIMIT > 0 && tokens > PROVIDER_TOKEN_LIMIT )); then
+  printf 'error: codex provider token ceiling exceeded (%s > %s)\n' "$tokens" "$PROVIDER_TOKEN_LIMIT" >&2
+  exit "$PROVIDER_EXIT_FAILURE"
+fi
+exit "$status"

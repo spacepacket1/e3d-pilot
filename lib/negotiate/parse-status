@@ -14,7 +14,10 @@ field="${2:-all}"
 
 [[ -f "$response_file" ]] || { echo "error: response file not found: $response_file" >&2; exit 1; }
 
-grep -qE '^---STATUS---$' "$response_file" || {
+# Marker may sit on its own line or at the end of a Grok planning prefix
+# (`...I'll check the HTTP client.---STATUS---`). Status and reason still
+# have to be on their own lines after it.
+grep -qE -e '^.*---STATUS---$' "$response_file" || {
   echo "error: missing ---STATUS--- marker in response" >&2
   exit 1
 }
