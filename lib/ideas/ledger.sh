@@ -565,7 +565,7 @@ ideas_apply_event() {
             actor: $e.actor,
             kind: ($e.kind // "finding"),
             text: $e.text
-          }])
+          } + (if ($e.evidence_ref? // "") == "" then {} else {evidence_ref: $e.evidence_ref} end)])
         | (if (($e.kind // "finding") == "decision")
            then (.last_decision_actor=$e.actor | .last_decision_at=$e.timestamp)
            else . end)

@@ -157,6 +157,29 @@ note_requires_repo_and_two_positionals() {
   rm -rf "$repo"
 }
 
+note_evidence_ref_survives_materialization_and_rebuild() {
+  local repo idea_id file
+  repo="$(make_repo)"
+  idea_id="$(new_idea "$repo")"
+  "$BIN" ideas note --repo "$repo" --decision --evidence "docs/debates/example/transcript.md" "$idea_id" "with evidence" --actor t@e.com >/dev/null
+  "$BIN" ideas note --repo "$repo" "$idea_id" "no evidence" --actor t@e.com >/dev/null
+  file="$repo/.e3d-pilot/ideas/$idea_id/idea.json"
+  [[ "$(jq -r '.notes[0].evidence_ref' "$file")" == "docs/debates/example/transcript.md" ]] || {
+    printf 'evidence_ref did not materialize into idea.json notes\n' >&2
+    exit 1
+  }
+  [[ "$(jq -r '.notes[1] | has("evidence_ref")' "$file")" == "false" ]] || {
+    printf 'a note without --evidence must not gain an evidence_ref key\n' >&2
+    exit 1
+  }
+  "$BIN" ideas rebuild --repo "$repo" >/dev/null
+  [[ "$(jq -r '.notes[0].evidence_ref' "$file")" == "docs/debates/example/transcript.md" ]] || {
+    printf 'evidence_ref did not survive ledger rebuild\n' >&2
+    exit 1
+  }
+  rm -rf "$repo"
+}
+
 main() {
   bash -n "$BIN"
   bash -n "$ROOT/lib/ideas/ledger.sh"
@@ -168,6 +191,7 @@ main() {
   context_and_handoff_render_none_recorded_when_empty
   handoff_includes_goal_status_decisions_and_findings
   note_requires_repo_and_two_positionals
+  note_evidence_ref_survives_materialization_and_rebuild
   echo "phase28: all tests passed"
 }
 
