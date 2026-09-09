@@ -42,6 +42,10 @@ printf '%s\n' "$((count + 1))" > "$FAKE_CURL_COUNT"
 : > "$FAKE_CURL_ARGS"
 auth_ok=false
 body=""
+# `-q` disables curl's own implicit ~/.curlrc read, but only when it is the
+# literal first argument -- record whether that's actually true here so a
+# regression that moves it (or drops it) later fails loudly.
+[[ "${1:-}" == "-q" ]] && printf '%s\n' 'q-is-first' >> "$FAKE_CURL_ARGS"
 while (( $# > 0 )); do
   arg="$1"; shift
   case "$arg" in
@@ -188,6 +192,7 @@ transport_and_cleanup() {
   PHASE34_TOKEN="$FAKE_EXPECTED_KEY"; export PHASE34_TOKEN
   ideas_mirror_run "$repo" strict
   assert_eq "$(cat "$FAKE_CURL_COUNT")" 1
+  grep -qx -- 'q-is-first' "$FAKE_CURL_ARGS" || fail '-q was not curl'"'"'s first argument (ambient ~/.curlrc would apply)'
   grep -qx -- '--request' "$FAKE_CURL_ARGS"
   grep -qx -- 'POST' "$FAKE_CURL_ARGS"
   grep -qx -- 'Content-Type: application/json' "$FAKE_CURL_ARGS"

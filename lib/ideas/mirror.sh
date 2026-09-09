@@ -193,8 +193,15 @@ ideas_mirror_post_payload() (
   } > "$IDEAS_MIRROR_TMP_CURL_CONFIG"
   chmod 600 "$IDEAS_MIRROR_TMP_CURL_CONFIG"
 
+  # `-q` must be curl's literal first argument: it disables curl's own
+  # implicit read of ~/.curlrc. Without it, whatever ambient curl config
+  # happens to exist on the machine running this (a proxy, an extra header,
+  # a different default) applies to this request too -- an environment this
+  # code doesn't control and shouldn't trust with a bearer credential. Our
+  # own --config file is the only configuration this request should ever use.
   set +e
   status="$(curl \
+    -q \
     --config "$IDEAS_MIRROR_TMP_CURL_CONFIG" \
     --silent --show-error \
     --request POST \
