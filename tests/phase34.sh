@@ -184,7 +184,7 @@ payload_order_and_identifiers() {
 }
 
 transport_and_cleanup() {
-  local repo config output status before after bare_call_output
+  local repo config output status after bare_call_output
   repo="$(make_repo)"; config="$repo/.e3d-pilot/config.json"
   write_config "$config" true
   printf '{"event":"safe"}\n' > "$repo/.e3d-pilot/events.jsonl"
@@ -263,8 +263,7 @@ transport_and_cleanup() {
   output="$(ideas_mirror_run "$repo" best-effort 2>&1)"
   assert_eq "$(grep -c 'warning:' <<<"$output")" 1 'best-effort failure should emit one warning'
   ! grep -Fq "$FAKE_EXPECTED_KEY" <<<"$output"
-  before="$(find "$TMP_ROOT" -maxdepth 1 -name 'e3d-mirror-*' | wc -l | tr -d ' ')"
-  after="$before"
+  after="$(find "$TMP_ROOT" -maxdepth 1 -name 'e3d-mirror-*' | wc -l | tr -d ' ')"
   assert_eq "$after" 0 'mirror temporary files retained after failure'
   rm -f "$FAKE_CURL_BODY"
 }

@@ -59,9 +59,14 @@ ideas_mirror_validate_config() {
     # The mirror sends a bearer API key on every request; http:// would put
     # that credential on the wire in plaintext. Only exempt loopback, for
     # local development against a mirror running on the same machine.
+    # IPv6 loopback is deliberately not handled: a real IPv6 authority is
+    # bracketed (http://[::1]/path), and naively splitting on the first `:`
+    # here would misparse it as host "[" -- rather than get IPv6 bracket
+    # parsing subtly wrong for a case nothing requires, IPv4/hostname
+    # loopback is the whole exemption.
     host="${authority%%:*}"
-    [[ "$host" == "localhost" || "$host" == "127.0.0.1" || "$host" == "::1" ]] \
-      || { ideas_mirror_error "http:// is only permitted for localhost/127.0.0.1/::1; use https:// for any other host"; return 1; }
+    [[ "$host" == "localhost" || "$host" == "127.0.0.1" ]] \
+      || { ideas_mirror_error "http:// is only permitted for localhost/127.0.0.1; use https:// for any other host"; return 1; }
   fi
   [[ "$api_key_env" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] \
     || { ideas_mirror_error "api_key_env is not a valid environment-variable name"; return 1; }
