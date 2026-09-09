@@ -46,14 +46,23 @@ ideas_mirror_read_config() {
 
 ideas_mirror_validate_config() {
   local url="${1:-$IDEAS_MIRROR_URL}" api_key_env="${2:-$IDEAS_MIRROR_API_KEY_ENV}"
-  local authority
-  [[ "$url" =~ ^https?://([^/?#]+)([^#]*)$ ]] \
+  local scheme authority host
+  [[ "$url" =~ ^(https?)://([^/?#]+)([^#]*)$ ]] \
     || { ideas_mirror_error "URL must use lowercase http or https with an authority and no fragment"; return 1; }
-  authority="${BASH_REMATCH[1]}"
+  scheme="${BASH_REMATCH[1]}"
+  authority="${BASH_REMATCH[2]}"
   [[ "$authority" != *"@"* && ! "$authority" =~ [[:space:]] ]] \
     || { ideas_mirror_error "URL authority must not contain user information or whitespace"; return 1; }
   [[ "$url" != *$'\r'* && "$url" != *$'\n'* ]] \
     || { ideas_mirror_error "URL contains invalid characters"; return 1; }
+  if [[ "$scheme" != "https" ]]; then
+    # The mirror sends a bearer API key on every request; http:// would put
+    # that credential on the wire in plaintext. Only exempt loopback, for
+    # local development against a mirror running on the same machine.
+    host="${authority%%:*}"
+    [[ "$host" == "localhost" || "$host" == "127.0.0.1" || "$host" == "::1" ]] \
+      || { ideas_mirror_error "http:// is only permitted for localhost/127.0.0.1/::1; use https:// for any other host"; return 1; }
+  fi
   [[ "$api_key_env" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] \
     || { ideas_mirror_error "api_key_env is not a valid environment-variable name"; return 1; }
 }

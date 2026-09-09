@@ -397,6 +397,11 @@ mirror command never edits configuration.
 }
 ```
 
+`url` must be `https://` — the request carries the resolved credential as a
+bearer token, so plaintext `http://` is rejected except against
+`localhost`/`127.0.0.1`, for local development against a mirror running on
+the same machine.
+
 Put only the environment-variable name in configuration, never a credential.
 Set the value in the process environment using your shell or secret manager:
 

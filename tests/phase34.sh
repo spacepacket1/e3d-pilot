@@ -110,10 +110,15 @@ schema_and_runtime_configuration() {
   ideas_mirror_read_config "$config"
   ideas_mirror_validate_config
 
-  for bad_url in 'HTTP://host/path' 'https:///path' 'https://user@host/path' 'https://host/path#fragment'; do
+  for bad_url in 'HTTP://host/path' 'https:///path' 'https://user@host/path' 'https://host/path#fragment' 'http://host/path' 'http://example.com:8080/path'; do
     write_config "$config" true "$bad_url"
     ideas_mirror_read_config "$config"
     if ideas_mirror_validate_config >/dev/null 2>&1; then fail "accepted invalid URL $bad_url"; fi
+  done
+  for loopback_url in 'http://localhost/path' 'http://localhost:8080/path' 'http://127.0.0.1/path'; do
+    write_config "$config" true "$loopback_url"
+    ideas_mirror_read_config "$config"
+    ideas_mirror_validate_config || fail "rejected valid loopback http:// URL $loopback_url"
   done
   write_config "$config" true 'https://host/path' '9INVALID'
   ideas_mirror_read_config "$config"
