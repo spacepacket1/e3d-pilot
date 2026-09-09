@@ -2,6 +2,8 @@
 
 **Multi-model AI problem solving: independent answers → critique → convergence → human decision → execution → review → provenance.**
 
+![e3d-debate: independent AI models answer a question, critique each other across rounds, converge on a synthesis with consensus and named dissent, then hand off to a human decision, execution, and provenance](docs/images/debate-convergence.svg)
+
 e3d-pilot is an open-source system for getting multiple AI models to work on the same problem instead of trusting a single model's answer — from a one-off question to a fully executed, human-gated software change.
 
 It starts simply. Ask several configured models (Claude, Codex, Grok, Devin, or others you wire in) the same question. Let them answer independently, see and critique each other's positions, revise, expose real dissent, and converge on the strongest answer. That's `bin/e3d-debate` — a standalone tool, no repo or pipeline required.
