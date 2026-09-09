@@ -45,15 +45,32 @@ body=""
 while (( $# > 0 )); do
   arg="$1"; shift
   case "$arg" in
+    --config)
+      value="$1"; shift
+      # Real curl reads `header = "..."` lines from a -K/--config file; a
+      # header value can never legitimately be read via --header "@file"
+      # (that @file syntax only exists for curl's data-family options), so
+      # this fake must exercise the same mechanism the real code now uses,
+      # not the broken one it used to.
+      config_file="$value"
+      [[ -f "$config_file" ]] || exit 93
+      while IFS= read -r config_line; do
+        if [[ "$config_line" =~ ^header[[:space:]]*=[[:space:]]*\"(.*)\"$ ]]; then
+          header_value="${BASH_REMATCH[1]}"
+          [[ "$header_value" == "Authorization: Bearer $FAKE_EXPECTED_KEY" ]] && auth_ok=true
+          if [[ "$header_value" == Authorization:* ]]; then
+            printf '%s\n' 'Authorization: Bearer <redacted>' >> "$FAKE_CURL_ARGS"
+          else
+            printf '%s\n' "$header_value" >> "$FAKE_CURL_ARGS"
+          fi
+        fi
+      done < "$config_file"
+      printf '%s\n' '--config' '@<private-config-file>' >> "$FAKE_CURL_ARGS"
+      ;;
     --header)
       value="$1"; shift
-      if [[ "$value" == @* ]]; then
-        header_file="${value#@}"
-        [[ "$(cat "$header_file")" == "Authorization: Bearer $FAKE_EXPECTED_KEY" ]] && auth_ok=true
-        printf '%s\n' '--header' '@<private-header-file>' >> "$FAKE_CURL_ARGS"
-      else
-        printf '%s\n' '--header' "$value" >> "$FAKE_CURL_ARGS"
-      fi
+      [[ "$value" == @* ]] && exit 94
+      printf '%s\n' '--header' "$value" >> "$FAKE_CURL_ARGS"
       ;;
     --data-binary)
       value="$1"; shift
@@ -163,7 +180,7 @@ payload_order_and_identifiers() {
 }
 
 transport_and_cleanup() {
-  local repo config output status before after
+  local repo config output status before after bare_call_output
   repo="$(make_repo)"; config="$repo/.e3d-pilot/config.json"
   write_config "$config" true
   printf '{"event":"safe"}\n' > "$repo/.e3d-pilot/events.jsonl"
@@ -201,6 +218,28 @@ transport_and_cleanup() {
   if output="$(ideas_mirror_run "$repo" strict 2>&1)"; then fail 'missing credential succeeded'; fi
   ! grep -Fq "$FAKE_EXPECTED_KEY" <<<"$output"
   [[ ! -e "$FAKE_CURL_COUNT" ]] || fail 'missing credential invoked curl'
+  # publish_post_success calls `ideas_mirror_run ... best-effort` as a bare,
+  # unguarded statement -- exactly the shape that a bare (non-`||`/`if`-tested)
+  # `ideas_mirror_error` call inside it would abort via this file's global
+  # set -e, before ever reaching the best-effort-vs-strict dispatch, failing
+  # an otherwise successful publish over ancillary, disabled-by-default
+  # mirroring. Wrapping the repro in `if output="$(...)"` here would NOT
+  # actually exercise that failure mode -- bash suspends errexit enforcement
+  # for the entire duration of a command substitution whose own result is
+  # itself if/||-tested, masking exactly this bug. A genuinely separate `bash
+  # -c` subprocess sidesteps that: its own internal set -e is unaffected by
+  # how the outer test script happens to invoke it.
+  bare_call_output="$(env -u PHASE34_TOKEN bash -c '
+    set -euo pipefail
+    source "'"$ROOT"'/lib/ideas/mirror.sh"
+    ideas_mirror_run "'"$repo"'" best-effort
+    printf "REACHED\n"
+  ' 2>&1)" || true
+  [[ "$bare_call_output" == *REACHED* ]] \
+    || fail 'missing credential aborted an unguarded best-effort call before it could return (regression: bare ideas_mirror_error under set -e)'
+  assert_eq "$(grep -c 'warning:' <<<"$bare_call_output")" 1 'missing-credential best-effort should emit one warning'
+  ! grep -Fq "$FAKE_EXPECTED_KEY" <<<"$bare_call_output"
+  [[ ! -e "$FAKE_CURL_COUNT" ]] || fail 'missing credential best-effort invoked curl'
 
   PHASE34_TOKEN="$FAKE_EXPECTED_KEY"; export PHASE34_TOKEN
   printf 'not-json\n' > "$repo/.e3d-pilot/events.jsonl"

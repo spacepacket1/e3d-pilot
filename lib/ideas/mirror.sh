@@ -151,7 +151,7 @@ ideas_mirror_build_payload() (
       idea_files+=("$idea_file")
     done
   elif [[ -e "$ideas_dir" ]]; then
-    ideas_mirror_error "ideas path is not a directory"
+    ideas_mirror_error "ideas path is not a directory" || true
     exit 1
   fi
   if (( ${#idea_files[@]} > 0 )); then
@@ -174,19 +174,30 @@ ideas_mirror_build_payload() (
 )
 
 ideas_mirror_post_payload() (
-  local url="$1" api_key="$2" payload_file="$3" status curl_status
+  local url="$1" api_key="$2" payload_file="$3" status curl_status escaped_key
   umask 077
-  IDEAS_MIRROR_TMP_HEADER="$(mktemp "${TMPDIR:-/tmp}/e3d-mirror-header.XXXXXX")" || exit 1
-  trap 'rm -f "$IDEAS_MIRROR_TMP_HEADER"' EXIT HUP INT TERM
-  printf 'Authorization: Bearer %s\n' "$api_key" > "$IDEAS_MIRROR_TMP_HEADER"
-  chmod 600 "$IDEAS_MIRROR_TMP_HEADER"
+  # `curl --header "@file"` does not exist -- `@file` is only meaningful to
+  # curl's data-family options (-d/--data-binary/etc). Written that way, curl
+  # sends a literal header line reading "@/tmp/...", not the resolved bearer
+  # token, so the request is never actually authenticated. Keeping the
+  # Authorization header out of argv (so it can't appear in a `ps` snapshot
+  # of this process) while it's still a real header requires curl's own
+  # -K/--config file mechanism instead.
+  IDEAS_MIRROR_TMP_CURL_CONFIG="$(mktemp "${TMPDIR:-/tmp}/e3d-mirror-curlrc.XXXXXX")" || exit 1
+  trap 'rm -f "$IDEAS_MIRROR_TMP_CURL_CONFIG"' EXIT HUP INT TERM
+  escaped_key="${api_key//\\/\\\\}"
+  escaped_key="${escaped_key//\"/\\\"}"
+  {
+    printf 'header = "Content-Type: application/json"\n'
+    printf 'header = "Authorization: Bearer %s"\n' "$escaped_key"
+  } > "$IDEAS_MIRROR_TMP_CURL_CONFIG"
+  chmod 600 "$IDEAS_MIRROR_TMP_CURL_CONFIG"
 
   set +e
   status="$(curl \
+    --config "$IDEAS_MIRROR_TMP_CURL_CONFIG" \
     --silent --show-error \
     --request POST \
-    --header 'Content-Type: application/json' \
-    --header "@$IDEAS_MIRROR_TMP_HEADER" \
     --data-binary "@$payload_file" \
     --output /dev/null \
     --write-out '%{http_code}' \
@@ -198,7 +209,7 @@ ideas_mirror_post_payload() (
   curl_status=$?
   set -e
   if (( curl_status != 0 )); then
-    ideas_mirror_error "request failed"
+    ideas_mirror_error "request failed" || true
     exit 1
   fi
   [[ "$status" =~ ^2[0-9][0-9]$ ]] \
@@ -221,7 +232,7 @@ ideas_mirror_run() (
     failure="invalid configuration"
   elif [[ "$IDEAS_MIRROR_ENABLED" != "true" ]]; then
     if [[ "$mode" == "strict" ]]; then
-      ideas_mirror_error "mirroring is not enabled"
+      ideas_mirror_error "mirroring is not enabled" || true
       exit 1
     fi
     exit 0
@@ -230,10 +241,17 @@ ideas_mirror_run() (
   else
     api_key="$(printenv "$IDEAS_MIRROR_API_KEY_ENV" 2>/dev/null || true)"
     if [[ -z "$api_key" ]]; then
-      ideas_mirror_error "configured credential is missing or empty"
+      # Bare `|| true`: ideas_mirror_error always returns 1 by contract, and
+      # under this file's global set -e that would otherwise abort right
+      # here -- before `failure` is even set, let alone reaching the
+      # best-effort-vs-strict dispatch below. A best-effort mirror attempt
+      # failing this way would silently propagate and fail an otherwise
+      # successful publish, which best-effort mode exists specifically to
+      # never do.
+      ideas_mirror_error "configured credential is missing or empty" || true
       failure="missing credential"
     elif [[ "$api_key" == *$'\r'* || "$api_key" == *$'\n'* ]]; then
-      ideas_mirror_error "configured credential contains invalid characters"
+      ideas_mirror_error "configured credential contains invalid characters" || true
       failure="invalid credential"
     else
       IDEAS_MIRROR_TMP_PAYLOAD="$(mktemp "${TMPDIR:-/tmp}/e3d-mirror-payload.XXXXXX")" || failure="temporary file creation failed"
