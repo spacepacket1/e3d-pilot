@@ -1,10 +1,72 @@
 # e3d-pilot
 
-**e3d-pilot decides what a codebase should work on next, records the idea for human approval, and only then drives approved work to a draft PR and head-SHA-bound merge.**
+**Multi-model AI problem solving: independent answers → critique → convergence → human decision → execution → review → provenance.**
 
-![e3d-pilot's autonomous agentic loop: discover, ideate, draft, negotiate, execute, review, publish, orbiting a central autonomous pilot core, with gold safety gates before the diff-ceiling check and before publish](docs/images/agentic-loop.svg)
+e3d-pilot is an open-source system for getting multiple AI models to work on the same problem instead of trusting a single model's answer — from a one-off question to a fully executed, human-gated software change.
 
-It is a repo-agnostic, Bash-first agentic loop: research a repository, propose durable ideas, optionally re-rank those ideas with a read-only scoring ensemble, wait for explicit implementation approval, get independent models to agree the plan is ready, hand execution to [codex-spec-runner](https://github.com/spacepacket1/codex-spec-runner) (csr) by default, verify the result, publish a draft PR or local review branch, then wait for a separate merge approval bound to the exact reviewed PR head SHA.
+It starts simply. Ask several configured models (Claude, Codex, Grok, Devin, or others you wire in) the same question. Let them answer independently, see and critique each other's positions, revise, expose real dissent, and converge on the strongest answer. That's `bin/e3d-debate` — a standalone tool, no repo or pipeline required.
+
+Then e3d-pilot takes the same instinct further, into real software work: `discover → ideate → approve → draft → negotiate → execute → review → publish → outcome`. Every step is preserved in an append-only ledger, so the system (or a human, or a fresh AI session) can later reconstruct where an idea came from, which models or people influenced it, what it produced, and what happened afterward.
+
+## Try e3d-debate in 60 seconds
+
+```bash
+git clone https://github.com/spacepacket1/e3d-pilot.git
+cd e3d-pilot
+
+bin/e3d-debate \
+  "Should e3d-pilot's provenance data be a graph, or is that over-engineering?" \
+  --providers claude,codex --rounds 3
+```
+
+(Any `lib/providers/<name>` adapter can join — add `devin`/`grok-build`/others if you have them configured; `claude`/`codex` are the two most people trying this will already have.)
+
+Round 1: every provider answers independently. Round 2+: each sees the others' prior-round positions and must defend, revise, rebut, or concede. The debate stops early if they genuinely converge; a synthesizer then reads the full transcript and reports a final answer, consensus, and any remaining dissent.
+
+That question isn't hypothetical — it's a real debate we ran this way, condensed from the [full transcript](docs/debates/2026-09-07-e3d-graph-generalization/transcript.md):
+
+```text
+QUESTION
+Should the E3D 3D graph generalize into a standalone product, or should
+e3d-pilot instrument its own provenance instead?
+
+CLAUDE (round 3, the only one to formally reach "approved")
+Don't create e3d-graph yet — build a confidence-annotated, domain-neutral
+provenance emitter inside e3d-pilot, prove attribution questions are
+answerable from the data alone, add a 2D lens only if they are, and extract
+a public repo only on external pull or paid demand.
+
+CODEX (round 3)
+Build outcome-linked Pilot provenance first, then open-source a narrow
+standalone viewer only if measured workflow value and external pull
+justify extraction.
+
+DEVIN (round 3)
+Instrument Pilot with a domain-neutral provenance schema from day one; gate
+public extraction on the internal experiment succeeding, not on indefinite
+deferral.
+
+GROK-BUILD (round 3)
+Do not ship standalone e3d-graph; instrument Pilot provenance first and
+treat visualization as a 2D lens inside E3D.
+
+SYNTHESIS
+Do not ship a standalone e3d-graph product. Instrument e3d-pilot now with
+an append-only, domain-neutral, confidence-annotated provenance schema —
+the ledger stays canonical, the graph is an index, not memory. Validate by
+answering real attribution questions from the data alone before any UI.
+
+DISSENT (reported, not hidden)
+Devin and partly Codex would gate public extraction on the internal
+experiment succeeding; Claude and Grok-build require external pull or paid
+demand instead — a real, named disagreement the tool didn't paper over.
+```
+
+**What happened next:** we built exactly that, then ran it against three real ideas in this repo's own history. All three came back "more useful than reading the raw ledger by hand" — and one of them caught a real error in the spec that proposed it. Later graph-intelligence queries were evaluated just as honestly: one clear win, two explicitly "no signal" because the real data was still too sparse — reported as-is, not oversold. That full arc (spec, dogfood results, the honest misses) is in [`docs/provenance-graph-experiment.md`](docs/provenance-graph-experiment.md) and [`docs/graph-intelligence-experiment.md`](docs/graph-intelligence-experiment.md).
+
+**Experimental: the provenance graph.** e3d-pilot now derives structural relationships — ideas, actors, models, decisions, repos, commits, evidence, outcomes — from its own immutable event ledger. We're testing whether that graph reveals patterns that are genuinely hard to get from the raw ledger, not claiming it already does.
+
+You don't need the rest of e3d-pilot to use `e3d-debate` on its own — see [e3d-debate](#e3d-debate-experimental) below for the full flag reference. Keep reading for the part that takes a debate's answer all the way to a shipped, reviewed, provenance-tracked change.
 
 ## Why we built this
 
@@ -31,6 +93,8 @@ A third reason, less about any single run and more about what accumulates across
 If you maintain a repository and want a standing second opinion on "what should we build next" — one that does its homework before proposing anything, gets independent model consensus before acting, and hands you a draft PR with a full audit trail instead of a fait accompli — adopting e3d-pilot is meant to be a one-file decision: write `.e3d-pilot/config.json`, run it once to validate, then point it at your repo (or a whole fleet of them) on whatever cadence you choose (a cron entry, a scheduled job — e3d-pilot doesn't invent its own scheduler). It works identically on GitHub, on a remote-less local repo, and — architecturally, even before a forge adapter exists for it — on any other git host, because only the final publish step knows what forge it's talking to.
 
 ## Pipeline
+
+![e3d-pilot's autonomous agentic loop: discover, ideate, draft, negotiate, execute, review, publish, orbiting a central autonomous pilot core, with gold safety gates before the diff-ceiling check and before publish](docs/images/agentic-loop.svg)
 
 ```mermaid
 flowchart LR
