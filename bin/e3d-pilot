@@ -1385,6 +1385,36 @@ ensure_worktree() {
   worktree_dir="$(mktemp -d "${TMPDIR:-/tmp}/e3d-pilot.${run_id}.XXXXXX")"
   start_ref="HEAD"
 
+  # A prior execute attempt for this same run (e.g. one that failed before a
+  # repair-run retry, via `ideas repair-run --from-stage execute`) may have
+  # already created this branch. `git worktree add -b` refuses to reuse an
+  # existing branch name outright, so retrying would otherwise always fail
+  # here even when nothing was ever committed to it. It is only ever safe to
+  # drop and recreate: this branch name is unique per run_id and e3d-pilot
+  # never merges or pushes it before publish, so if it has no commits beyond
+  # the repo's current HEAD there is nothing to lose by starting it over.
+  if git -C "$repo" show-ref --verify --quiet "refs/heads/$branch"; then
+    if [[ -z "$(git -C "$repo" log "$start_ref..$branch" --oneline 2>/dev/null)" ]]; then
+      # The branch itself has no unexpected commits, but a prior attempt's
+      # worktree directory may still hold it checked out — `branch -D` fails
+      # silently against a branch that's checked out elsewhere, which would
+      # otherwise leave this retry dying at `worktree add` below exactly as
+      # the failed attempt did. Remove any such stale worktree first.
+      local stale_worktree
+      stale_worktree="$(git -C "$repo" worktree list --porcelain | awk -v b="refs/heads/$branch" '
+        /^worktree /{wt=$2}
+        $0=="branch " b{print wt}
+      ')"
+      if [[ -n "$stale_worktree" ]]; then
+        git -C "$repo" worktree remove --force "$stale_worktree" >/dev/null 2>&1 || true
+      fi
+      git -C "$repo" branch -D "$branch" >/dev/null 2>&1 || true
+    else
+      rm -rf "$worktree_dir"
+      die "failed to create execute worktree for branch $branch: branch already exists with unexpected commits ahead of $start_ref; investigate before retrying"
+    fi
+  fi
+
   if ! git -C "$repo" worktree add -b "$branch" "$worktree_dir" "$start_ref" >/dev/null 2>&1; then
     rm -rf "$worktree_dir"
     die "failed to create execute worktree for branch $branch"
