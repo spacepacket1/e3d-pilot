@@ -11,6 +11,14 @@ CLAUDE_PERMISSION_MODE="${CLAUDE_PERMISSION_MODE:-}"
 CLAUDE_MODE="${E3D_PILOT_PROVIDER_MODE:-analysis}"
 CLAUDE_MAX_BUDGET_USD="${CLAUDE_MAX_BUDGET_USD:-0.50}"
 PROVIDER_TOKEN_LIMIT="${E3D_PILOT_PROVIDER_TOKEN_LIMIT:-200000}"
+# Unset by default: preserves today's full tool access for discover/ideate/draft,
+# which genuinely need to explore the repo. negotiate/review hand this script a
+# fully self-contained prompt (the whole spec or diff, embedded as text) and never
+# need tool access to render a verdict -- callers for those stages set
+# CLAUDE_TOOLS="" so the model can't wander off exploring the repo mid-review,
+# which is exactly what blew a negotiate round past PROVIDER_TOKEN_LIMIT once
+# (multiple tool-use turns instead of one bounded text response).
+CLAUDE_TOOLS="${CLAUDE_TOOLS-__unset__}"
 
 if [[ -z "$CLAUDE_PERMISSION_MODE" ]]; then
   if [[ "$CLAUDE_MODE" == "execute" ]]; then CLAUDE_PERMISSION_MODE="acceptEdits"; else CLAUDE_PERMISSION_MODE="default"; fi
@@ -36,6 +44,10 @@ claude_args=(
   --output-format json
   --max-budget-usd "$CLAUDE_MAX_BUDGET_USD"
 )
+
+if [[ "$CLAUDE_TOOLS" != "__unset__" ]]; then
+  claude_args+=(--tools "$CLAUDE_TOOLS")
+fi
 
 if [[ "${E3D_PILOT_DRY_RUN:-0}" == "1" ]]; then
   printf '%q ' "$CLAUDE_BIN" "${claude_args[@]}"

@@ -1877,12 +1877,18 @@ review_stage() {
   review_providers=()
   while IFS= read -r __mapfile_line; do review_providers+=("$__mapfile_line"); done < <(providers_for_stage "$config_file" review)
   [[ ${#review_providers[@]} -gt 0 ]] || die "review has no providers configured"
+  # The review prompt already embeds the full executed diff as text; a reviewer
+  # never needs to explore the repo to comment on it. Scoped to this loop only
+  # (unset afterward) since try_stage_provider is shared with discover/ideate,
+  # which do need tool access. CLAUDE_TOOLS="" is a no-op for other providers.
+  export CLAUDE_TOOLS=""
   for review_provider in "${review_providers[@]}"; do
     if try_stage_provider "$worktree" "$review_provider" "$prompt" \
       "$run_dir/review-provider-${review_provider}.md" "$run_dir/review-provider-${review_provider}.stderr" "review"; then
       review_combine+=("$review_provider" "$run_dir/review-provider-${review_provider}.md")
     fi
   done
+  unset CLAUDE_TOOLS
   [[ ${#review_combine[@]} -gt 0 ]] || die "review: every configured provider failed or was unavailable"
   combine_provider_sections "$response" "${review_combine[@]}"
   printf 'verify_status: passed\nbranch: %s\nworktree: %s\nlive_verify: %s\n' "$branch" "$worktree" "$live_reason" > "$review_status_file"
@@ -2218,7 +2224,10 @@ negotiate_stage() {
         build_negotiate_prompt "$provider" "$round" "$spec_draft_file" "$round_prompt_file"
 
         set +e
-        provider_output="$(cd "$repo" && E3D_PILOT_DRY_RUN=0 "$provider_script" "$round_prompt_file" 2>"$provider_stderr_file")"
+        # The negotiate prompt already embeds the full current draft as text; a
+        # reviewer never needs to explore the repo to render a verdict on it.
+        # CLAUDE_TOOLS="" is a no-op for every non-claude provider script.
+        provider_output="$(cd "$repo" && E3D_PILOT_DRY_RUN=0 CLAUDE_TOOLS="" "$provider_script" "$round_prompt_file" 2>"$provider_stderr_file")"
         provider_status=$?
         set -e
         if [[ $provider_status -ne 0 ]]; then
