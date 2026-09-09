@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# Parses a single reviewer's raw stdout for the review verdict contract
+# (mirrors lib/negotiate/parse-status, same shape, different marker and
+# status vocabulary). Located by direct regex match anywhere in the raw
+# text, whether or not a provider wraps it in an extra Markdown fence.
+#
+# Usage: parse-verdict <response-file> [field]
+#   field: status | reason | all (default: all, prints JSON)
+set -euo pipefail
+
+response_file="${1:?usage: parse-verdict <response-file> [status|reason|all]}"
+field="${2:-all}"
+
+[[ -f "$response_file" ]] || { echo "error: response file not found: $response_file" >&2; exit 1; }
+
+grep -qE -e '^.*---VERDICT---$' "$response_file" || {
+  echo "error: missing ---VERDICT--- marker in response" >&2
+  exit 1
+}
+
+status="$(grep -m1 -E '^status: (approved|blocked)$' "$response_file" | sed -E 's/^status: //')"
+reason="$(grep -m1 -E '^reason: .+$' "$response_file" | sed -E 's/^reason: //' || true)"
+
+[[ -n "$status" ]] || { echo "error: missing or invalid status line (expected 'status: approved' or 'status: blocked')" >&2; exit 1; }
+[[ -n "$reason" ]] || reason="(no reason provided by reviewer)"
+
+case "$field" in
+  status)
+    printf '%s\n' "$status"
+    ;;
+  reason)
+    printf '%s\n' "$reason"
+    ;;
+  all)
+    jq -n --arg status "$status" --arg reason "$reason" '{status: $status, reason: $reason}'
+    ;;
+  *)
+    echo "error: unknown field: $field (expected status, reason, or all)" >&2
+    exit 1
+    ;;
+esac

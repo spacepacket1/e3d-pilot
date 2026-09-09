@@ -10,6 +10,7 @@ FOCUS_DEFAULT="default"
 NEGOTIATE_EXIT_NEEDS_HUMAN=3
 EXECUTE_EXIT_NEEDS_HUMAN=4
 REVIEW_EXIT_VERIFY_FAILED=5
+REVIEW_EXIT_BLOCKED=6
 
 # shellcheck source=lib/providers/common.sh
 source "$REPO_ROOT/lib/providers/common.sh"
@@ -1791,6 +1792,18 @@ build_review_prompt() {
     printf 'You are the review stage of an autonomous repo-improvement pipeline.\n'
     printf 'Read the executed diff below and comment on correctness, regressions,\n'
     printf 'and scope-creep. Keep the response concise and actionable.\n\n'
+    printf 'After your comments, end your response with exactly this block, on its\n'
+    printf 'own lines, verbatim -- no markdown heading, comment, or bold syntax\n'
+    printf 'around any of these lines:\n\n'
+    printf -- '---VERDICT---\n'
+    printf 'status: approved\n'
+    printf 'reason: <one-line reason>\n\n'
+    printf 'Use "status: blocked" in place of "status: approved" only for a real\n'
+    printf 'defect that must be fixed before this is merged -- a regression, a\n'
+    printf 'correctness bug, a security issue. Not a style nit or an optional\n'
+    printf 'suggestion; those belong in your comments above, not in a blocked verdict.\n'
+    printf 'The line "---VERDICT---" must appear verbatim and on its own line; it is\n'
+    printf 'a fixed parser marker, not a section title to be reworded or restyled.\n\n'
     printf 'Executed diff:\n\n```diff\n'
     cat "$diff_file"
     printf '\n```\n'
@@ -1869,7 +1882,17 @@ review_stage() {
       return "$REVIEW_EXIT_VERIFY_FAILED"
     fi
   done
-  diff_text="$run_dir/review-diff.patch"; git -C "$worktree" diff --no-ext-diff --binary > "$diff_text"
+  diff_text="$run_dir/review-diff.patch"
+  # Plain `git diff` never includes untracked files, so any new file a phase
+  # adds (e.g. a new lib/ script) is invisible to the reviewer -- exactly the
+  # kind of file most likely to carry the change's real logic. `add -N` stages
+  # untracked paths as intent-to-add (empty blob, not their real content) so
+  # diff renders them as full additions; `reset` immediately after restores
+  # the worktree to its original untracked state so nothing downstream (e.g.
+  # publish) sees a false "staged" status.
+  git -C "$worktree" add -N -A
+  git -C "$worktree" diff --no-ext-diff --binary > "$diff_text"
+  git -C "$worktree" reset >/dev/null
   prompt="$run_dir/review-prompt.md"; response="$run_dir/review-comment.md"
   build_review_prompt "$diff_text" "$prompt"
   local -a review_providers=()
@@ -1882,15 +1905,39 @@ review_stage() {
   # (unset afterward) since try_stage_provider is shared with discover/ideate,
   # which do need tool access. CLAUDE_TOOLS="" is a no-op for other providers.
   export CLAUDE_TOOLS=""
+  local verdict_status verdict_reason parse_rc
+  local -a blocked_reasons=()
   for review_provider in "${review_providers[@]}"; do
     if try_stage_provider "$worktree" "$review_provider" "$prompt" \
       "$run_dir/review-provider-${review_provider}.md" "$run_dir/review-provider-${review_provider}.stderr" "review"; then
       review_combine+=("$review_provider" "$run_dir/review-provider-${review_provider}.md")
+      # A reviewer that ignores the verdict-block instructions is treated as
+      # advisory-only here, not as a block: the point of this gate is to stop
+      # on a verdict a reviewer actually gave, not to punish format slips by
+      # escalating them into a hard block no one asked for.
+      set +e
+      verdict_status="$("$REPO_ROOT/lib/review/parse-verdict" "$run_dir/review-provider-${review_provider}.md" status 2>/dev/null)"
+      parse_rc=$?
+      set -e
+      if [[ $parse_rc -eq 0 && "$verdict_status" == "blocked" ]]; then
+        verdict_reason="$("$REPO_ROOT/lib/review/parse-verdict" "$run_dir/review-provider-${review_provider}.md" reason 2>/dev/null || true)"
+        blocked_reasons+=("$review_provider: ${verdict_reason:-(no reason provided)}")
+      fi
     fi
   done
   unset CLAUDE_TOOLS
   [[ ${#review_combine[@]} -gt 0 ]] || die "review: every configured provider failed or was unavailable"
   combine_provider_sections "$response" "${review_combine[@]}"
+  if [[ ${#blocked_reasons[@]} -gt 0 ]]; then
+    printf 'verify_status: passed\nreview_status: blocked\nbranch: %s\nworktree: %s\nlive_verify: %s\n' \
+      "$branch" "$worktree" "$live_reason" > "$review_status_file"
+    printf 'review: blocked by reviewer verdict for %s:\n' "$branch"
+    local blocked_line
+    for blocked_line in "${blocked_reasons[@]}"; do
+      printf '  - %s\n' "$blocked_line"
+    done
+    return "$REVIEW_EXIT_BLOCKED"
+  fi
   printf 'verify_status: passed\nbranch: %s\nworktree: %s\nlive_verify: %s\n' "$branch" "$worktree" "$live_reason" > "$review_status_file"
   if (( include_live_verify )); then
     printf 'review: verify passed on %s, including live verification, and wrote review-comment.md\n' "$branch"
@@ -2461,6 +2508,10 @@ run_single_stage() {
         fi
         if [[ $current_status -eq "$REVIEW_EXIT_VERIFY_FAILED" ]]; then
           printf 'review: verify failed; stopping before publish\n'
+          return "$current_status"
+        fi
+        if [[ $current_status -eq "$REVIEW_EXIT_BLOCKED" ]]; then
+          printf 'review: blocked by reviewer verdict; stopping before publish\n'
           return "$current_status"
         fi
         [[ $current_status -eq 0 ]] || return "$current_status"
