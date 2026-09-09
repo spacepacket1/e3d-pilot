@@ -1883,15 +1883,22 @@ review_stage() {
     fi
   done
   diff_text="$run_dir/review-diff.patch"
-  # Plain `git diff` never includes untracked files, so any new file a phase
-  # adds (e.g. a new lib/ script) is invisible to the reviewer -- exactly the
-  # kind of file most likely to carry the change's real logic. `add -N` stages
-  # untracked paths as intent-to-add (empty blob, not their real content) so
-  # diff renders them as full additions; `reset` immediately after restores
-  # the worktree to its original untracked state so nothing downstream (e.g.
-  # publish) sees a false "staged" status.
+  # Plain `git diff` (no ref) only shows *uncommitted* worktree changes, which
+  # breaks the moment anything on this run's branch is committed -- true for
+  # any multi-phase run, since csr commits per phase. Diff from this branch's
+  # actual merge-base with its configured base branch instead, so a reviewer
+  # sees the whole run's change regardless of how many commits it took. `add
+  # -N -A` first stages any still-uncommitted untracked files as intent-to-add
+  # (empty blob, not their real content) so they render as full additions too
+  # -- otherwise a new file is invisible to `git diff` even against a real
+  # base ref; `reset` immediately after restores original untracked status so
+  # nothing downstream (e.g. publish) sees a false "staged" state.
+  local review_base_branch review_merge_base
+  review_base_branch="$(config_value "$config_file" '.pr.base_branch')"
+  review_merge_base="$(git -C "$worktree" merge-base "$review_base_branch" HEAD)" \
+    || die "review could not resolve merge-base of $branch against $review_base_branch"
   git -C "$worktree" add -N -A
-  git -C "$worktree" diff --no-ext-diff --binary > "$diff_text"
+  git -C "$worktree" diff --no-ext-diff --binary "$review_merge_base" > "$diff_text"
   git -C "$worktree" reset >/dev/null
   prompt="$run_dir/review-prompt.md"; response="$run_dir/review-comment.md"
   build_review_prompt "$diff_text" "$prompt"
