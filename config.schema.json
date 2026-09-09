@@ -150,6 +150,29 @@
           "default": 3
         }
       }
+    },
+    "storage": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mirror": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled", "url", "api_key_env"],
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "url": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^https?://"
+            },
+            "api_key_env": {
+              "type": "string",
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+            }
+          }
+        }
+      }
     }
   }
 }

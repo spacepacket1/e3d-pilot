@@ -212,6 +212,8 @@ Create `.e3d-pilot/config.json` in the target repository. Start from [`examples/
 - `notify`: optional `{ "email": { "to": "...", "command": "..." } }`. See [Notifications](#notifications).
 - `approval`: optional `{ "implementation_required": bool, "merge_required": bool }`. Both default to `true`; see [Approval-gated operator workflow](#approval-gated-operator-workflow).
 - `tracking`: optional `{ "project_url": "..." }`. Overrides `E3D_PILOT_TRACKING_PROJECT_URL` for this repo; see [Project board tracking](#project-board-tracking).
+- `storage.mirror`: optional outbound ledger mirror; it is disabled when omitted
+  or when `enabled` is `false`. See [Optional ledger mirror](#optional-ledger-mirror).
 
 Validate and run:
 
@@ -376,6 +378,60 @@ recommended executor. See [Grok Build integration and benchmarks](docs/grok-buil
 `auto` selects `github` for a `github.com` origin and `local` otherwise. GitHub pushes only the run branch and calls `gh pr create --draft`; it never merges or pushes the base branch. Local commits the worktree branch without network access and writes `publish-summary.md`. The scripts in `lib/publish/` share the extension seam for a future GitLab backend.
 
 Only after verification passes, publish force-adds findings, candidates, negotiation log, final spec, and csr manifest under the run's audit path so summary links resolve on the branch. Labels configured in `pr.labels` are applied to the GitHub PR at creation time.
+
+## Optional ledger mirror
+
+Repositories can opt into an outbound snapshot of their idea ledger by adding
+`storage.mirror` to that repository's `.e3d-pilot/config.json`. The feature is
+off by default: an absent block and `enabled: false` make no request. Enabling
+it is a separate manual configuration edit by the repository operator; the
+mirror command never edits configuration.
+
+```json
+"storage": {
+  "mirror": {
+    "enabled": true,
+    "url": "https://ledger-mirror.example.com/v1/snapshots",
+    "api_key_env": "E3D_PILOT_MIRROR_API_KEY"
+  }
+}
+```
+
+Put only the environment-variable name in configuration, never a credential.
+Set the value in the process environment using your shell or secret manager:
+
+```bash
+export E3D_PILOT_MIRROR_API_KEY="$(your-secret-manager read e3d-mirror-key)"
+e3d-pilot storage mirror --repo /path/to/repository
+```
+
+The on-demand command performs exactly one upload and is strict: disabled or
+invalid configuration, a missing credential, invalid local JSON, transport
+failure, or a non-2xx response exits nonzero with a sanitized diagnostic. It
+does not enable the feature or modify ledger data.
+
+Each request is repository-agnostic and carries payload schema version `1`, a
+sanitized repository identifier, a UTC `mirrored_at` timestamp, nonblank
+events in ledger order, and materialized idea snapshots in bytewise
+idea-directory order. Identical ledger inputs preserve repository/event/idea
+ordering, while `mirrored_at` intentionally changes. Network-style Git origins
+lose user information, query strings, and fragments; SCP-style origins lose
+the user prefix. File URLs, local paths, authority-less or malformed origins,
+and missing origins fall back to the repository directory's basename, so an
+absolute local path is never sent.
+
+After a publish backend succeeds and publication output is recorded, the same
+upload runs once as a best-effort post-publish hook. Fleet publication applies
+that rule independently to each successful target. Verification failures,
+skipped targets, and failed publish backends do not invoke it. If the mirror
+fails, one sanitized warning is emitted; the successful publication and its
+artifacts remain successful, with no retry or rollback.
+
+The local append-only ledger remains canonical. This feature only writes
+snapshots outward: remote reads, write-back, reconciliation, lifecycle locks,
+and a reference server are outside scope. The endpoint must not assume a
+particular repository, forge, organization, or hosting provider, and API keys
+must never be placed directly in repository configuration.
 
 ## Notifications
 

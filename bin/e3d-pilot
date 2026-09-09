@@ -17,6 +17,8 @@ source "$REPO_ROOT/lib/providers/common.sh"
 source "$REPO_ROOT/lib/ideas/ledger.sh"
 # shellcheck source=lib/ideas/materialize.sh
 source "$REPO_ROOT/lib/ideas/materialize.sh"
+# shellcheck source=lib/ideas/mirror.sh
+source "$REPO_ROOT/lib/ideas/mirror.sh"
 # shellcheck source=lib/ideas/project_tracking.sh
 source "$REPO_ROOT/lib/ideas/project_tracking.sh"
 # shellcheck source=lib/training/export.sh
@@ -38,6 +40,7 @@ e3d-pilot
 Usage:
   e3d-pilot --help
   e3d-pilot config validate <repo>
+  e3d-pilot storage mirror --repo <path>
   e3d-pilot run --repo <path> --stage <name> [--run-id <id>] [--focus default|revenue]
   e3d-pilot ideas ingest --repo <path> --run-id <id> --candidate-id <id> --candidate-json <file>
   e3d-pilot ideas transition --repo <path> <idea-id> <event> [--actor <actor>] [--note <text>] [--targets-json <file>] [--head-sha <sha>]
@@ -1753,6 +1756,16 @@ publish_send_notification() {
   fi
 }
 
+# All work that is allowed to happen only after a publish backend has
+# succeeded and its output has been recorded belongs behind this seam. The
+# caller invokes it once per backend invocation; mirroring itself remains
+# disabled-by-default and best-effort here.
+publish_post_success() {
+  local repo="$1" config_file="$2" run_dir="$3" branch="$4" backend="$5" outcome="$6" summary_file="$7"
+  publish_send_notification "$config_file" "$run_dir" "$branch" "$backend" "$outcome" "$summary_file"
+  ideas_mirror_run "$repo" best-effort "$config_file"
+}
+
 selected_candidate_excerpt() {
   local candidates_file="$1" selected number
   selected="$(candidates_selected_field "$candidates_file")"
@@ -1996,7 +2009,7 @@ publish_stage() {
     *) die "publish backend $backend did not report a recognized outcome (published/needs-attention/error): $(tr '\n' ' ' < "$run_dir/publish-backend.out")" ;;
   esac
 
-  publish_send_notification "$config_file" "$run_dir" "$branch" "$backend" "$outcome" "$summary"
+  publish_post_success "$repo" "$config_file" "$run_dir" "$branch" "$backend" "$outcome" "$summary"
 
   printf '%s\n' "$output"
 }
@@ -2381,6 +2394,13 @@ validate_config_file() {
   json_type_check "$file" 'if has("approval") then (.approval.merge_required | type == "boolean") else true end' "config.approval.merge_required must be a boolean"
   json_type_check "$file" 'if has("tracking") then (.tracking | type == "object") else true end' "config.tracking must be an object when provided"
   json_type_check "$file" 'if (has("tracking") and (.tracking | has("project_url"))) then (.tracking.project_url | type == "string") else true end' "config.tracking.project_url must be a string when provided"
+  json_type_check "$file" 'if has("storage") then (.storage | type == "object") else true end' "config.storage must be an object when provided"
+  json_type_check "$file" 'if has("storage") then ((.storage | keys) - ["mirror"] | length == 0) else true end' "config.storage contains unknown properties"
+  json_type_check "$file" 'if (has("storage") and (.storage | has("mirror"))) then (.storage.mirror | type == "object") else true end' "config.storage.mirror must be an object when provided"
+  json_type_check "$file" 'if (has("storage") and (.storage | has("mirror"))) then ((.storage.mirror | keys | sort) == ["api_key_env", "enabled", "url"]) else true end' "config.storage.mirror must include only enabled, url, and api_key_env"
+  json_type_check "$file" 'if (has("storage") and (.storage | has("mirror"))) then (.storage.mirror.enabled | type == "boolean") else true end' "config.storage.mirror.enabled must be a boolean"
+  json_type_check "$file" 'if (has("storage") and (.storage | has("mirror"))) then ((.storage.mirror.url | type == "string") and (.storage.mirror.url | test("^https?://"))) else true end' "config.storage.mirror.url must begin with lowercase http:// or https://"
+  json_type_check "$file" 'if (has("storage") and (.storage | has("mirror"))) then ((.storage.mirror.api_key_env | type == "string") and (.storage.mirror.api_key_env | test("^[A-Za-z_][A-Za-z0-9_]*$"))) else true end' "config.storage.mirror.api_key_env must be an environment-variable name"
   scoring_validate_config_file "$file"
   printf 'config valid: %s\n' "$file"
 }
@@ -2400,6 +2420,45 @@ cmd_config() {
       ;;
     *)
       die "unknown config subcommand: $subcommand"
+      ;;
+  esac
+}
+
+cmd_storage() {
+  local subcommand="${1:-}"
+  shift || true
+  case "$subcommand" in
+    mirror)
+      local repo="" repo_seen=0
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --repo)
+            (( repo_seen == 0 )) || die "duplicate storage mirror argument: --repo"
+            [[ $# -ge 2 && -n "$2" && "$2" != --* ]] || die "storage mirror --repo requires a path"
+            repo="$2"
+            repo_seen=1
+            shift 2
+            ;;
+          -h|--help)
+            usage
+            return 0
+            ;;
+          --*) die "unknown storage mirror argument: $1" ;;
+          *) die "unexpected storage mirror argument: $1" ;;
+        esac
+      done
+      [[ -n "$repo" ]] || die "storage mirror requires --repo"
+      repo="$(repo_abs_path "$repo")"
+      ensure_git_repo "$repo"
+      validate_config_file "$(config_path_for_repo "$repo")" >/dev/null
+      ideas_mirror_run "$repo" strict "$(config_path_for_repo "$repo")"
+      printf 'storage mirror: upload completed\n'
+      ;;
+    ""|-h|--help)
+      usage
+      ;;
+    *)
+      die "unknown storage subcommand: $subcommand"
       ;;
   esac
 }
@@ -6027,6 +6086,10 @@ main() {
       shift
       cmd_config "$@"
       ;;
+    storage)
+      shift
+      cmd_storage "$@"
+      ;;
     run)
       shift
       cmd_run "$@"
@@ -6057,4 +6120,6 @@ main() {
   esac
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi

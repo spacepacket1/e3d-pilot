@@ -31,5 +31,12 @@
   "approval": {
     "implementation_required": true,
     "merge_required": true
+  },
+  "storage": {
+    "mirror": {
+      "enabled": false,
+      "url": "https://ledger-mirror.example.com/v1/snapshots",
+      "api_key_env": "E3D_PILOT_MIRROR_API_KEY"
+    }
   }
 }
