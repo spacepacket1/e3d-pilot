@@ -1774,11 +1774,17 @@ selected_candidate_excerpt() {
 }
 
 negotiation_outcome_excerpt() {
-  local log_file="$1"
-  awk '
-    /^## Final Outcome/ { capture=1 }
-    capture { print }
-  ' "$log_file"
+  # `## Final Outcome` is appended once per negotiate round (each retry
+  # writes its own), not once per log. Capturing from the *first* match to
+  # EOF -- as a naive `capture=1`-and-never-reset awk would -- sweeps in
+  # every later round's full prompts/responses too, ballooning a PR body
+  # that should be a one-line outcome into hundreds of KB (observed: a
+  # 3-round negotiate log blew GitHub's 65536-char PR body limit this way).
+  # Only the last occurrence is the true final outcome.
+  local log_file="$1" start_line
+  start_line="$(grep -n '^## Final Outcome' "$log_file" | tail -1 | cut -d: -f1)"
+  [[ -n "$start_line" ]] || return 0
+  sed -n "${start_line},\$p" "$log_file"
 }
 
 run_verify_command_in_worktree() {

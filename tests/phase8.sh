@@ -310,6 +310,54 @@ EOF
   assert_contains "$tree" ".e3d-pilot/runs/$run_id/csr-manifest-rows.json"
 }
 
+local_publish_summary_uses_only_the_last_negotiation_round_outcome() {
+  # Every negotiate round appends its own `## Final Outcome` section (see
+  # negotiate_stage), not just the last one. A prior bug captured from the
+  # *first* match to EOF, sweeping every later round's full prompts/specs
+  # into the PR body -- inflating a real run's publish-summary.md to ~660KB
+  # and tripping GitHub's 65536-char PR body limit at publish time.
+  local repo run_id worktree bin_dir out summary
+  repo="$(make_repo_with_commit)"
+  run_id="2026-07-27-phase8-local-multiround"
+  write_phase8_config "$repo" "local" '["test -f README.md"]'
+  write_phase8_run_artifacts "$repo" "$run_id"
+  cat > "$repo/.e3d-pilot/runs/$run_id/negotiation-log.md" <<'EOF'
+# Negotiation Log
+
+## Round 1
+
+### Reviewer: codex
+
+This round's spec draft had a huge embedded example that should never reach the PR body.
+
+## Final Outcome
+
+Needs human review after round 1; revise requested.
+
+## Round 2
+
+### Reviewer: codex
+
+Second round of back-and-forth, also should never reach the PR body.
+
+## Final Outcome
+
+Converged in round 2.
+EOF
+  worktree="$(make_execute_like_worktree "$repo" "$run_id")"
+
+  bin_dir="$(mktemp -d)"
+  PATH="$bin_dir:$PATH" "$BIN" run --repo "$repo" --stage review --run-id "$run_id" >/dev/null
+  out="$(PATH="$bin_dir:$PATH" "$BIN" run --repo "$repo" --stage publish --run-id "$run_id")"
+  assert_contains "$out" "mode: local"
+  summary="$(cat "$repo/.e3d-pilot/runs/$run_id/publish-summary.md")"
+  assert_contains "$summary" "Converged in round 2."
+  assert_not_contains "$summary" "Needs human review after round 1"
+  assert_not_contains "$summary" "huge embedded example"
+  assert_not_contains "$summary" "Second round of back-and-forth"
+  rm -rf "$bin_dir" "$worktree"
+}
+
 github_publish_dry_run_prints_exact_commands() {
   local repo run_id worktree out tree
   repo="$(make_repo_with_commit)"
@@ -493,6 +541,7 @@ main() {
   review_verify_failure_blocks_publish
   review_auto_detects_make_test_when_verify_empty
   local_publish_commits_audit_artifacts
+  local_publish_summary_uses_only_the_last_negotiation_round_outcome
   github_publish_dry_run_prints_exact_commands
   local_publish_sends_email_notification_when_configured
   publish_notify_skips_silently_without_config_or_mail_command
