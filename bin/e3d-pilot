@@ -1920,7 +1920,38 @@ review_stage() {
   export CLAUDE_TOOLS=""
   local verdict_status verdict_reason parse_rc
   local -a blocked_reasons=()
+  local -a review_provider_failures=()
+  local review_provider_script review_availability_output review_availability_status
   for review_provider in "${review_providers[@]}"; do
+    # A provider that is genuinely unavailable in this environment (missing
+    # binary, not authenticated) is skipped without penalty -- that is the
+    # existing, intentional resilience behavior shared with discover/ideate.
+    # But a provider that IS available and still fails the actual invocation
+    # (crashed, hit its own budget/context ceiling, produced nothing) is a
+    # different situation for a merge gate specifically: it means a reviewer
+    # that should have given an opinion on this diff gave none, and that must
+    # not be silently equivalent to "no objection." A 1.13MB diff (caused by
+    # an already-committed audit-trail commit landing in the reviewed range)
+    # once made Claude hit its $0.50 review budget mid-response and Codex
+    # return empty output -- both were silently dropped here, and the run
+    # still published on the strength of the two reviewers that happened to
+    # survive. Probing availability ourselves (cheap, no network cost) lets
+    # us tell the two failure classes apart without changing
+    # try_stage_provider's shared success/failure contract.
+    review_provider_script="$REPO_ROOT/lib/providers/$review_provider"
+    if [[ -x "$review_provider_script" ]]; then
+      set +e
+      review_availability_output="$(provider_availability_probe "$review_provider_script")"
+      review_availability_status=$?
+      set -e
+    else
+      review_availability_output="provider script missing: $review_provider_script"
+      review_availability_status="$PROVIDER_EXIT_UNAVAILABLE"
+    fi
+    if [[ $review_availability_status -eq "$PROVIDER_EXIT_UNAVAILABLE" ]]; then
+      printf 'review: warning: provider "%s" unavailable; skipping: %s\n' "$review_provider" "${review_availability_output:-no details}" >&2
+      continue
+    fi
     if try_stage_provider "$worktree" "$review_provider" "$prompt" \
       "$run_dir/review-provider-${review_provider}.md" "$run_dir/review-provider-${review_provider}.stderr" "review"; then
       review_combine+=("$review_provider" "$run_dir/review-provider-${review_provider}.md")
@@ -1936,11 +1967,24 @@ review_stage() {
         verdict_reason="$("$REPO_ROOT/lib/review/parse-verdict" "$run_dir/review-provider-${review_provider}.md" reason 2>/dev/null || true)"
         blocked_reasons+=("$review_provider: ${verdict_reason:-(no reason provided)}")
       fi
+    else
+      review_provider_failures+=("$review_provider")
     fi
   done
   unset CLAUDE_TOOLS
-  [[ ${#review_combine[@]} -gt 0 ]] || die "review: every configured provider failed or was unavailable"
-  combine_provider_sections "$response" "${review_combine[@]}"
+  [[ ${#review_combine[@]} -gt 0 || ${#review_provider_failures[@]} -gt 0 ]] \
+    || die "review: every configured provider failed or was unavailable"
+  [[ ${#review_combine[@]} -gt 0 ]] && combine_provider_sections "$response" "${review_combine[@]}"
+  if [[ ${#review_provider_failures[@]} -gt 0 ]]; then
+    printf 'verify_status: passed\nreview_status: blocked\nbranch: %s\nworktree: %s\nlive_verify: %s\n' \
+      "$branch" "$worktree" "$live_reason" > "$review_status_file"
+    printf 'review: blocked because a configured reviewer was available but failed to produce output for %s (cannot be silently treated as non-blocking on a merge gate):\n' "$branch"
+    local failed_line
+    for failed_line in "${review_provider_failures[@]}"; do
+      printf '  - %s\n' "$failed_line"
+    done
+    return "$REVIEW_EXIT_BLOCKED"
+  fi
   if [[ ${#blocked_reasons[@]} -gt 0 ]]; then
     printf 'verify_status: passed\nreview_status: blocked\nbranch: %s\nworktree: %s\nlive_verify: %s\n' \
       "$branch" "$worktree" "$live_reason" > "$review_status_file"

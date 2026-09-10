@@ -5,6 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BIN="$ROOT/bin/e3d-pilot"
 SAMPLE_CONFIG="$ROOT/examples/sample-config.json"
 PROVIDER_STUB="$ROOT/lib/providers/phase8-review"
+PROVIDER_STUB_FAILING="$ROOT/lib/providers/phase8-review-failing"
 
 assert_contains() {
   local haystack="$1" needle="$2"
@@ -63,7 +64,23 @@ EOF
 }
 
 cleanup_review_provider_stub() {
-  rm -f "$PROVIDER_STUB"
+  rm -f "$PROVIDER_STUB" "$PROVIDER_STUB_FAILING"
+}
+
+# Simulates a reviewer that IS available (its availability probe succeeds,
+# since it isn't invoked with E3D_PILOT_CHECK and just runs the same script
+# either way) but whose real invocation fails outright -- the same shape as
+# Claude hitting its review budget ceiling or Codex returning empty output
+# on an oversized diff.
+install_failing_review_provider_stub() {
+  cat > "$PROVIDER_STUB_FAILING" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+prompt_file="${1:?prompt file required}"
+printf 'simulated reviewer crash (e.g. budget or context ceiling)\n' >&2
+exit 1
+EOF
+  chmod +x "$PROVIDER_STUB_FAILING"
 }
 
 write_phase8_config() {
@@ -310,6 +327,35 @@ EOF
   assert_contains "$tree" ".e3d-pilot/runs/$run_id/csr-manifest-rows.json"
 }
 
+review_blocks_when_an_available_provider_fails_to_produce_output() {
+  # Two configured reviewers: one healthy, one that is available but whose
+  # invocation fails (crash/budget/context ceiling). Silently proceeding on
+  # the healthy reviewer's approval alone -- treating "this reviewer never
+  # gave an opinion" the same as "no objection" -- is exactly what let a
+  # real run publish after Claude and Codex both failed on an oversized
+  # diff. Review must instead block and require a human/re-run.
+  local repo run_id worktree out status
+  repo="$(make_repo_with_commit)"
+  run_id="2026-07-27-phase8-partial-reviewer-failure"
+  write_phase8_config "$repo" "local" '["test -f README.md"]'
+  jq '.providers.review = ["phase8-review", "phase8-review-failing"]' \
+    "$repo/.e3d-pilot/config.json" > "$repo/.e3d-pilot/config.json.tmp"
+  mv "$repo/.e3d-pilot/config.json.tmp" "$repo/.e3d-pilot/config.json"
+  install_failing_review_provider_stub
+  write_phase8_run_artifacts "$repo" "$run_id"
+  worktree="$(make_execute_like_worktree "$repo" "$run_id")"
+
+  set +e
+  out="$("$BIN" run --repo "$repo" --stage review --run-id "$run_id" 2>&1)"
+  status=$?
+  set -e
+  rm -f "$PROVIDER_STUB_FAILING"
+  [[ $status -eq 6 ]] || { printf 'expected review to exit 6 (REVIEW_EXIT_BLOCKED) when a reviewer is available but fails, got %s: %s\n' "$status" "$out" >&2; exit 1; }
+  assert_contains "$out" "available but failed to produce output"
+  assert_contains "$(cat "$repo/.e3d-pilot/runs/$run_id/review-status.txt")" "review_status: blocked"
+  rm -rf "$worktree"
+}
+
 local_publish_summary_uses_only_the_last_negotiation_round_outcome() {
   # Every negotiate round appends its own `## Final Outcome` section (see
   # negotiate_stage), not just the last one. A prior bug captured from the
@@ -540,6 +586,7 @@ main() {
   trap cleanup_review_provider_stub EXIT
   review_verify_failure_blocks_publish
   review_auto_detects_make_test_when_verify_empty
+  review_blocks_when_an_available_provider_fails_to_produce_output
   local_publish_commits_audit_artifacts
   local_publish_summary_uses_only_the_last_negotiation_round_outcome
   github_publish_dry_run_prints_exact_commands
