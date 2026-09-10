@@ -33,11 +33,22 @@ reason="$(grep -m1 -E '^reason: .+$' "$response_file" | sed -E 's/^reason: //' |
 
 spec_block=""
 if [[ "$status" == "revise" ]]; then
-  spec_block="$(awk '
-    /^```spec[[:space:]]*$/ { capture=1; next }
-    capture && /^```[[:space:]]*$/ { capture=0; next }
-    capture { print }
-  ' "$response_file")"
+  # A replacement spec describing a data format or envelope is a completely
+  # ordinary thing to illustrate with a nested example code block -- stopping
+  # capture at the *first* closing fence after ```spec (as this used to)
+  # silently truncates the block right there instead, handing a corrupted,
+  # mid-sentence spec to the rest of the pipeline with no error at all. The
+  # negotiate prompt requires "the full replacement spec... then nothing
+  # else", so the true closing fence is reliably the *last* bare ``` line in
+  # the whole response, however many nested fences sit in between.
+  start_line="$(grep -n -m1 -E '^```spec[[:space:]]*$' "$response_file" | cut -d: -f1 || true)"
+  end_line=""
+  if [[ -n "$start_line" ]]; then
+    end_line="$(grep -n -E '^```[[:space:]]*$' "$response_file" | tail -1 | cut -d: -f1 || true)"
+  fi
+  if [[ -n "$start_line" && -n "$end_line" ]] && (( end_line > start_line )); then
+    spec_block="$(sed -n "$((start_line + 1)),$((end_line - 1))p" "$response_file")"
+  fi
   [[ -n "$spec_block" ]] || {
     echo "error: status: revise requires a fenced \`\`\`spec replacement block" >&2
     exit 1

@@ -351,6 +351,40 @@ EOF
   rm -f "$file"
 }
 
+parse_status_spec_block_survives_nested_example_fence() {
+  # Real failure found dogfooding a genuine negotiate round: a replacement
+  # spec describing a data envelope illustrated it with a nested example
+  # code block. The old parser stopped capture at that nested block's own
+  # closing fence -- the *first* closing ``` after ```spec -- silently
+  # truncating the real spec mid-sentence with no error raised anywhere.
+  local file status spec
+  file="$(mktemp)"
+  cat > "$file" <<'EOF'
+---STATUS---
+status: revise
+reason: needs a worked example of the envelope format
+```spec
+## Phase 1 - Replacement
+
+Serialize the payload inside this exact delimiter envelope:
+
+```
+<UNTRUSTED_DATA>
+{"example": true}
+</UNTRUSTED_DATA>
+```
+
+This line must survive: it comes after the nested example block.
+```
+EOF
+  status="$("$NEGOTIATE_DIR/parse-status" "$file" status)"
+  assert_eq "$status" "revise"
+  spec="$("$NEGOTIATE_DIR/parse-status" "$file" spec)"
+  assert_contains "$spec" "UNTRUSTED_DATA"
+  assert_contains "$spec" "This line must survive"
+  rm -f "$file"
+}
+
 parse_status_fails_on_missing_status_block() {
   local file status
   file="$(mktemp)"
@@ -421,6 +455,7 @@ main() {
   parse_status_extracts_revise_and_spec_block_even_when_fenced
   parse_status_synthesizes_reason_when_missing
   parse_status_extracts_marker_glued_to_reasoning_prefix
+  parse_status_spec_block_survives_nested_example_fence
   parse_status_fails_on_missing_status_block
   convergence_two_entries_all_approved_converges
   convergence_two_entries_one_dissenting_does_not_converge
