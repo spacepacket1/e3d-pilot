@@ -319,10 +319,11 @@ Existing open e3d-pilot PRs should be adopted only through an explicit adoption 
 
 ## Providers and negotiation
 
-Built-in adapters are `claude`, `codex`, `local`, `devin`, and `grok-build`;
-check them with `e3d-pilot providers list`. `grok-build` is selected the same
-way as the others: name it in `providers.*`. It is available when the `grok`
-binary is on `PATH` (override with `GROK_BUILD_BIN`).
+Built-in adapters are `claude`, `codex`, `local`, `devin`, `grok-build`, and
+the opt-in `gemini` trial adapter; check them with `e3d-pilot providers list`.
+`grok-build` is selected the same way as the others: name it in `providers.*`.
+It is available when the `grok` binary is on `PATH` (override with
+`GROK_BUILD_BIN`).
 
 `discover`, `ideate`, `negotiate`, and `review` can each list more than one
 model so every configured adapter gets a turn. A string is still valid and
@@ -339,6 +340,36 @@ or `XAI_API_KEY`. Override the binary, timeout, or model with `GROK_BUILD_BIN`,
 `GROK_BUILD_TIMEOUT` (seconds, default 900), and `GROK_BUILD_MODEL`. There is
 no extra enable flag: naming `grok-build` in config is the opt-in, the same as
 the other adapters.
+
+**gemini** — an opt-in trial adapter, intended for an explicitly selected
+`e3d-debate --providers ...gemini...` run. It is absent from `e3d-debate`'s
+defaults and from every default or recommended `providers.*` configuration;
+like every other adapter here, there is no separate enable flag beyond
+naming it explicitly, so nothing in code stops it from also being named in a
+pipeline stage's own `providers.*` config, but its shared, quota-limited free
+tier (see below) makes it a poor fit for any stage that must always succeed.
+Install the [Gemini CLI](https://geminicli.com/docs/get-started/installation/)
+and follow its [personal Google OAuth instructions](https://geminicli.com/docs/get-started/authentication/).
+The adapter rejects API-key, Vertex AI, Google Cloud, credential-override,
+missing, ambiguous, and overage-billable authentication instead of risking a
+paid call -- `settings.json`'s `billing.overageStrategy` must be exactly
+`"never"` (its own default is `"ask"`, not `"never"`). It runs
+headlessly with all built-in, extension, and MCP tools denied by policy, and
+also refuses to run if any Gemini CLI hook, `mcpServers` entry,
+`admin.mcp.config`, `admin.mcp.requiredConfig`, or `adminPolicyPaths` entry
+is configured in the user, system-settings, or system-defaults settings
+file (hooks execute arbitrary commands with prompt access at lifecycle
+events; MCP servers -- including enterprise-admin-required ones, which
+Gemini CLI documents as injected "regardless of user preferences" -- launch
+a command at CLI startup during discovery; admin policy paths point at
+additional policy files this adapter cannot audit -- all independent of the
+tool-calling path the policy denies). Set
+`GEMINI_BIN` (default `gemini`), `GEMINI_MODEL` (unset by default),
+`GEMINI_TIMEOUT` (seconds, default `120`), or `GEMINI_TOKEN_LIMIT` (default
+`200000`) to override its limits. Successful calls report the exact response
+model and tokens when Gemini supplies both, with unmeasured telemetry otherwise;
+the timeout and token ceiling fail the call rather than returning partial output.
+See the [motivating Gemini/Qwen provider debate](docs/debates/2026-09-15-gemini-qwen-provider-addition/transcript.md).
 
 To use Grok only as a cheap candidate ranker, keep your existing
 ideate/negotiate providers and add `candidate_scoring` (see
