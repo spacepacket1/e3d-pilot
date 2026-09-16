@@ -1,0 +1,493 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=./common.sh
+source "$SCRIPT_DIR/common.sh"
+
+GEMINI_BIN="${GEMINI_BIN:-gemini}"
+GEMINI_MODEL="${GEMINI_MODEL:-}"
+GEMINI_TIMEOUT="${GEMINI_TIMEOUT:-120}"
+GEMINI_TOKEN_LIMIT="${GEMINI_TOKEN_LIMIT:-200000}"
+
+gemini_missing_message() {
+  printf 'unavailable: gemini binary not found (%s); set GEMINI_BIN to override\n' "$GEMINI_BIN"
+}
+
+gemini_settings_file() {
+  local effective_home="${GEMINI_CLI_HOME:-${HOME:-}}"
+  [[ -n "$effective_home" ]] || return 1
+  printf '%s/.gemini/settings.json\n' "$effective_home"
+}
+
+# Gemini CLI's own documented config precedence gives this file the HIGHEST
+# priority among settings files -- it overrides project settings, user
+# settings, and system defaults alike (an enterprise-admin control point).
+# If it exists and picks a non-personal auth type, it wins regardless of
+# what the user settings file above says. GEMINI_CLI_SYSTEM_SETTINGS_PATH is
+# Gemini CLI's own documented, real variable for redirecting this file --
+# resolving it here (with no separate test-only override) is deliberate: a
+# parallel test-isolation variable would let validation and the real
+# invocation inspect different files whenever only one of the two was set,
+# defeating the fail-closed guarantee. Tests set this same real variable.
+gemini_system_settings_file() {
+  if [[ -n "${GEMINI_CLI_SYSTEM_SETTINGS_PATH:-}" ]]; then
+    printf '%s\n' "$GEMINI_CLI_SYSTEM_SETTINGS_PATH"
+    return 0
+  fi
+  case "$(uname -s 2>/dev/null || true)" in
+    Darwin) printf '%s\n' '/Library/Application Support/GeminiCli/settings.json' ;;
+    Linux) printf '%s\n' '/etc/gemini-cli/settings.json' ;;
+    *) return 1 ;;
+  esac
+}
+
+# Lower precedence than every other settings file (it only supplies a value
+# when nothing else does), but still a real settings.json Gemini CLI reads
+# -- object-valued keys like hooks/mcpServers may not simply be "overridden
+# to empty" by a higher layer leaving them unset, so it is checked
+# independently rather than assumed safe by precedence reasoning alone.
+# GEMINI_CLI_SYSTEM_DEFAULTS_PATH is Gemini CLI's own documented, real
+# variable for redirecting this file -- same no-separate-test-override
+# rationale as gemini_system_settings_file above.
+gemini_system_defaults_file() {
+  if [[ -n "${GEMINI_CLI_SYSTEM_DEFAULTS_PATH:-}" ]]; then
+    printf '%s\n' "$GEMINI_CLI_SYSTEM_DEFAULTS_PATH"
+    return 0
+  fi
+  case "$(uname -s 2>/dev/null || true)" in
+    Darwin) printf '%s\n' '/Library/Application Support/GeminiCli/system-defaults.json' ;;
+    Linux) printf '%s\n' '/etc/gemini-cli/system-defaults.json' ;;
+    *) return 1 ;;
+  esac
+}
+
+# Shared validator for one settings-file layer (user, system settings, or
+# system defaults). Object-valued command/policy-execution keys are rejected
+# outright regardless of layer, since they are not provably "overridden to
+# empty" by a higher-precedence layer merely leaving them unset:
+#   - hooks / mcpServers: arbitrary commands at lifecycle events / CLI
+#     startup, independent of the tool-calling path --admin-policy denies.
+#   - admin.mcp.requiredConfig: enterprise-admin MCP servers Gemini CLI
+#     documents as "automatically included in every session, regardless of
+#     user preferences" -- more dangerous than mcpServers itself.
+#   - admin.mcp.config: an enterprise-admin MCP allowlist; a non-empty one
+#     means some server is admin-approved to run.
+#   - adminPolicyPaths: additional --admin-policy-equivalent files or
+#     directories beyond the one fixed OS-default directory
+#     gemini_require_supplemental_policy already checks -- a non-empty list
+#     points at policy content this adapter cannot audit.
+# When $require_explicit is 1 (the user settings file, our one mandatory
+# source of truth), selectedType/overageStrategy must be present and exactly
+# the safe value; otherwise (a higher-precedence file that only needs
+# rejecting if it actively overrides to something unsafe) they may be
+# absent, but if present must still be the safe value.
+gemini_settings_layer_is_safe() {
+  local file="$1" require_explicit="$2"
+  if [[ "$require_explicit" == "1" ]]; then
+    jq -e '
+      type == "object"
+      and .security.auth.selectedType == "oauth-personal"
+      and .billing.overageStrategy == "never"
+      and ((.hooks // {}) == {})
+      and ((.mcpServers // {}) == {})
+      and ((.admin.mcp.config // {}) == {})
+      and ((.admin.mcp.requiredConfig // {}) == {})
+      and ((.adminPolicyPaths // []) == [])
+    ' "$file" >/dev/null 2>&1
+  else
+    jq -e '
+      type == "object"
+      and ((.security.auth.selectedType // null) as $t | $t == null or $t == "oauth-personal")
+      and ((.billing.overageStrategy // null) as $o | $o == null or $o == "never")
+      and ((.hooks // {}) == {})
+      and ((.mcpServers // {}) == {})
+      and ((.admin.mcp.config // {}) == {})
+      and ((.admin.mcp.requiredConfig // {}) == {})
+      and ((.adminPolicyPaths // []) == [])
+    ' "$file" >/dev/null 2>&1
+  fi
+}
+
+# Accept only the CLI's personal Google OAuth selection, with no environment
+# variable that could redirect the call to an API-key or billed Cloud path.
+# Taking the settings path as an argument keeps this check fixture-isolatable.
+gemini_require_personal_oauth() {
+  local settings_file="$1" override
+  local overrides=(
+    GEMINI_API_KEY
+    GOOGLE_API_KEY
+    GOOGLE_GENAI_USE_VERTEXAI
+    GOOGLE_APPLICATION_CREDENTIALS
+    GOOGLE_CLOUD_PROJECT
+    GOOGLE_CLOUD_PROJECT_ID
+    GOOGLE_CLOUD_LOCATION
+    GOOGLE_CLOUD_REGION
+    GOOGLE_CLOUD_QUOTA_PROJECT
+    CLOUDSDK_CORE_PROJECT
+    GCLOUD_PROJECT
+    # Not independently confirmed against current official Gemini CLI docs
+    # as of this writing (a reviewer flagged them; docs search could not
+    # verify the exact names) -- kept here defensively since rejecting an
+    # unset variable costs nothing, but do not treat their presence in this
+    # list as proof they are real, and do not remove the vars above based on
+    # any future claim that these two supersede them.
+    GOOGLE_GENAI_USE_GCA
+    GOOGLE_CLOUD_ACCESS_TOKEN
+  )
+
+  for override in "${overrides[@]}"; do
+    if [[ -n "${!override:-}" ]]; then
+      echo "error: refusing Gemini invocation because $override selects or may select paid/ambiguous authentication" >&2
+      return 1
+    fi
+  done
+
+  if [[ ! -f "$settings_file" ]]; then
+    echo "error: Gemini personal OAuth is not confirmed; settings file not found: $settings_file" >&2
+    return 1
+  fi
+  # billing.overageStrategy defaults to "ask" (not "never") when unset --
+  # under "ask" or "always" the CLI can consume paid credits once free quota
+  # is exhausted even under otherwise-valid personal OAuth, and a headless,
+  # non-interactive invocation cannot safely assume an "ask" prompt declines.
+  # Require it to be explicitly "never", the same fail-closed bar as
+  # selectedType itself. Gemini CLI's hooks and mcpServers both run arbitrary
+  # configured commands -- hooks at lifecycle events (SessionStart,
+  # BeforeAgent, BeforeTool, ...), mcpServers at CLI startup during MCP
+  # discovery, before any tool-calling decision is made -- entirely
+  # independent of the tool-calling path --admin-policy denies. Either one
+  # defeats the whole tool-free security boundary regardless of auth/billing
+  # correctness, so reject both outright rather than try to classify which
+  # events/servers are "safe".
+  if ! gemini_settings_layer_is_safe "$settings_file" 1; then
+    echo "error: Gemini personal OAuth is not confirmed; security.auth.selectedType must be exactly \"oauth-personal\", billing.overageStrategy must be exactly \"never\", and no hooks, mcpServers, admin.mcp.config, admin.mcp.requiredConfig, or adminPolicyPaths may be configured" >&2
+    return 1
+  fi
+
+  # The system settings file outranks every other settings file (including
+  # the one just validated above) in Gemini CLI's own documented precedence.
+  # If present, its own selectedType, overageStrategy, hooks, and mcpServers
+  # -- when it sets any of them at all -- must also pass the same bar, or it
+  # silently wins regardless of the user settings file's answer.
+  local system_settings_file
+  if system_settings_file="$(gemini_system_settings_file)" && [[ -f "$system_settings_file" ]]; then
+    if ! gemini_settings_layer_is_safe "$system_settings_file" 0; then
+      echo "error: refusing Gemini invocation because the system settings file ($system_settings_file) overrides personal OAuth/billing, configures hooks/mcpServers/admin MCP config/admin policy paths, or is malformed" >&2
+      return 1
+    fi
+  fi
+
+  # The system defaults file is the lowest-precedence real settings file
+  # (only above hardcoded built-in defaults) -- scalar fields like
+  # selectedType/overageStrategy are already safe by precedence reasoning
+  # once the user file above requires them explicitly, but object-valued
+  # keys like hooks/mcpServers are not provably "overridden to empty" by a
+  # higher layer merely leaving them unset, so this layer is checked too
+  # rather than assumed safe.
+  local system_defaults_file
+  if system_defaults_file="$(gemini_system_defaults_file)" && [[ -f "$system_defaults_file" ]]; then
+    if ! gemini_settings_layer_is_safe "$system_defaults_file" 0; then
+      echo "error: refusing Gemini invocation because the system defaults file ($system_defaults_file) overrides personal OAuth/billing, configures hooks/mcpServers/admin MCP config/admin policy paths, or is malformed" >&2
+      return 1
+    fi
+  fi
+
+  # Gemini CLI's own documented config precedence loads this same directory's
+  # .env file automatically and merges it as environment variables, which
+  # take precedence over settings.json -- a file here could silently select
+  # paid/ambiguous auth even though settings.json says oauth-personal. We
+  # cannot audit its effect without duplicating Gemini's own dotenv parser,
+  # so fail closed on its mere presence rather than approximate a check.
+  if [[ -f "$(dirname "$settings_file")/.env" ]]; then
+    echo "error: refusing Gemini invocation because $(dirname "$settings_file")/.env exists and may override personal OAuth" >&2
+    return 1
+  fi
+
+  # Separately from .gemini/.env above, Gemini CLI's plain-.env search walks
+  # up from its cwd looking for one, stopping at a .git directory or the
+  # home directory -- but if that walk finds nothing, it *unconditionally*
+  # falls back to checking ~/.env (bare, not inside .gemini/) regardless of
+  # cwd. Isolating the invocation's cwd (below) defeats the upward-search
+  # part of this, but not this unconditional home-directory fallback.
+  local home_env_file
+  home_env_file="$(dirname "$(dirname "$settings_file")")/.env"
+  if [[ -f "$home_env_file" ]]; then
+    echo "error: refusing Gemini invocation because $home_env_file exists and may override personal OAuth" >&2
+    return 1
+  fi
+}
+
+# Isolating the invocation cwd to a fresh mktemp directory only defeats
+# Gemini CLI's project-.env lookup if nothing between that directory and
+# where its own upward search would stop (a directory containing .git, the
+# home directory, or the filesystem root) has a .env of its own -- and
+# TMPDIR (the parent of that mktemp directory) is itself caller-controlled,
+# so this cannot be assumed. Walk the same ancestry Gemini CLI would and
+# fail closed on any .env found, exactly mirroring its own stopping rules.
+gemini_require_no_ancestor_env() {
+  local dir="$1" home="$2" resolved
+  resolved="$(cd "$dir" 2>/dev/null && pwd -P)" || return 1
+  while :; do
+    if [[ -f "$resolved/.env" ]]; then
+      echo "error: refusing Gemini invocation because $resolved/.env exists in the invocation cwd's ancestry and may override personal OAuth" >&2
+      return 1
+    fi
+    if [[ -e "$resolved/.git" ]]; then
+      return 0
+    fi
+    if [[ -n "$home" && "$resolved" == "$home" ]]; then
+      return 0
+    fi
+    if [[ "$resolved" == "/" ]]; then
+      return 0
+    fi
+    resolved="$(dirname "$resolved")"
+  done
+}
+
+gemini_require_supplemental_policy() {
+  local policy_dir=""
+  case "$(uname -s 2>/dev/null || true)" in
+    Darwin) policy_dir='/Library/Application Support/GeminiCli/policies' ;;
+    Linux) policy_dir='/etc/gemini-cli/policies' ;;
+  esac
+
+  # Gemini ignores --admin-policy when the standard system directory contains
+  # policies. In that case the wildcard deny cannot be guaranteed, so stop.
+  if [[ -n "$policy_dir" ]] && compgen -G "$policy_dir/*.toml" >/dev/null; then
+    echo "error: refusing Gemini invocation because system policies would suppress the required disable-all-tools policy" >&2
+    return 1
+  fi
+}
+
+if [[ "${E3D_PILOT_CHECK:-0}" == "1" ]]; then
+  if provider_binary_available "$GEMINI_BIN"; then
+    printf 'available: gemini (%s)\n' "$GEMINI_BIN"
+    exit "$PROVIDER_EXIT_OK"
+  fi
+  gemini_missing_message
+  exit "$PROVIDER_EXIT_UNAVAILABLE"
+fi
+
+if [[ $# -ne 1 ]]; then
+  echo "error: gemini provider requires exactly one prompt-file argument" >&2
+  exit "$PROVIDER_EXIT_FAILURE"
+fi
+PROMPT_FILE="$1"
+provider_require_prompt_file "$PROMPT_FILE"
+# Resolve to an absolute path now, before any cwd change below, since a
+# relative path would otherwise silently break once the real invocation runs
+# from an isolated directory.
+PROMPT_FILE="$(cd "$(dirname "$PROMPT_FILE")" && pwd)/$(basename "$PROMPT_FILE")"
+
+if ! provider_binary_available "$GEMINI_BIN"; then
+  gemini_missing_message >&2
+  exit "$PROVIDER_EXIT_UNAVAILABLE"
+fi
+
+work_dir="$(mktemp -d "${TMPDIR:-/tmp}/e3d-gemini.XXXXXX")"
+cleanup() {
+  rm -rf "$work_dir"
+}
+trap cleanup EXIT
+
+# A supplemental admin policy is Gemini CLI's enforceable, wildcard mechanism
+# for keeping every built-in and MCP tool out of the model's available tools.
+deny_policy="$work_dir/disable-all-tools.toml"
+printf '%s\n' \
+  '[[rule]]' \
+  'toolName = "*"' \
+  'decision = "deny"' \
+  'priority = 999' > "$deny_policy"
+
+gemini_args=(
+  --prompt ""
+  --output-format json
+  --extensions none
+  --admin-policy "$deny_policy"
+  --approval-mode default
+)
+if [[ -n "$GEMINI_MODEL" ]]; then
+  gemini_args+=(--model "$GEMINI_MODEL")
+fi
+
+if [[ "${E3D_PILOT_DRY_RUN:-0}" == "1" ]]; then
+  printf '%q ' "$GEMINI_BIN" "${gemini_args[@]}"
+  printf '< %q\n' "$PROMPT_FILE"
+  exit "$PROVIDER_EXIT_OK"
+fi
+
+if [[ ! "$GEMINI_TOKEN_LIMIT" =~ ^[0-9]+$ ]]; then
+  echo "error: GEMINI_TOKEN_LIMIT must be a non-negative integer (got: $GEMINI_TOKEN_LIMIT)" >&2
+  exit "$PROVIDER_EXIT_FAILURE"
+fi
+
+settings_file="$(gemini_settings_file || true)"
+if [[ -z "$settings_file" ]]; then
+  echo "error: Gemini personal OAuth is not confirmed; HOME and GEMINI_CLI_HOME are unset" >&2
+  exit "$PROVIDER_EXIT_FAILURE"
+fi
+gemini_require_personal_oauth "$settings_file" || exit "$PROVIDER_EXIT_FAILURE"
+gemini_require_supplemental_policy || exit "$PROVIDER_EXIT_FAILURE"
+gemini_require_no_ancestor_env "$work_dir" "${GEMINI_CLI_HOME:-${HOME:-}}" || exit "$PROVIDER_EXIT_FAILURE"
+
+response_file="$work_dir/response.json"
+# Run from the isolated work_dir (never the caller's cwd, which for any
+# generic pipeline stage is an arbitrary, not fully trusted target repo).
+# Gemini CLI's own documented precedence auto-loads a *project* settings.json
+# and .env relative to cwd and lets them override the user-level oauth-only
+# check above; work_dir is a fresh mktemp directory with no .gemini/ of its
+# own (and no .git upward from it), so that lookup finds nothing to load.
+if (
+  cd "$work_dir" &&
+  provider_run_with_timeout "$GEMINI_TIMEOUT" "$GEMINI_BIN" "${gemini_args[@]}" < "$PROMPT_FILE" > "$response_file"
+); then
+  cli_status=0
+else
+  cli_status=$?
+fi
+if (( cli_status != 0 )); then
+  echo "error: Gemini CLI exited unsuccessfully (status $cli_status)" >&2
+  exit "$PROVIDER_EXIT_FAILURE"
+fi
+
+parsed_file="$work_dir/parsed.json"
+if ! jq -ecs 'select(length == 1 and (.[0] | type) == "object") | .[0]' \
+  "$response_file" > "$parsed_file" 2>/dev/null || [[ ! -s "$parsed_file" ]]; then
+  echo "error: Gemini CLI returned invalid JSON" >&2
+  exit "$PROVIDER_EXIT_FAILURE"
+fi
+if ! jq -e '(.error // null) == null' "$parsed_file" >/dev/null; then
+  echo "error: Gemini CLI reported an invocation error" >&2
+  exit "$PROVIDER_EXIT_FAILURE"
+fi
+if jq -e '
+  def attempted:
+    if type == "number" then . > 0
+    elif type == "array" or type == "object" then length > 0
+    elif type == "string" then length > 0
+    elif type == "boolean" then .
+    else false end;
+  ([paths as $p
+    | select(($p[-1] | type) == "string")
+    | select(($p[-1] | test("^(tool|function)[_-]?(call|request)s?$"; "i")))
+    | getpath($p)
+    | select(attempted)]
+   | length > 0)
+  or (((.stats.tools // {})
+       | if type == "object" then
+           [to_entries[]
+            | select(.key | test("(call|request)"; "i"))
+            | .value
+            | select(attempted)]
+           | length > 0
+         else false end))
+' "$parsed_file" >/dev/null; then
+  echo "error: Gemini CLI returned a tool call or tool request" >&2
+  exit "$PROVIDER_EXIT_FAILURE"
+fi
+
+answer_file="$work_dir/answer.txt"
+if ! jq -er 'select((.response | type) == "string" and (.response | test("\\S"))) | .response' "$parsed_file" > "$answer_file"; then
+  echo "error: Gemini CLI response is missing non-empty answer text" >&2
+  exit "$PROVIDER_EXIT_FAILURE"
+fi
+
+metrics_file="$work_dir/metrics.json"
+jq '
+  def uint: type == "number" and . >= 0 and floor == .;
+  def present($x): $x != null;
+  def field_candidate($x):
+    if present($x) then {present:true, valid:($x | uint), value:$x}
+    else {present:false, valid:true, value:null} end;
+  def component_candidate($a; $b):
+    if present($a) or present($b) then
+      {present:true, valid:(present($a) and present($b) and ($a | uint) and ($b | uint)),
+       value:(if present($a) and present($b) and ($a | uint) and ($b | uint) then $a + $b else null end)}
+    else {present:false, valid:true, value:null} end;
+
+  ([.model, .responseModel, .stats.model]
+    | map(select(type == "string" and length > 0)) | unique) as $explicit_models
+  | ((.stats.models // null) as $models
+     | if ($models | type) == "object" then ($models | keys | map(select(length > 0)) | unique) else [] end) as $reported_models
+  | (if ($explicit_models | length) == 1 then $explicit_models[0]
+     elif ($explicit_models | length) > 1 then null
+     elif ($reported_models | length) == 1 then $reported_models[0]
+     else null end) as $model
+
+  | ([
+      field_candidate(.usageMetadata.totalTokenCount),
+      field_candidate(.usage.totalTokens),
+      field_candidate(.usage.total_tokens),
+      field_candidate(.stats.totalTokens),
+      field_candidate(.stats.total_tokens)
+    ]) as $total_candidates
+  | ([
+      component_candidate(.usageMetadata.promptTokenCount; .usageMetadata.candidatesTokenCount),
+      component_candidate(.usage.inputTokens; .usage.outputTokens),
+      component_candidate(.usage.input_tokens; .usage.output_tokens)
+    ]) as $component_candidates
+  | ((.stats.models // null) as $models
+     | if ($models | type) == "object" and ($models | length) > 0 then
+         [($models[] | .tokens.total)] as $totals
+         | {present:($totals | any(. != null)),
+            valid:(($totals | all(. != null and uint))),
+            value:(if ($totals | all(. != null and uint)) then ($totals | add) else null end)}
+       else {present:false, valid:true, value:null} end) as $model_total
+  | ((.stats.models // null) as $models
+     | if ($models | type) == "object" and ($models | length) > 0 then
+         [($models[] | {prompt:.tokens.prompt, candidates:.tokens.candidates})] as $parts
+         | {present:($parts | any(.prompt != null or .candidates != null)),
+            valid:($parts | all(.prompt != null and .candidates != null and (.prompt | uint) and (.candidates | uint))),
+            value:(if ($parts | all(.prompt != null and .candidates != null and (.prompt | uint) and (.candidates | uint)))
+                   then ($parts | map(.prompt + .candidates) | add) else null end)}
+       else {present:false, valid:true, value:null} end) as $model_parts
+  # A reported total may legitimately exceed prompt+candidates --
+  # it can include categories a component breakdown never carries (e.g.
+  # thinking/reasoning or tool-call tokens). Treating that as a "conflict"
+  # against an incomplete component sum would wrongly discard a valid,
+  # authoritative total as unmeasured and let it bypass GEMINI_TOKEN_LIMIT.
+  # So: totals are authoritative and only cross-checked against each other;
+  # the component-sum candidates are consulted only as a fallback when no
+  # total-type field is present at all.
+  | ($total_candidates + [$model_total]) as $all_totals
+  | ($all_totals | map(select(.present))) as $present_totals
+  | ($present_totals | map(select(.valid) | .value) | unique) as $total_values
+  | (if ($present_totals | length) > 0
+        and ($present_totals | all(.valid))
+        and ($total_values | length) == 1
+     then $total_values[0] else null end) as $tokens_from_totals
+  | ($component_candidates + [$model_parts]) as $all_components
+  | ($all_components | map(select(.present))) as $present_components
+  | ($present_components | map(select(.valid) | .value) | unique) as $component_values
+  | (if ($present_components | length) > 0
+        and ($present_components | all(.valid))
+        and ($component_values | length) == 1
+     then $component_values[0] else null end) as $tokens_from_components
+  | (if ($present_totals | length) > 0 then $tokens_from_totals else $tokens_from_components end) as $tokens
+  | {model:$model, tokens:$tokens, measured:($model != null and $tokens != null)}
+' "$parsed_file" > "$metrics_file"
+
+tokens="$(jq -r '.tokens' "$metrics_file")"
+# Enforce the ceiling whenever a valid token count is known, independent of
+# whether the model name also resolved -- a response that used an excessive
+# number of tokens must not slip through as "unmeasured" merely because
+# multiple distinct models were reported with no single explicit field.
+if [[ "$tokens" != "null" ]] && jq -ne --argjson tokens "$tokens" --arg limit "$GEMINI_TOKEN_LIMIT" \
+  '$tokens > ($limit | tonumber)' >/dev/null; then
+  echo "error: Gemini response used $tokens tokens, exceeding GEMINI_TOKEN_LIMIT=$GEMINI_TOKEN_LIMIT" >&2
+  exit "$PROVIDER_EXIT_FAILURE"
+fi
+
+measured="$(jq -r '.measured' "$metrics_file")"
+if [[ "$measured" == "true" ]]; then
+  model="$(jq -r '.model' "$metrics_file")"
+  usage="$(jq -nc --arg model "$model" --argjson tokens "$tokens" \
+    '{provider:"gemini",model:$model,tokens:$tokens,cost_usd:0}')"
+else
+  usage='{"provider":"gemini","unmeasured":true}'
+fi
+
+cat "$answer_file"
+printf 'e3d_provider_usage=%s\n' "$usage" >&2
