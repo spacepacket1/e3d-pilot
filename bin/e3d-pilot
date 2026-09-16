@@ -43,7 +43,7 @@ Usage:
   e3d-pilot ideas ingest --repo <path> --run-id <id> --candidate-id <id> --candidate-json <file>
   e3d-pilot ideas transition --repo <path> <idea-id> <event> [--actor <actor>] [--note <text>] [--targets-json <file>] [--head-sha <sha>]
   e3d-pilot ideas rebuild --repo <path>
-  e3d-pilot ideas list --repo <path> [--status <status>] [--json]
+  e3d-pilot ideas list --repo <path> [--status <status>] [--pending-outcome] [--json]
   e3d-pilot ideas show --repo <path> <idea-id> [--json]
   e3d-pilot ideas note --repo <path> [--decision] [--evidence <path-or-url>] <idea-id> <text> [--actor <actor>]
   e3d-pilot ideas context --repo <path> <idea-id> [--json]
@@ -1523,6 +1523,7 @@ execute_stage() {
         printf '  - %s\n' "$line"
       done < "$violations_file"
     }
+    record_pipeline_signal "$repo" "$run_id" "pipeline_signal: gate_fired stage=execute type=protected-path-conflict run_id=$run_id"
     return "$EXECUTE_EXIT_NEEDS_HUMAN"
   fi
 
@@ -1627,6 +1628,7 @@ execute_stage() {
       printf '  diff_files: %s (max %s)\n' "$diff_files" "$max_diff_files"
       printf '  diff_lines: %s (max %s)\n' "$diff_lines" "$max_diff_lines"
     }
+    record_pipeline_signal "$repo" "$run_id" "pipeline_signal: gate_fired stage=execute type=diff-ceiling-exceeded diff_files=$diff_files max_diff_files=$max_diff_files diff_lines=$diff_lines max_diff_lines=$max_diff_lines run_id=$run_id"
     return "$EXECUTE_EXIT_NEEDS_HUMAN"
   fi
 
@@ -1885,6 +1887,7 @@ review_stage() {
     if [[ $status -ne 0 ]]; then
       printf 'verify_status: failed\nbranch: %s\nworktree: %s\nlive_verify: %s\n' "$branch" "$worktree" "$live_reason" > "$review_status_file"
       printf 'review: verify failed for command %s: %s\n' "$command_index" "$command"
+      record_pipeline_signal "$repo" "$run_id" "pipeline_signal: gate_fired stage=review type=verify-failed command_index=$command_index command=\"$command\" run_id=$run_id"
       return "$REVIEW_EXIT_VERIFY_FAILED"
     fi
   done
@@ -1983,6 +1986,7 @@ review_stage() {
     for failed_line in "${review_provider_failures[@]}"; do
       printf '  - %s\n' "$failed_line"
     done
+    record_pipeline_signal "$repo" "$run_id" "pipeline_signal: gate_fired stage=review type=reviewer-unavailable-blocked failed=\"${review_provider_failures[*]}\" run_id=$run_id"
     return "$REVIEW_EXIT_BLOCKED"
   fi
   if [[ ${#blocked_reasons[@]} -gt 0 ]]; then
@@ -1993,6 +1997,7 @@ review_stage() {
     for blocked_line in "${blocked_reasons[@]}"; do
       printf '  - %s\n' "$blocked_line"
     done
+    record_pipeline_signal "$repo" "$run_id" "pipeline_signal: gate_fired stage=review type=reviewer-verdict-blocked reasons=\"${blocked_reasons[*]}\" run_id=$run_id"
     return "$REVIEW_EXIT_BLOCKED"
   fi
   printf 'verify_status: passed\nbranch: %s\nworktree: %s\nlive_verify: %s\n' "$branch" "$worktree" "$live_reason" > "$review_status_file"
@@ -2176,6 +2181,7 @@ draft_stage() {
       printf '## Raw response\n\n```text\n%s\n```\n' "$provider_output"
     } > "$rejected_file"
     printf 'draft: candidate cannot be scoped within configured limits (%s); no spec-draft.md written\n' "${reason:-not specified}"
+    record_pipeline_signal "$repo" "$run_id" "pipeline_signal: gate_fired stage=draft type=too-large reason=\"${reason:-not specified}\" run_id=$run_id"
     return 0
   fi
 
@@ -2210,6 +2216,7 @@ draft_stage() {
     while IFS= read -r line; do
       printf '  - %s\n' "$line"
     done < "$violations_file"
+    record_pipeline_signal "$repo" "$run_id" "pipeline_signal: gate_fired stage=draft type=protected-path-conflict violation_count=$(wc -l < "$violations_file" | tr -d ' ') run_id=$run_id"
     return 0
   fi
 
@@ -2279,6 +2286,9 @@ negotiate_stage() {
 
   spec_draft_file="$run_dir/spec-draft.md"
   [[ -f "$spec_draft_file" ]] || die "negotiate requires spec-draft.md for run $run_id; run draft first"
+
+  local initial_spec_sha
+  initial_spec_sha="$(ideas_sha256 < "$spec_draft_file")"
 
   negotiation_log_file="$run_dir/negotiation-log.md"
   init_negotiation_log "$negotiation_log_file" "$run_id"
@@ -2402,6 +2412,10 @@ negotiate_stage() {
         printf 'Converged in round %s.\n' "$round"
       } >> "$negotiation_log_file"
       printf 'negotiate: converged in round %s; wrote spec-final.md\n' "$round"
+      local final_spec_sha spec_changed
+      final_spec_sha="$(ideas_sha256 < "$spec_draft_file")"
+      [[ "$final_spec_sha" != "$initial_spec_sha" ]] && spec_changed=true || spec_changed=false
+      record_pipeline_signal "$repo" "$run_id" "pipeline_signal: negotiate_dissent stage=negotiate converged=true rounds_run=$round max_rounds=$max_rounds spec_changed=$spec_changed run_id=$run_id"
       return 0
     fi
 
@@ -2417,6 +2431,7 @@ negotiate_stage() {
     printf 'Needs human review after %s rounds; spec-draft.md left in place.\n' "$max_rounds"
   } >> "$negotiation_log_file"
   printf 'negotiate: needs human after %s rounds; spec-draft.md and negotiation-log.md left in place\n' "$max_rounds"
+  record_pipeline_signal "$repo" "$run_id" "pipeline_signal: negotiate_dissent stage=negotiate converged=false rounds_run=$max_rounds max_rounds=$max_rounds spec_changed=true run_id=$run_id"
   return "$NEGOTIATE_EXIT_NEEDS_HUMAN"
 }
 
@@ -2700,7 +2715,7 @@ ideas_events_for_idea_json() {
 }
 
 ideas_do_list() {
-  local kind="$1" workspace="$2" status_filter="$3" json_flag="$4"
+  local kind="$1" workspace="$2" status_filter="$3" json_flag="$4" pending_outcome_flag="${5:-0}"
   local canonical dir files=() rows='[]'
   canonical="$(ideas_canonical_path "$workspace")" || die "workspace not found: $workspace"
   dir="$(ideas_snapshots_dir "$kind" "$canonical")"
@@ -2713,6 +2728,17 @@ ideas_do_list() {
   fi
   if [[ -n "$status_filter" ]]; then
     rows="$(jq -cS --arg s "$status_filter" '[.[] | select(.status == $s)]' <<<"$rows")"
+  fi
+  if [[ "$pending_outcome_flag" == "1" ]]; then
+    # "Pending outcome" = the idea reached a status that outcome_recorded is
+    # a valid transition from (see ideas_allowed_transition) -- i.e. it's
+    # done something real (shipped, failed, merged, reverted...) -- but no
+    # `ideas outcome` metric has ever been recorded on it. Surfaces the
+    # not-hooked-up-yet gap directly instead of it silently rotting.
+    rows="$(jq -cS '[.[] | select(
+        (.status | IN("implemented","changes_requested","approved_for_merge","partially_merged","merged","reverted","closed","implementation_failed","merge_failed"))
+        and ((.outcomes_latest // {}) == {})
+      )]' <<<"$rows")"
   fi
   rows="$(jq -cS 'sort_by(.idea_id) | reverse | sort_by(.created_at) | reverse' <<<"$rows")"
   if [[ "$json_flag" == "1" ]]; then
@@ -3450,6 +3476,22 @@ resolve_run_idea_info() {
     [[ "$approval_digest" == "$current_digest" ]] && approved=1
   fi
   printf '%s\t%s\t%s\t%s\t%s\n' "$kind" "$workspace" "$idea_id" "$status" "$approved"
+}
+
+# Outcome-capture instrumentation (see idea-dd1ceb9422ad,
+# docs/debates/2026-09-16-linear-work-management-layer/): records a
+# structural fact about what a pipeline stage's gates/negotiation actually
+# did, as a plain finding note on the run's linked idea -- not a new event
+# type or schema field, reusing the existing note/evidence mechanism so this
+# never touches the idea lifecycle state machine. Deliberately best-effort:
+# a signal that can't be recorded (e.g. idea link not resolvable) must never
+# fail the pipeline stage that's trying to record it.
+record_pipeline_signal() {
+  local repo="$1" run_id="$2" text="$3"
+  local info kind workspace idea_id status approved
+  info="$(resolve_run_idea_info "$repo" "$run_id" 2>/dev/null)" || return 0
+  IFS=$'\t' read -r kind workspace idea_id status approved <<<"$info"
+  ideas_do_note "$kind" "$workspace" "$idea_id" "$text" finding system "" >/dev/null 2>&1 || true
 }
 
 # Defense-in-depth: called at the top of draft/negotiate/execute/review/
@@ -4453,19 +4495,20 @@ cmd_ideas() {
       ideas_transition repo "$repo" "${positional[0]}" "${positional[1]}" "$actor" "$note" "$targets_json" "$head_sha"
       ;;
     list)
-      local repo="" status_filter="" json_flag="0"
+      local repo="" status_filter="" json_flag="0" pending_outcome_flag="0"
       while [[ $# -gt 0 ]]; do
         case "$1" in
           --repo) repo="${2:-}"; shift 2 ;;
           --status) status_filter="${2:-}"; shift 2 ;;
           --json) json_flag="1"; shift ;;
+          --pending-outcome) pending_outcome_flag="1"; shift ;;
           -h|--help) usage; return 0 ;;
           *) die "unknown ideas list argument: $1" ;;
         esac
       done
       [[ -n "$repo" ]] || die "ideas list requires --repo"
       repo="$(repo_abs_path "$repo")"
-      ideas_do_list repo "$repo" "$status_filter" "$json_flag"
+      ideas_do_list repo "$repo" "$status_filter" "$json_flag" "$pending_outcome_flag"
       ;;
     show)
       local repo="" json_flag="0" positional=()
@@ -5844,16 +5887,17 @@ cmd_fleet_ideas() {
       ideas_transition fleet "$workspace" "${positional[0]}" "${positional[1]}" "$actor" "$note" "$targets_json" "$head_sha"
       ;;
     list)
-      local status_filter="" json_flag="0"
+      local status_filter="" json_flag="0" pending_outcome_flag="0"
       while [[ $# -gt 0 ]]; do
         case "$1" in
           --status) status_filter="${2:-}"; shift 2 ;;
           --json) json_flag="1"; shift ;;
+          --pending-outcome) pending_outcome_flag="1"; shift ;;
           -h|--help) usage; return 0 ;;
           *) die "unknown fleet ideas list argument: $1" ;;
         esac
       done
-      ideas_do_list fleet "$workspace" "$status_filter" "$json_flag"
+      ideas_do_list fleet "$workspace" "$status_filter" "$json_flag" "$pending_outcome_flag"
       ;;
     show)
       local json_flag="0" positional=()
