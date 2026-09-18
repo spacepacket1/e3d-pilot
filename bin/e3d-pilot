@@ -1499,6 +1499,33 @@ copy_csr_state_artifacts() {
   fi
 }
 
+# `git worktree add` only ever checks out tracked, committed files -- a repo
+# that deliberately keeps real local data gitignored (credentials, live
+# instance config, anything it will never commit) starts every execute
+# worktree without it, so tests/tooling depending on that data fail inside
+# execute regardless of machine or network access. config.execute_local_data_paths
+# names exactly which gitignored paths to carry forward, read-only context
+# for the phase to run against -- never touched by the model, and since the
+# worktree's own (tracked) .gitignore still covers these paths once copied
+# in, they stay outside `git add -N -A`/`git diff` the same way they already
+# are in the source repo, with no extra diff-skip needed.
+copy_execute_local_data_paths() {
+  local repo="$1" worktree_dir="$2" config_file="$3"
+  local -a paths=()
+  while IFS= read -r __mapfile_line; do paths+=("$__mapfile_line"); done < <(jq -r '.execute_local_data_paths[]? // empty' "$config_file")
+  local path source_path dest_path
+  for path in "${paths[@]}"; do
+    path="${path%/}"
+    [[ -n "$path" ]] || continue
+    source_path="$repo/$path"
+    [[ -e "$source_path" ]] || continue
+    dest_path="$worktree_dir/$path"
+    mkdir -p "$(dirname "$dest_path")"
+    rm -rf "$dest_path"
+    cp -R "$source_path" "$dest_path"
+  done
+}
+
 execute_stage() {
   local repo="$1" run_id="$2" run_dir config_file spec_final_file violations_file worktree_dir branch
   local max_diff_files max_diff_lines diff_counts diff_files diff_lines csr_bin csr_stdout csr_stderr csr_status
@@ -1541,6 +1568,7 @@ execute_stage() {
 
   worktree_dir="$(ensure_worktree "$repo" "$run_dir" "$run_id")"
   branch="e3d-pilot/$run_id"
+  copy_execute_local_data_paths "$repo" "$worktree_dir" "$config_file"
   worktree_spec_file="$(prepare_execute_spec_in_worktree "$worktree_dir" "$run_id" "$spec_final_file")"
   max_diff_files="$(config_value "$config_file" '.max_diff_files')"
   max_diff_lines="$(config_value "$config_file" '.max_diff_lines')"
@@ -2486,6 +2514,8 @@ validate_config_file() {
   json_type_check "$file" '.max_diff_lines == (.max_diff_lines | floor)' "config.max_diff_lines must be an integer value"
   json_type_check "$file" '.max_diff_lines >= 0' "config.max_diff_lines must be a non-negative integer"
   json_type_check "$file" 'if has("docs") then (.docs | type == "string") else true end' "config.docs must be a string when provided"
+  json_type_check "$file" 'if has("execute_local_data_paths") then (.execute_local_data_paths | type == "array") else true end' "config.execute_local_data_paths must be an array when provided"
+  json_type_check "$file" 'if has("execute_local_data_paths") then (.execute_local_data_paths | all(.[]; type == "string")) else true end' "config.execute_local_data_paths must be an array of strings when provided"
   json_type_check "$file" 'if has("live_verify") then (.live_verify | type == "object") else true end' "config.live_verify must be an object when provided"
   json_type_check "$file" 'if has("live_verify") then (.live_verify | has("command")) else true end' "config.live_verify.command is required when live_verify is provided"
   json_type_check "$file" 'if has("live_verify") then (.live_verify.command | type == "string") else true end' "config.live_verify.command must be a string"

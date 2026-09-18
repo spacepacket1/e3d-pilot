@@ -96,6 +96,11 @@
     "docs": {
       "type": "string"
     },
+    "execute_local_data_paths": {
+      "type": "array",
+      "items": { "type": "string" },
+      "default": []
+    },
     "live_verify": {
       "type": "object",
       "additionalProperties": false,
