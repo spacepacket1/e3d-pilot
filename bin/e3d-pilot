@@ -41,7 +41,7 @@ Usage:
   e3d-pilot config validate <repo>
   e3d-pilot run --repo <path> --stage <name> [--run-id <id>] [--focus default|revenue]
   e3d-pilot ideas ingest --repo <path> --run-id <id> --candidate-id <id> --candidate-json <file>
-  e3d-pilot ideas transition --repo <path> <idea-id> <event> [--actor <actor>] [--note <text>] [--targets-json <file>] [--head-sha <sha>]
+  e3d-pilot ideas transition --repo <path> <idea-id> <event> [--actor <actor>] [--note <text>] [--targets-json <file>] [--head-sha <sha>] [--outcome-json <file>]
   e3d-pilot ideas rebuild --repo <path>
   e3d-pilot ideas list --repo <path> [--status <status>] [--pending-outcome] [--json]
   e3d-pilot ideas show --repo <path> <idea-id> [--json]
@@ -4503,7 +4503,7 @@ cmd_ideas() {
       printf '%s\n' "$ingested_idea_id"
       ;;
     transition)
-      local repo="" actor="" note="" targets_json="" head_sha=""
+      local repo="" actor="" note="" targets_json="" head_sha="" outcome_json=""
       local positional=()
       while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -4512,17 +4512,19 @@ cmd_ideas() {
           --note) note="${2:-}"; shift 2 ;;
           --targets-json) targets_json="${2:-}"; shift 2 ;;
           --head-sha) head_sha="${2:-}"; shift 2 ;;
+          --outcome-json) outcome_json="${2:-}"; shift 2 ;;
           -h|--help) usage; return 0 ;;
           --*) die "unknown ideas transition argument: $1" ;;
           *) positional+=("$1"); shift ;;
         esac
       done
       [[ -n "$repo" ]] || die "ideas transition requires --repo"
-      [[ ${#positional[@]} -eq 2 ]] || die "usage: e3d-pilot ideas transition --repo <path> <idea-id> <event>"
+      [[ ${#positional[@]} -eq 2 ]] || die "usage: e3d-pilot ideas transition --repo <path> [--outcome-json <file>] <idea-id> <event>"
       [[ -z "$targets_json" || -f "$targets_json" ]] || die "targets JSON not found: $targets_json"
+      [[ -z "$outcome_json" || -f "$outcome_json" ]] || die "outcome JSON not found: $outcome_json"
       repo="$(repo_abs_path "$repo")"
       actor="$(ideas_resolve_actor "$repo" "$actor")"
-      ideas_transition repo "$repo" "${positional[0]}" "${positional[1]}" "$actor" "$note" "$targets_json" "$head_sha"
+      ideas_transition repo "$repo" "${positional[0]}" "${positional[1]}" "$actor" "$note" "$targets_json" "$head_sha" "$outcome_json"
       ;;
     list)
       local repo="" status_filter="" json_flag="0" pending_outcome_flag="0"
@@ -5898,7 +5900,7 @@ cmd_fleet_ideas() {
       printf '%s\n' "$ingested_idea_id"
       ;;
     transition)
-      local actor="" note="" targets_json="" head_sha=""
+      local actor="" note="" targets_json="" head_sha="" outcome_json=""
       local positional=()
       while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -5906,15 +5908,17 @@ cmd_fleet_ideas() {
           --note) note="${2:-}"; shift 2 ;;
           --targets-json) targets_json="${2:-}"; shift 2 ;;
           --head-sha) head_sha="${2:-}"; shift 2 ;;
+          --outcome-json) outcome_json="${2:-}"; shift 2 ;;
           -h|--help) usage; return 0 ;;
           --*) die "unknown fleet ideas transition argument: $1" ;;
           *) positional+=("$1"); shift ;;
         esac
       done
-      [[ ${#positional[@]} -eq 2 ]] || die "usage: e3d-pilot fleet ideas <fleet.json> transition <idea-id> <event>"
+      [[ ${#positional[@]} -eq 2 ]] || die "usage: e3d-pilot fleet ideas <fleet.json> transition [--outcome-json <file>] <idea-id> <event>"
       [[ -z "$targets_json" || -f "$targets_json" ]] || die "targets JSON not found: $targets_json"
+      [[ -z "$outcome_json" || -f "$outcome_json" ]] || die "outcome JSON not found: $outcome_json"
       actor="$(ideas_resolve_actor "$workspace" "$actor")"
-      ideas_transition fleet "$workspace" "${positional[0]}" "${positional[1]}" "$actor" "$note" "$targets_json" "$head_sha"
+      ideas_transition fleet "$workspace" "${positional[0]}" "${positional[1]}" "$actor" "$note" "$targets_json" "$head_sha" "$outcome_json"
       ;;
     list)
       local status_filter="" json_flag="0" pending_outcome_flag="0"
