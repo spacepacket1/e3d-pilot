@@ -808,9 +808,13 @@ ideas_ingest_candidate() {
     return 99
   fi
   ideas_materialize_snapshot "$kind" "$canonical" "$idea_id" || { rm -f "$candidate_tmp" "$event_tmp"; ideas_release_lock "$kind" "$canonical"; return 1; }
+  ideas_release_lock "$kind" "$canonical"
+  # Advisory-only, never fails ingest -- see lib/ideas/jev_dedup.sh. Runs
+  # after the lock is released: it appends its own note_appended event via
+  # ideas_do_note, which acquires this same non-reentrant lock itself.
+  ideas_jev_dedup_note "$kind" "$canonical" "$idea_id" "$candidate_tmp"
   printf '%s\n' "$idea_id"
   rm -f "$candidate_tmp" "$event_tmp"
-  ideas_release_lock "$kind" "$canonical"
 }
 
 ideas_transition() {

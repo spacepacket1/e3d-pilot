@@ -14,10 +14,14 @@ REVIEW_EXIT_BLOCKED=6
 
 # shellcheck source=lib/providers/common.sh
 source "$REPO_ROOT/lib/providers/common.sh"
+# shellcheck source=lib/providers/jev.sh
+source "$REPO_ROOT/lib/providers/jev.sh"
 # shellcheck source=lib/ideas/ledger.sh
 source "$REPO_ROOT/lib/ideas/ledger.sh"
 # shellcheck source=lib/ideas/materialize.sh
 source "$REPO_ROOT/lib/ideas/materialize.sh"
+# shellcheck source=lib/ideas/jev_dedup.sh
+source "$REPO_ROOT/lib/ideas/jev_dedup.sh"
 # shellcheck source=lib/ideas/project_tracking.sh
 source "$REPO_ROOT/lib/ideas/project_tracking.sh"
 # shellcheck source=lib/training/export.sh
