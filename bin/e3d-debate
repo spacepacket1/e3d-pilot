@@ -11,6 +11,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 PROVIDERS_DIR="$REPO_ROOT/lib/providers"
+# shellcheck source=lib/providers/jev.sh
+source "$REPO_ROOT/lib/providers/jev.sh"
 
 DEBATE_PROVIDERS=(claude codex)
 DEBATE_ROUNDS=2
@@ -49,6 +51,13 @@ succeeds, via `e3d-pilot ideas note --decision --evidence`. This requires
 --out-dir to be a path inside --repo (e.g. docs/debates/<slug>), since the
 evidence link is a repo-relative path and only durable once that transcript
 is committed. This does not create the idea -- it must already exist.
+
+If TYPESAFE_API_KEY is set, e3d-debate also asks Jev (TypeSafe System One) a
+single Noul question up front -- "is this obvious enough that debate is
+unnecessary?" -- and logs the answer into the transcript as a shadow-mode,
+informational-only signal. It never skips or shortens the debate; this is
+calibration data for a possible future live pre-screen gate (see
+idea-82a5c2225266). No key set means this is silently skipped.
 EOF
 }
 
@@ -97,6 +106,34 @@ fi
 work_dir="$(mktemp -d "${TMPDIR:-/tmp}/e3d-debate.XXXXXX")"
 transcript_md="$work_dir/transcript.md"
 printf '# Debate\n\n**Question:** %s\n\n' "$QUESTION" > "$transcript_md"
+
+# Jev pre-screen: shadow-mode only (idea-82a5c2225266) -- this NEVER skips or
+# shortens the debate below, it just logs an informational signal into the
+# transcript for later calibration of whether Jev's obviousness judgment is
+# trustworthy enough to ever gate on. Silently skipped with no
+# TYPESAFE_API_KEY; a failed call is logged and otherwise ignored.
+if jev_available; then
+  jev_state="$(jq -ncS --arg q "$QUESTION" '{question:$q}')"
+  jev_questions="$(jq -ncS '{
+    obviousness: {
+      type: "noul",
+      instructions: "Is this question'\''s answer obvious enough that informed, knowledgeable people would not meaningfully disagree, or does it need genuine multi-perspective debate to reach a well-reasoned answer?",
+      criteria: {
+        "true": "The answer is clear-cut -- reasonable experts would converge on the same conclusion without needing to compare independent perspectives.",
+        "false": "The answer involves real tradeoffs, judgment calls, or contestable premises where different informed people could reasonably land in different places."
+      }
+    }
+  }')"
+  jev_response=""
+  jev_response="$(jev_call "jev-latest" "$jev_state" "$jev_questions")" || jev_response=""
+  if [[ -n "$jev_response" ]]; then
+    # Noul answers carry only a `noul` probability, no `confidence` field
+    # (that's Choice/Score-only) -- see https://docs.typesafe.ai/api.md.
+    jev_noul="$(jq -r '.answers.obviousness.noul // "unknown"' <<< "$jev_response" 2>/dev/null || echo "unknown")"
+    echo "=== Jev pre-screen (shadow mode, informational only -- does not skip the debate): obviousness noul=$jev_noul ===" >&2
+    printf '**Jev pre-screen (shadow mode, informational only):** obviousness noul=%s (1.0 = clearly obvious, 0.0 = clearly needs debate) -- logged for calibration, does not affect whether this debate runs.\n\n' "$jev_noul" >> "$transcript_md"
+  fi
+fi
 
 declare -A LAST_ANSWER
 converged=0
