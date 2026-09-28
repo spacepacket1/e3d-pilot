@@ -19,15 +19,21 @@ DEBATE_MAX_WORDS=200
 OUT_DIR=""
 QUESTION=""
 QUESTION_FILE=""
+LINK_REPO=""
+LINK_IDEA=""
 
 usage() {
   cat <<'EOF'
-e3d-debate "<question>" [--providers claude,codex] [--rounds 2] [--synthesizer claude] [--max-words 200] [--question-file <path>] [--out-dir <dir>]
+e3d-debate "<question>" [--providers claude,codex] [--rounds 2] [--synthesizer claude] [--max-words 200] [--question-file <path>] [--out-dir <dir>] [--repo <path> --idea <idea-id>]
 
 Runs the question through N rounds across the given lib/providers/<name>
 adapters (round 1: independent answers; round 2+: each provider sees every
 other provider's prior-round answer and is asked to rebut or concede), then
-asks --synthesizer to read the full transcript and produce one final answer.
+asks --synthesizer to read the full transcript and produce one final answer --
+unless every participant's round-2+ status already converged on "approved",
+in which case the synthesizer call is skipped and the first participant's
+POSITION line is emitted directly (full agreement means everyone would act
+the same, so there is nothing left for a synthesizer to add).
 Prints the transcript and final answer to stdout; also writes transcript.md
 under --out-dir (default: a mktemp dir, path printed at the end).
 
@@ -36,6 +42,13 @@ long or heavily quoted/formatted questions that are awkward to pass as a
 single shell argument. --max-words caps each provider's per-round answer
 length (raise it for questions that need real depth, e.g. a multi-part
 strategic review).
+
+--repo <path> and --idea <idea-id> (must be given together) link this
+debate's verdict into that repo's provenance graph as soon as synthesis
+succeeds, via `e3d-pilot ideas note --decision --evidence`. This requires
+--out-dir to be a path inside --repo (e.g. docs/debates/<slug>), since the
+evidence link is a repo-relative path and only durable once that transcript
+is committed. This does not create the idea -- it must already exist.
 EOF
 }
 
@@ -47,6 +60,8 @@ while [[ $# -gt 0 ]]; do
     --max-words) DEBATE_MAX_WORDS="$2"; shift 2 ;;
     --question-file) QUESTION_FILE="$2"; shift 2 ;;
     --out-dir) OUT_DIR="$2"; shift 2 ;;
+    --repo) LINK_REPO="$2"; shift 2 ;;
+    --idea) LINK_IDEA="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) QUESTION="$1"; shift ;;
   esac
@@ -65,6 +80,19 @@ fi
 for p in "${DEBATE_PROVIDERS[@]}" "$DEBATE_SYNTHESIZER"; do
   [[ -x "$PROVIDERS_DIR/$p" ]] || { echo "error: no such provider adapter: $PROVIDERS_DIR/$p" >&2; exit 1; }
 done
+
+if [[ -n "$LINK_REPO" || -n "$LINK_IDEA" ]]; then
+  [[ -n "$LINK_REPO" && -n "$LINK_IDEA" ]] || { echo "error: --repo and --idea must be given together" >&2; exit 1; }
+  [[ -d "$LINK_REPO" ]] || { echo "error: --repo not found: $LINK_REPO" >&2; exit 1; }
+  [[ -n "$OUT_DIR" ]] || { echo "error: --out-dir is required (and must be inside --repo) when using --repo/--idea" >&2; exit 1; }
+  mkdir -p "$OUT_DIR"
+  LINK_REPO="$(cd "$LINK_REPO" && pwd)"
+  out_dir_abs="$(cd "$OUT_DIR" && pwd)"
+  case "$out_dir_abs" in
+    "$LINK_REPO"/*) LINK_TRANSCRIPT_REL="${out_dir_abs#"$LINK_REPO"/}/transcript.md" ;;
+    *) echo "error: --out-dir must be inside --repo to be evidence-linkable (got $out_dir_abs, repo $LINK_REPO)" >&2; exit 1 ;;
+  esac
+fi
 
 work_dir="$(mktemp -d "${TMPDIR:-/tmp}/e3d-debate.XXXXXX")"
 transcript_md="$work_dir/transcript.md"
@@ -157,15 +185,39 @@ synth_prompt="$work_dir/synthesis.prompt.md"
 } > "$synth_prompt"
 
 synth_out="$work_dir/synthesis.out"
-set +e
-"$PROVIDERS_DIR/$DEBATE_SYNTHESIZER" "$synth_prompt" > "$synth_out" 2>"$work_dir/synthesis.stderr"
-synth_status=$?
-set -e
 
-echo "=== Synthesis ($DEBATE_SYNTHESIZER) ===" >&2
+# When every participant converged on "approved" in the final round, the
+# synthesizer call adds no information -- everyone already agreed they'd act
+# the same as everyone else. Skip it and emit the first participant's
+# POSITION line directly (order = --providers order, deterministic).
+fast_synthesis=0
+if (( converged == 1 )); then
+  first_provider="${DEBATE_PROVIDERS[0]}"
+  fast_position="$(grep -m1 -E '^POSITION: ' <<< "${LAST_ANSWER[$first_provider]}" | sed -E 's/^POSITION: //')"
+  if [[ -n "$fast_position" ]]; then
+    fast_synthesis=1
+    printf 'FINAL ANSWER: %s\nCONSENSUS: full\nDISSENT: none\n' "$fast_position" > "$synth_out"
+  fi
+fi
+
+if (( fast_synthesis == 1 )); then
+  synth_status=0
+  echo "=== Synthesis (fast path -- all participants converged in round $converged_at_round, no synthesizer call) ===" >&2
+else
+  set +e
+  "$PROVIDERS_DIR/$DEBATE_SYNTHESIZER" "$synth_prompt" > "$synth_out" 2>"$work_dir/synthesis.stderr"
+  synth_status=$?
+  set -e
+  echo "=== Synthesis ($DEBATE_SYNTHESIZER) ===" >&2
+fi
+
+synth_ok=0
 if [[ $synth_status -eq 0 && -s "$synth_out" ]]; then
+  synth_ok=1
   cat "$synth_out"
-  printf '\n## Synthesis (%s)\n\n%s\n' "$DEBATE_SYNTHESIZER" "$(cat "$synth_out")" >> "$transcript_md"
+  synth_label="$DEBATE_SYNTHESIZER"
+  (( fast_synthesis == 1 )) && synth_label="fast path, no LLM call"
+  printf '\n## Synthesis (%s)\n\n%s\n' "$synth_label" "$(cat "$synth_out")" >> "$transcript_md"
 else
   echo "error: synthesis provider failed -- see $work_dir/synthesis.stderr" >&2
 fi
@@ -176,4 +228,20 @@ if [[ -n "$OUT_DIR" ]]; then
   echo "transcript: $OUT_DIR/transcript.md" >&2
 else
   echo "transcript: $transcript_md" >&2
+fi
+
+if [[ -n "$LINK_REPO" ]]; then
+  if [[ "$synth_ok" -eq 1 ]]; then
+    provider_list="$(IFS=,; echo "${DEBATE_PROVIDERS[*]}")"
+    note_text="$(printf 'e3d-debate (%s, %s) verdict:\n\n%s' "$provider_list" "$rounds_ran_note" "$(cat "$synth_out")")"
+    if "$REPO_ROOT/bin/e3d-pilot" ideas note --repo "$LINK_REPO" --decision \
+        --evidence "$LINK_TRANSCRIPT_REL" "$LINK_IDEA" "$note_text" \
+        --actor "e3d-debate:$provider_list" >&2; then
+      echo "provenance: linked to $LINK_IDEA in $LINK_REPO (evidence_ref=$LINK_TRANSCRIPT_REL)" >&2
+    else
+      echo "warning: failed to link debate evidence onto $LINK_IDEA -- transcript is still at $OUT_DIR/transcript.md, link it manually with 'e3d-pilot ideas note --evidence'" >&2
+    fi
+  else
+    echo "warning: skipping provenance link -- synthesis failed, no verdict to record" >&2
+  fi
 fi
