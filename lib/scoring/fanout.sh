@@ -6,6 +6,28 @@
 
 SCORING_ROLES=(product technical risk maintainability testability)
 
+# Per-role scoring criteria. Deliberately generic/portable across every kind
+# of repo this scoring code runs against (consumer product, internal tool,
+# operational system) -- the fix for the "product" role scoring internal
+# cost-savings/reliability work near zero (idea seen 2026-09-29 on e3d-trade:
+# a Jev cost-gate scored 18-27 vs. 91 for a generic dashboard feature, purely
+# because "product evaluator" defaulted to consumer-UX-appeal instincts with
+# no repo context) is telling it explicitly that "product value" means
+# advancing THIS repo's stated research priorities, not end-user polish by
+# default.
+scoring_role_criteria() {
+  case "$1" in
+    product)
+      printf '%s\n' 'Score how much this candidate advances the repo research priorities stated below -- not generic end-user feature appeal. For a consumer-facing product that may be end-user delight; for internal tooling, an operational system, or infrastructure, it means measurably improving the outcome the repo exists to produce (cost, reliability, throughput, correctness, safety) even when the candidate has no end-user-facing surface at all. Do not penalize a candidate just because it is "only" internal tooling.'
+      ;;
+    technical) printf '%s\n' 'Score technical soundness and fit with the existing architecture: is the approach correct, is the effort estimate realistic, does it reuse existing patterns rather than reinventing them.' ;;
+    risk) printf '%s\n' 'Score downside risk: could this break something load-bearing, touch a safety-critical path, or introduce a failure mode worse than the problem it solves. Low risk plus real value should score higher than high novelty with real risk.' ;;
+    maintainability) printf '%s\n' 'Score long-term maintenance burden: will this be easy to understand, test, and modify later, or does it add hidden complexity/coupling.' ;;
+    testability) printf '%s\n' 'Score how verifiable the outcome is: can success/failure be measured or tested objectively, or does it rely on subjective judgment with no way to confirm it worked.' ;;
+    *) printf '%s\n' 'Score general fit for this repo.' ;;
+  esac
+}
+
 scoring_config_provider() {
   jq -r '.candidate_scoring.provider // empty' "$1"
 }
@@ -168,7 +190,7 @@ scoring_candidate_json_from_block() {
 }
 
 scoring_run_fanout() {
-  local cwd="$1" provider="$2" candidates_file="$3" workers="$4" artifact_dir="$5" output_file="$6"
+  local cwd="$1" provider="$2" candidates_file="$3" workers="$4" artifact_dir="$5" output_file="$6" research_topics="${7:-}"
   local script roles_count i role prompt response stderr_file status_file pids_file pid overall_status=0
   local normalized valid_workers=0 scores_json status text_response
   script="${SCORING_PROVIDERS_DIR:-$REPO_ROOT/lib/providers}/$provider"
@@ -193,6 +215,10 @@ scoring_run_fanout() {
     status_file="$artifact_dir/worker-${i}-${role}.status"
     {
       printf 'Act as a read-only %s evaluator. Score every candidate from 0 to 100.\n' "$role"
+      printf '%s\n' "$(scoring_role_criteria "$role")"
+      if [[ -n "$research_topics" ]]; then
+        printf 'Repo research priorities: %s\n' "$research_topics"
+      fi
       printf 'Do not edit files, invoke subagents, or make high-consequence decisions.\n'
       printf 'Return JSON only: {"scores":[{"id":"...","score":0,"reason":"..."}]}.\n'
       printf 'Use exactly the candidate ids supplied, once each.\n\nCandidates:\n'
@@ -420,7 +446,9 @@ scoring_apply_if_configured() {
   cp "$response_file" "$run_dir/${label}-response.model.md"
   artifact_dir="$run_dir/${label}-scoring.artifacts"
   output_file="$run_dir/${label}-scoring.json"
-  if ! scoring_run_fanout "$cwd" "$provider" "$candidates_json_file" "$workers" "$artifact_dir" "$output_file"; then
+  local research_topics
+  research_topics="$(config_value "$config_file" '.research_topics')"
+  if ! scoring_run_fanout "$cwd" "$provider" "$candidates_json_file" "$workers" "$artifact_dir" "$output_file" "$research_topics"; then
     if [[ ! -s "$output_file" ]]; then
       printf '%s: warning: candidate scoring failed; keeping model ranking\n' "$label"
       return 0
