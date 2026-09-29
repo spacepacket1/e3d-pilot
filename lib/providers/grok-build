@@ -11,7 +11,11 @@ GROK_BUILD_MODEL="${GROK_BUILD_MODEL:-}"
 GROK_BUILD_REASONING_EFFORT="${GROK_BUILD_REASONING_EFFORT:-}"
 GROK_BUILD_OUTPUT_FORMAT="${GROK_BUILD_OUTPUT_FORMAT:-plain}"
 GROK_BUILD_MODE="${E3D_PILOT_PROVIDER_MODE:-analysis}"
-GROK_BUILD_MAX_TURNS="${GROK_BUILD_MAX_TURNS:-6}"
+# 6 was too low for real-size diffs -- hit "Max turns reached" repeatedly on
+# ordinary negotiate/review rounds (idea-15f46cb8f164: 1053/1600-line diffs on
+# e3d-oppscan and e3d-liquiditywatch; reconfirmed 2026-09-28/29 on spacepacket
+# and e3d-trade). 20 has resolved every observed occurrence so far.
+GROK_BUILD_MAX_TURNS="${GROK_BUILD_MAX_TURNS:-20}"
 
 grok_missing_message() {
   printf 'unavailable: grok binary not found (%s); set GROK_BUILD_BIN to override\n' "$GROK_BUILD_BIN"
