@@ -3675,12 +3675,48 @@ prepare_repo_implementation_run() {
   if [[ -z "$selected" ]]; then
     selected="$(jq -r '.source_candidate // "candidate-1"' "$idea_file")"
   fi
+  local used_copy=0
   if [[ "$kind" == "repo" && -d "$source_dir" && -f "$source_dir/candidates.md" ]]; then
     for name in findings.md candidates.md focus discover-local-state.md discover-prompt.md discover-external-context.md ideate-facts.md ideate-prompt.md ideate-response.md; do
       [[ -f "$source_dir/$name" ]] && cp "$source_dir/$name" "$run_dir/$name"
     done
     [[ -f "$run_dir/findings.md" ]] || synthesize_run_candidate_artifacts "$repo" "$run_dir" "$run_id" "$idea_file" "$approved_base" "$selected"
-  else
+    used_copy=1
+  fi
+  if [[ $used_copy -eq 1 && -f "$run_dir/candidates.md" ]]; then
+    # The copied candidates.md's own ---IDEATE-STATUS--- selected: field
+    # reflects whichever candidate the source run's automatic ideate scoring
+    # picked -- not necessarily this idea. That matters whenever an idea was
+    # manually promoted from the same run's candidate pool rather than being
+    # the auto-selected one (e.g. a human overriding a weak ensemble score):
+    # draft_stage always drafts whatever candidates_selected_field() returns,
+    # so leaving the stale value in place would silently draft the wrong
+    # candidate. Force it to match the idea actually being implemented.
+    local current_selected
+    current_selected="$(candidates_selected_field "$run_dir/candidates.md" 2>/dev/null || true)"
+    if [[ "$current_selected" != "$selected" ]]; then
+      sed -i.bak \
+        -e "s/^selected: .*/selected: ${selected}/" \
+        -e "s/^reason: .*/reason: manually promoted for idea ${idea_id} implementation (overrides original ideate selection: ${current_selected:-none})/" \
+        "$run_dir/candidates.md"
+      rm -f "$run_dir/candidates.md.bak"
+    fi
+    # selected_candidate_excerpt() only matches selected values shaped like
+    # "candidate-<N>" against "### Candidate <N>: ..." headers -- for any
+    # other shape (e.g. a custom --candidate-id used at manual ingest time,
+    # like "jev-recurring-gate") it silently falls back to whatever the
+    # *first* candidate block in the file happens to be. That's a second,
+    # independent way to end up drafting the wrong candidate even after the
+    # header fix above. Only trust the copied file if a real match exists;
+    # otherwise discard it and fall back to the always-correct synthesis
+    # path rather than risk silently drafting something else.
+    if [[ -z "$(selected_candidate_excerpt "$run_dir/candidates.md")" ]] || \
+       ! grep -qE "^### Candidate (${selected}|${selected##*-})([:[:space:]]|\$)" "$run_dir/candidates.md"; then
+      synthesize_run_candidate_artifacts "$repo" "$run_dir" "$run_id" "$idea_file" "$approved_base" "$selected"
+      used_copy=0
+    fi
+  fi
+  if [[ $used_copy -eq 0 && ! -f "$run_dir/candidates.md" ]]; then
     synthesize_run_candidate_artifacts "$repo" "$run_dir" "$run_id" "$idea_file" "$approved_base" "$selected"
   fi
 }
