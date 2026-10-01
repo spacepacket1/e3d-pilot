@@ -3194,7 +3194,7 @@ ideas_collect_sync_changes() {
 
   for ((idx=0; idx<count; idx++)); do
     target="$(jq -cS --argjson i "$idx" '.[$i]' <<<"$targets_json")"
-    metadata="$(gh_pr_view_json "$(jq -r '.repo' <<<"$target")" "$(jq -r '.pr_url' <<<"$target")" "number,url,isDraft,headRefOid,baseRefName,state,mergeCommit,closeReason,statusCheckRollup")"
+    metadata="$(gh_pr_view_json "$(jq -r '.repo' <<<"$target")" "$(jq -r '.pr_url' <<<"$target")" "number,url,isDraft,headRefOid,baseRefName,state,mergeCommit,statusCheckRollup")"
     obs="$(forge_observation_from_metadata "$target" "$metadata")"
     baseline="$(idea_target_baseline_json "$idea_file" "$(jq -r '.repo' <<<"$obs")" "$(jq -r '.pr_url' <<<"$obs")" "$(jq -r '(.pr_number // "") | tostring' <<<"$obs")")"
     if [[ -z "$baseline" || "$baseline" == "null" ]]; then
@@ -3571,7 +3571,7 @@ idea_status_can_start_implementation() {
 
 idea_single_approved_base_sha() {
   local repo="$1" idea_file="$2" source_run_id approved_base=""
-  approved_base="$(jq -r '.implementation.targets[0].base_sha // empty' "$idea_file")"
+  approved_base="$(jq -r 'if (.implementation.targets[0] | type) == "object" then (.implementation.targets[0].base_sha // empty) else empty end' "$idea_file")"
   if [[ -z "$approved_base" ]]; then
     source_run_id="$(jq -r '.source_run_id // empty' "$idea_file")"
     if [[ -n "$source_run_id" && -f "$(runs_dir_for_repo "$repo")/$source_run_id/findings.md" ]]; then
