@@ -1,0 +1,137 @@
+#!/usr/bin/env node
+'use strict';
+
+// Aggregates provider agreement/disagreement across this repo's historical
+// multi-model negotiate and review rounds (.e3d-pilot/runs/*). Reuses the
+// existing, tested lib/negotiate/parse-status and lib/review/parse-verdict
+// parsers as subprocesses rather than re-deriving their regex contract here.
+
+import fs from 'fs';
+import path from 'path';
+import { execFileSync } from 'child_process';
+import { fileURLToPath } from 'url';
+
+// Where this tool itself lives (for the parser adapters, which only exist in
+// this e3d-pilot checkout) vs. the target repo being analyzed (--repo,
+// default cwd) -- same split e3d-backend-benchmark uses, since e3d-pilot
+// manages other repos' own .e3d-pilot/runs/ history, not only its own.
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const TOOL_ROOT = path.resolve(__dirname, '..');
+const PARSE_STATUS = path.join(TOOL_ROOT, 'lib', 'negotiate', 'parse-status');
+const PARSE_VERDICT = path.join(TOOL_ROOT, 'lib', 'review', 'parse-verdict');
+
+const args = process.argv.slice(2);
+const repoFlagIndex = args.indexOf('--repo');
+const targetRepo = repoFlagIndex !== -1 ? path.resolve(args[repoFlagIndex + 1]) : process.cwd();
+const RUNS_DIR = path.join(targetRepo, '.e3d-pilot', 'runs');
+
+function parseViaTool(toolPath, file) {
+  try {
+    return JSON.parse(execFileSync(toolPath, [file, 'all'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }));
+  } catch {
+    // Missing/invalid status marker (the tool itself exits non-zero for this) --
+    // real historical data includes runs that predate the current response
+    // format entirely, not just occasional malformed files.
+    return null;
+  }
+}
+
+function listRunDirs() {
+  if (!fs.existsSync(RUNS_DIR)) return [];
+  return fs.readdirSync(RUNS_DIR).filter((name) => fs.statSync(path.join(RUNS_DIR, name)).isDirectory());
+}
+
+function pairKey(a, b) {
+  return [a, b].sort().join('|');
+}
+
+const byProvider = new Map();
+const pairStats = new Map();
+const disagreements = [];
+let skippedMalformed = 0;
+
+function recordNegotiate(provider, status) {
+  if (!byProvider.has(provider)) byProvider.set(provider, { negotiate_rounds: 0, approved: 0, revise: 0 });
+  const s = byProvider.get(provider);
+  s.negotiate_rounds += 1;
+  if (status === 'approved') s.approved += 1;
+  else if (status === 'revise') s.revise += 1;
+}
+
+function recordPair(a, b, agree) {
+  const key = pairKey(a, b);
+  if (!pairStats.has(key)) pairStats.set(key, { agree: 0, disagree: 0 });
+  const s = pairStats.get(key);
+  if (agree) s.agree += 1;
+  else s.disagree += 1;
+}
+
+function compareAllPairs(entries, runId, round, kind) {
+  for (let i = 0; i < entries.length; i++) {
+    for (let j = i + 1; j < entries.length; j++) {
+      const a = entries[i], b = entries[j];
+      if (a.provider === b.provider) continue;
+      const agree = a.status === b.status;
+      recordPair(a.provider, b.provider, agree);
+      if (!agree) {
+        disagreements.push({
+          run_id: runId, round, kind,
+          provider_a: a.provider, status_a: a.status, reason_a: a.reason,
+          provider_b: b.provider, status_b: b.status, reason_b: b.reason,
+        });
+      }
+    }
+  }
+}
+
+const NEGOTIATE_RE = /^negotiate-round-(\d+)-reviewer-\d+-([a-z0-9-]+)-response\.md$/;
+const REVIEW_RE = /^review-provider-([a-z0-9-]+)\.md$/;
+
+for (const runId of listRunDirs()) {
+  const runPath = path.join(RUNS_DIR, runId);
+  const files = fs.readdirSync(runPath);
+
+  const roundsMap = new Map();
+  for (const f of files) {
+    const m = f.match(NEGOTIATE_RE);
+    if (!m) continue;
+    const round = Number(m[1]);
+    const provider = m[2];
+    const parsed = parseViaTool(PARSE_STATUS, path.join(runPath, f));
+    if (!parsed) { skippedMalformed += 1; continue; }
+    if (!roundsMap.has(round)) roundsMap.set(round, []);
+    roundsMap.get(round).push({ provider, status: parsed.status, reason: parsed.reason });
+    recordNegotiate(provider, parsed.status);
+  }
+  for (const [round, entries] of roundsMap) {
+    compareAllPairs(entries, runId, round, 'negotiate');
+  }
+
+  const reviewEntries = [];
+  for (const f of files) {
+    const m = f.match(REVIEW_RE);
+    if (!m) continue;
+    const parsed = parseViaTool(PARSE_VERDICT, path.join(runPath, f));
+    if (!parsed) { skippedMalformed += 1; continue; }
+    reviewEntries.push({ provider: m[1], status: parsed.status, reason: parsed.reason });
+  }
+  compareAllPairs(reviewEntries, runId, null, 'review');
+}
+
+const by_provider = {};
+for (const [provider, s] of byProvider) {
+  by_provider[provider] = {
+    negotiate_rounds: s.negotiate_rounds,
+    approved: s.approved,
+    revise: s.revise,
+    approval_rate: s.negotiate_rounds > 0 ? s.approved / s.negotiate_rounds : null,
+  };
+}
+
+const by_provider_pair = {};
+for (const [key, s] of pairStats) {
+  const total = s.agree + s.disagree;
+  by_provider_pair[key] = { agree: s.agree, disagree: s.disagree, agreement_rate: total > 0 ? s.agree / total : null };
+}
+
+process.stdout.write(JSON.stringify({ by_provider, by_provider_pair, disagreements, skipped_malformed_files: skippedMalformed }, null, 2) + '\n');
