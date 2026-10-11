@@ -8,6 +8,7 @@ This document is the manifesto: the goal, the architecture, and how the pieces f
 
 - `docs/e3d-corp-pilot-cast-ad-outcome-loop-spec.md` — the first proving experiment (OppScan HVAC ad), already phased for s2c.
 - `docs/e3d-creative-engine-spec.md` — the new creative-direction engine (`e3d-creative`), phased for s2c.
+- `docs/futco-ad-mandate-spec.md` — bounded autonomous operation: a human sets spend/budget limits once (an `ad_mandate`, mirroring e3d-trade's `capital_mandate`), the system runs inside them without per-action approval, phased for s2c. Its final phase (a real Meta-write executor) is explicitly not authorized by that spec alone.
 
 Read this one first. It rarely changes; the two beneath it will, as the proving experiment and the new repo generate real findings.
 
