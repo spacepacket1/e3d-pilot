@@ -20,7 +20,7 @@
     "draft": "codex",
     "negotiate": ["devin", "codex"],
     "review": "devin",
-    "execute": "csr"
+    "execute": "s2c"
   },
   "max_diff_files": 25,
   "max_diff_lines": 600,

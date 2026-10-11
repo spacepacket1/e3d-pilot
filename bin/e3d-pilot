@@ -884,7 +884,7 @@ write_candidates_markdown() {
         printf '.\n\n'
       fi
       jq -r '.ranked[] | "- `" + .id + "`: " + (.average_score|tostring)' "$scoring_file"
-      printf '\nScoring never executes a candidate. Downstream remains human approval, then negotiate, then csr execute.\n\n'
+      printf '\nScoring never executes a candidate. Downstream remains human approval, then negotiate, then s2c execute.\n\n'
     fi
     printf '## Dedup Context\n\n'
     cat "$facts_file"
@@ -1093,9 +1093,9 @@ build_draft_prompt() {
   local facts_file="$1" prompt_file="$2" conventions_file="$3" protected_paths_list="$4" max_diff_files="$5" max_diff_lines="$6"
   {
     printf 'You are the draft stage of an autonomous repo-improvement pipeline.\n'
-    printf 'Turn the selected candidate below into a complete, csr-shaped phased\n'
-    printf 'Markdown spec that codex-spec-runner (csr) can run without any hand-editing.\n\n'
-    printf 'Follow these csr spec conventions exactly:\n\n'
+    printf 'Turn the selected candidate below into a complete, s2c-shaped phased\n'
+    printf 'Markdown spec that spec2code (s2c) can run without any hand-editing.\n\n'
+    printf 'Follow these s2c spec conventions exactly:\n\n'
     cat "$conventions_file"
     printf '\nHard requirements for your output:\n'
     printf -- '- Start with a "# <Title>" heading, then "## Overview", "## Goals",\n'
@@ -1262,7 +1262,7 @@ draft_validate_spec() {
         [[ -n "$model_line" ]] || continue
         value="$(printf '%s\n' "$model_line" | sed -E 's/^<!--[[:space:]]*runner:model=([^ ]+)[[:space:]]*-->$/\1/')"
         if [[ "$value" == "local" || "$value" == local:* ]]; then
-          printf 'Phase %s: runner:model references unsupported provider "local" (csr only dispatches codex/claude)\n' "$phase_number" >> "$violations_file"
+          printf 'Phase %s: runner:model references unsupported provider "local" (s2c only dispatches codex/claude)\n' "$phase_number" >> "$violations_file"
         fi
       done <<< "$model_lines"
     fi
@@ -1299,7 +1299,7 @@ draft_validate_spec() {
 # execute_spec_guard:
 # that guard re-checks protected_paths against the final spec exactly, while
 # the real max_diff_files/max_diff_lines ceiling is enforced by execute_stage
-# after csr runs, against the actual git diff -- this is only a pre-execution
+# after s2c runs, against the actual git diff -- this is only a pre-execution
 # estimate to catch an obviously-too-big candidate before negotiate/execute.
 draft_check_scope_ceiling() {
   local spec_file="$1" config_file="$2" violations_file="$3" warnings_file="${4:-}"
@@ -1430,7 +1430,7 @@ ensure_worktree() {
   fi
 
   # Git worktrees intentionally omit ignored dependency directories. Reuse a
-  # dependency installation already prepared in the primary clone so csr's
+  # dependency installation already prepared in the primary clone so s2c's
   # phase-level verification can run without downloading packages on every
   # autonomous execution. The ignored symlink never enters the branch diff.
   if [[ -d "$repo/node_modules" && ! -e "$worktree_dir/node_modules" ]] \
@@ -1451,13 +1451,13 @@ prepare_execute_spec_in_worktree() {
   printf '%s' "$target_spec"
 }
 
-# Build caches, bytecode, and runner state are not product diff. csr/Go
+# Build caches, bytecode, and runner state are not product diff. s2c/Go
 # often write GOCACHE under the worktree (go/.tmp/...) which would otherwise
 # blow the file/line ceilings by tens of thousands of files.
 count_git_diff_skip_path() {
   local path="$1"
   case "$path" in
-    .codex-spec-runner|.codex-spec-runner/*) return 0 ;;
+    .spec2code|.spec2code/*) return 0 ;;
     .e3d-pilot|.e3d-pilot/*) return 0 ;;
     node_modules|node_modules/*) return 0 ;;
     go/.tmp|go/.tmp/*) return 0 ;;
@@ -1494,12 +1494,12 @@ count_git_diff() {
   printf '%s\t%s\n' "$files_changed" "$lines_changed"
 }
 
-copy_csr_state_artifacts() {
-  local worktree_dir="$1" run_dir="$2" csr_state_dir
-  csr_state_dir="$worktree_dir/.codex-spec-runner"
-  if [[ -d "$csr_state_dir" ]]; then
-    rm -rf "$run_dir/csr-state"
-    cp -R "$csr_state_dir" "$run_dir/csr-state"
+copy_s2c_state_artifacts() {
+  local worktree_dir="$1" run_dir="$2" s2c_state_dir
+  s2c_state_dir="$worktree_dir/.spec2code"
+  if [[ -d "$s2c_state_dir" ]]; then
+    rm -rf "$run_dir/s2c-state"
+    cp -R "$s2c_state_dir" "$run_dir/s2c-state"
   fi
 }
 
@@ -1532,8 +1532,8 @@ copy_execute_local_data_paths() {
 
 execute_stage() {
   local repo="$1" run_id="$2" run_dir config_file spec_final_file violations_file worktree_dir branch
-  local max_diff_files max_diff_lines diff_counts diff_files diff_lines csr_bin csr_stdout csr_stderr csr_status
-  local worktree_spec_file csr_command_file execute_backend provider_script execute_prompt execute_stdout execute_stderr execute_status availability_output availability_status
+  local max_diff_files max_diff_lines diff_counts diff_files diff_lines s2c_bin s2c_stdout s2c_stderr s2c_status
+  local worktree_spec_file s2c_command_file execute_backend provider_script execute_prompt execute_stdout execute_stderr execute_status availability_output availability_status
 
   ensure_git_repo "$repo"
   config_file="$(config_path_for_repo "$repo")"
@@ -1548,7 +1548,7 @@ execute_stage() {
   violations_file="$run_dir/execute-guard-violations.txt"
   if ! execute_spec_guard "$spec_final_file" "$config_file" "$violations_file"; then
     {
-      printf 'execute: rejected spec-final.md before csr was invoked because it violates protected_paths\n'
+      printf 'execute: rejected spec-final.md before s2c was invoked because it violates protected_paths\n'
       while IFS= read -r line; do
         [[ -n "$line" ]] || continue
         printf '  - %s\n' "$line"
@@ -1558,7 +1558,7 @@ execute_stage() {
     return "$EXECUTE_EXIT_NEEDS_HUMAN"
   fi
 
-  execute_backend="$(jq -r '.providers.execute // "csr"' "$config_file")"
+  execute_backend="$(jq -r '.providers.execute // "s2c"' "$config_file")"
   if [[ "$execute_backend" == "grok-build" ]]; then
     provider_script="$REPO_ROOT/lib/providers/grok-build"
     [[ -x "$provider_script" ]] || die "Grok Build provider script missing or not executable: $provider_script"
@@ -1577,35 +1577,35 @@ execute_stage() {
   max_diff_files="$(config_value "$config_file" '.max_diff_files')"
   max_diff_lines="$(config_value "$config_file" '.max_diff_lines')"
   case "$execute_backend" in
-    csr)
-      csr_bin="$(command -v codex-spec-runner || true)"
-      [[ -n "$csr_bin" ]] || die "codex-spec-runner not found on PATH"
+    s2c)
+      s2c_bin="$(command -v spec2code || true)"
+      [[ -n "$s2c_bin" ]] || die "spec2code not found on PATH"
 
-      csr_stdout="$run_dir/execute-csr.stdout"
-      csr_stderr="$run_dir/execute-csr.stderr"
-      csr_command_file="$run_dir/execute-csr.command"
+      s2c_stdout="$run_dir/execute-s2c.stdout"
+      s2c_stderr="$run_dir/execute-s2c.stderr"
+      s2c_command_file="$run_dir/execute-s2c.command"
       printf 'cd %s && MAX_PHASES_PER_RUN=%s MAX_PROVIDER_TOKENS_PER_PHASE=%s CODEX_CONTEXT_WINDOW=%s CODEX_AUTO_COMPACT_TOKEN_LIMIT=%s %s %s all\n' \
-        "$worktree_dir" "${E3D_PILOT_CSR_MAX_PHASES:-8}" "${E3D_PILOT_CSR_MAX_TOKENS_PER_PHASE:-120000}" \
+        "$worktree_dir" "${E3D_PILOT_S2C_MAX_PHASES:-8}" "${E3D_PILOT_S2C_MAX_TOKENS_PER_PHASE:-120000}" \
         "${E3D_PILOT_CODEX_CONTEXT_WINDOW:-128000}" "${E3D_PILOT_CODEX_AUTO_COMPACT_LIMIT:-96000}" \
-        "$csr_bin" "$worktree_spec_file" > "$csr_command_file"
+        "$s2c_bin" "$worktree_spec_file" > "$s2c_command_file"
 
       set +e
       ( cd "$worktree_dir" && \
-        MAX_PHASES_PER_RUN="${E3D_PILOT_CSR_MAX_PHASES:-8}" \
-        MAX_PROVIDER_TOKENS_PER_PHASE="${E3D_PILOT_CSR_MAX_TOKENS_PER_PHASE:-120000}" \
+        MAX_PHASES_PER_RUN="${E3D_PILOT_S2C_MAX_PHASES:-8}" \
+        MAX_PROVIDER_TOKENS_PER_PHASE="${E3D_PILOT_S2C_MAX_TOKENS_PER_PHASE:-120000}" \
         CODEX_CONTEXT_WINDOW="${E3D_PILOT_CODEX_CONTEXT_WINDOW:-128000}" \
         CODEX_AUTO_COMPACT_TOKEN_LIMIT="${E3D_PILOT_CODEX_AUTO_COMPACT_LIMIT:-96000}" \
-        "$csr_bin" "$worktree_spec_file" all ) >"$csr_stdout" 2>"$csr_stderr"
-      csr_status=$?
+        "$s2c_bin" "$worktree_spec_file" all ) >"$s2c_stdout" 2>"$s2c_stderr"
+      s2c_status=$?
       set -e
 
-      copy_csr_state_artifacts "$worktree_dir" "$run_dir"
+      copy_s2c_state_artifacts "$worktree_dir" "$run_dir"
 
-      if [[ $csr_status -ne 0 ]]; then
-        if [[ -s "$csr_stderr" ]]; then
-          die "execute csr run failed: $(tr '\n' ' ' < "$csr_stderr")"
+      if [[ $s2c_status -ne 0 ]]; then
+        if [[ -s "$s2c_stderr" ]]; then
+          die "execute s2c run failed: $(tr '\n' ' ' < "$s2c_stderr")"
         fi
-        die "execute csr run failed with exit status $csr_status"
+        die "execute s2c run failed with exit status $s2c_status"
       fi
       ;;
     grok-build)
@@ -1636,7 +1636,7 @@ execute_stage() {
       fi
       ;;
     *)
-      die "unsupported providers.execute backend: $execute_backend (expected csr or grok-build)"
+      die "unsupported providers.execute backend: $execute_backend (expected s2c or grok-build)"
       ;;
   esac
 
@@ -1853,10 +1853,10 @@ build_review_prompt() {
 manifest_copy_name() {
   local manifest_source="$1"
   case "$(basename "$manifest_source")" in
-    manifest.jsonl) printf 'csr-manifest-rows.jsonl' ;;
-    manifest.json) printf 'csr-manifest-rows.json' ;;
-    manifest.tsv) printf 'csr-manifest-rows.tsv' ;;
-    *) printf 'csr-manifest-rows.txt' ;;
+    manifest.jsonl) printf 's2c-manifest-rows.jsonl' ;;
+    manifest.json) printf 's2c-manifest-rows.json' ;;
+    manifest.tsv) printf 's2c-manifest-rows.tsv' ;;
+    *) printf 's2c-manifest-rows.txt' ;;
   esac
 }
 
@@ -1926,7 +1926,7 @@ review_stage() {
   diff_text="$run_dir/review-diff.patch"
   # Plain `git diff` (no ref) only shows *uncommitted* worktree changes, which
   # breaks the moment anything on this run's branch is committed -- true for
-  # any multi-phase run, since csr commits per phase. Diff from this branch's
+  # any multi-phase run, since s2c commits per phase. Diff from this branch's
   # actual merge-base with its configured base branch instead, so a reviewer
   # sees the whole run's change regardless of how many commits it took. `add
   # -N -A` first stages any still-uncommitted untracked files as intent-to-add
@@ -2048,14 +2048,14 @@ prepare_publish_audit() {
     cp "$source" "$dest/$name"
   done
   manifest_source=""
-  if [[ -f "$run_dir/csr-state/manifest.jsonl" ]]; then
-    manifest_source="$run_dir/csr-state/manifest.jsonl"
-  elif [[ -f "$run_dir/csr-state/manifest.json" ]]; then
-    manifest_source="$run_dir/csr-state/manifest.json"
-  elif [[ -f "$run_dir/csr-state/manifest.tsv" ]]; then
-    manifest_source="$run_dir/csr-state/manifest.tsv"
+  if [[ -f "$run_dir/s2c-state/manifest.jsonl" ]]; then
+    manifest_source="$run_dir/s2c-state/manifest.jsonl"
+  elif [[ -f "$run_dir/s2c-state/manifest.json" ]]; then
+    manifest_source="$run_dir/s2c-state/manifest.json"
+  elif [[ -f "$run_dir/s2c-state/manifest.tsv" ]]; then
+    manifest_source="$run_dir/s2c-state/manifest.tsv"
   fi
-  [[ -n "$manifest_source" ]] || die "publish requires csr manifest copy under $run_dir/csr-state"
+  [[ -n "$manifest_source" ]] || die "publish requires s2c manifest copy under $run_dir/s2c-state"
   manifest_name="$(manifest_copy_name "$manifest_source")"
   cp "$manifest_source" "$dest/$manifest_name"
   printf '%s\t%s\n' "$dest" "$manifest_name"
@@ -2162,8 +2162,8 @@ draft_stage() {
   local response_file="$run_dir/draft-response.md"
   local spec_file="$run_dir/spec-draft.md"
   local rejected_file="$run_dir/draft-rejected.md"
-  local conventions_file="${CSR_SPEC_CONVENTIONS_FILE:-$REPO_ROOT/lib/draft/csr-spec-conventions.md}"
-  [[ -s "$conventions_file" ]] || die "missing csr spec conventions file: $conventions_file"
+  local conventions_file="${S2C_SPEC_CONVENTIONS_FILE:-$REPO_ROOT/lib/draft/s2c-spec-conventions.md}"
+  [[ -s "$conventions_file" ]] || die "missing s2c spec conventions file: $conventions_file"
 
   local protected_paths_list max_diff_files max_diff_lines
   protected_paths_list="$(jq -r '.protected_paths[] | "- " + .' "$config_file")"
@@ -2510,7 +2510,7 @@ validate_config_file() {
   json_type_check "$file" '.providers.negotiate | length >= 1' "config.providers.negotiate must be a non-empty array"
   json_type_check "$file" '.providers.negotiate | all(.[]; type == "string")' "config.providers.negotiate must be a non-empty array of strings"
   stage_providers_type_ok "$file" review "config.providers.review must be a string or a non-empty array of strings"
-  json_type_check "$file" 'if (.providers | has("execute")) then (.providers.execute == "csr" or .providers.execute == "grok-build") else true end' "config.providers.execute must be csr or grok-build when provided"
+  json_type_check "$file" 'if (.providers | has("execute")) then (.providers.execute == "s2c" or .providers.execute == "grok-build") else true end' "config.providers.execute must be s2c or grok-build when provided"
   json_type_check "$file" '.max_diff_files | type == "number"' "config.max_diff_files must be a number"
   json_type_check "$file" '.max_diff_files == (.max_diff_files | floor)' "config.max_diff_files must be an integer value"
   json_type_check "$file" '.max_diff_files >= 0' "config.max_diff_files must be a non-negative integer"

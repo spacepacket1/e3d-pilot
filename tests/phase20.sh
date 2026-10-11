@@ -131,10 +131,10 @@ EOF
   chmod +x "$PROVIDER"
 }
 
-make_csr_stub() {
+make_s2c_stub() {
   local bin_dir="$1"
   mkdir -p "$bin_dir"
-  cat > "$bin_dir/codex-spec-runner" <<'EOF'
+  cat > "$bin_dir/spec2code" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 if [[ "${1:-}" == "--list" ]]; then
@@ -143,11 +143,11 @@ fi
 spec="${1:?spec required}"
 stage="${2:?stage required}"
 [[ "$stage" == "all" && -f "$spec" ]] || exit 1
-mkdir -p .codex-spec-runner
-printf '{"phase":1,"status":"ok"}\n' > .codex-spec-runner/manifest.json
+mkdir -p .spec2code
+printf '{"phase":1,"status":"ok"}\n' > .spec2code/manifest.json
 printf '\nRevenue signal: gated workflow produced this draft PR.\n' >> README.md
 EOF
-  chmod +x "$bin_dir/codex-spec-runner"
+  chmod +x "$bin_dir/spec2code"
 }
 
 make_gh_stub() {
@@ -273,7 +273,7 @@ approval_gated_e2e() {
   trace="$dir/gh-trace.txt"
   jq -ncS '{prs:[]}' > "$state"
   : > "$trace"
-  make_csr_stub "$bin_dir"
+  make_s2c_stub "$bin_dir"
   make_gh_stub "$bin_dir"
 
   main_before="$(git -C "$repo" rev-parse main)"
@@ -377,9 +377,9 @@ EOF
 }
 
 spec_runner_parses_phase_tiers() {
-  if command -v codex-spec-runner >/dev/null 2>&1; then
+  if command -v spec2code >/dev/null 2>&1; then
     local out
-    out="$(codex-spec-runner "$ROOT/docs/approval-gated-idea-lifecycle.md" --list)"
+    out="$(spec2code "$ROOT/docs/approval-gated-idea-lifecycle.md" --list)"
     assert_contains "$out" "Phase 9"
   fi
 }

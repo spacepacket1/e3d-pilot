@@ -80,8 +80,8 @@
         },
         "execute": {
           "type": "string",
-          "enum": ["csr", "grok-build"],
-          "default": "csr"
+          "enum": ["s2c", "grok-build"],
+          "default": "s2c"
         }
       }
     },

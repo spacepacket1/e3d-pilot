@@ -12,7 +12,7 @@ The recommended Grok-shaped path is:
 
 1. Keep your existing ideate and negotiate providers.
 2. Add optional `candidate_scoring` with `"provider": "grok-build"`.
-3. Leave `providers.execute` as `"csr"` (the default).
+3. Leave `providers.execute` as `"s2c"` (the default).
 4. Keep both human gates: `ideas approve`, then `ideas approve-merge`.
 
 Direct `providers.execute: "grok-build"` remains experimental. Benchmark
@@ -38,7 +38,7 @@ Name `grok-build` anywhere other providers are named. `discover`, `ideate`,
 `negotiate`, and `review` accept a string or an array; every listed model
 runs. If one discover/ideate/review adapter fails, the others still run.
 Negotiate still fails fast on an unavailable reviewer. Draft stays a single
-provider. csr remains the execute default:
+provider. s2c remains the execute default:
 
 ```json
 {
@@ -48,7 +48,7 @@ provider. csr remains the execute default:
     "draft": "codex",
     "negotiate": ["grok-build", "claude", "codex", "devin"],
     "review": ["grok-build", "claude", "codex", "devin"],
-    "execute": "csr"
+    "execute": "s2c"
   },
   "candidate_scoring": {
     "provider": "grok-build",
@@ -84,7 +84,7 @@ The model often puts a short planning prefix in `text` before the
 `{"scores":[...]}` object. Scoring extracts that object; it does not require
 `text` itself to be JSON.
 
-`providers.execute` defaults to `csr`. Direct Grok execution is a separate,
+`providers.execute` defaults to `s2c`. Direct Grok execution is a separate,
 explicit choice:
 
 ```json
@@ -93,7 +93,7 @@ explicit choice:
 
 That path still requires implementation approval, uses the e3d-pilot worktree,
 and is subject to protected-path checks, diff ceilings, verify, independent
-review, draft publication, and head-SHA merge approval. csr remains the
+review, draft publication, and head-SHA merge approval. s2c remains the
 recommended executor.
 
 | Environment variable | Default | Meaning |
@@ -244,7 +244,7 @@ cheap pass that increases review burden may have negative leverage.
    all three backends. Record complete usage/billing and reviewer rubric scores.
 2. Enable `candidate_scoring.provider: "grok-build"` on a real fleet cadence and
    compare selected-idea quality and reviewer burden against the same ideate
-   provider with scoring omitted. Direct execute should stay `csr` for that
+   provider with scoring omitted. Direct execute should stay `s2c` for that
    comparison.
 3. Prototype a read-only ACP spike for one repo-analysis task and compare event
    fidelity, cancellation, implementation complexity, and recovery with CLI

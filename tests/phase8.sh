@@ -101,7 +101,7 @@ write_phase8_config() {
 write_phase8_run_artifacts() {
   local repo="$1" run_id="$2"
   local run_dir="$repo/.e3d-pilot/runs/$run_id"
-  mkdir -p "$run_dir/csr-state"
+  mkdir -p "$run_dir/s2c-state"
   cat > "$run_dir/findings.md" <<'EOF'
 ---
 head_sha: deadbeef
@@ -153,7 +153,7 @@ EOF
 
 - Audit artifacts are committed.
 EOF
-  cat > "$run_dir/csr-state/manifest.json" <<'EOF'
+  cat > "$run_dir/s2c-state/manifest.json" <<'EOF'
 {"rows":[{"phase":1,"status":"ok"}]}
 EOF
 }
@@ -318,13 +318,13 @@ EOF
   assert_contains "$summary" ".e3d-pilot/runs/$run_id/candidates.md"
   assert_contains "$summary" ".e3d-pilot/runs/$run_id/negotiation-log.md"
   assert_contains "$summary" ".e3d-pilot/runs/$run_id/spec-final.md"
-  assert_contains "$summary" ".e3d-pilot/runs/$run_id/csr-manifest-rows.json"
+  assert_contains "$summary" ".e3d-pilot/runs/$run_id/s2c-manifest-rows.json"
   tree="$(git -C "$worktree" ls-tree -r --name-only HEAD)"
   assert_contains "$tree" ".e3d-pilot/runs/$run_id/findings.md"
   assert_contains "$tree" ".e3d-pilot/runs/$run_id/candidates.md"
   assert_contains "$tree" ".e3d-pilot/runs/$run_id/negotiation-log.md"
   assert_contains "$tree" ".e3d-pilot/runs/$run_id/spec-final.md"
-  assert_contains "$tree" ".e3d-pilot/runs/$run_id/csr-manifest-rows.json"
+  assert_contains "$tree" ".e3d-pilot/runs/$run_id/s2c-manifest-rows.json"
 }
 
 review_blocks_when_an_available_provider_fails_to_produce_output() {
@@ -422,7 +422,7 @@ github_publish_dry_run_prints_exact_commands() {
   assert_contains "$out" "--head e3d-pilot/$run_id"
   tree="$(git -C "$worktree" ls-tree -r --name-only HEAD)"
   assert_contains "$tree" ".e3d-pilot/runs/$run_id/findings.md"
-  assert_contains "$tree" ".e3d-pilot/runs/$run_id/csr-manifest-rows.json"
+  assert_contains "$tree" ".e3d-pilot/runs/$run_id/s2c-manifest-rows.json"
 }
 
 local_publish_sends_email_notification_when_configured() {
