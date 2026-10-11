@@ -37,10 +37,11 @@ Checked against the real repos on 2026-10-11, not assumed from the spec:
 | Corp → Pilot handoff for novel engineering work | **Exists, generic**, targets any repo | `e3d-corp/lib/proposals/pilotHandoff.js` |
 | Ad-platform read access (Meta Insights: impressions/clicks/spend/landing-page views) | **Exists, real**, polled on a schedule | `e3d-corp/lib/research/metaInsights.js`, `ops/reports/pollMetaInsights.js` |
 | External-signal adapter pattern | **Exists, established** — precedent to follow for new adapters | `e3d-corp/lib/event-sources/*.js` |
-| Stripe adapter (acquired users, revenue) | **Missing** | new `e3d-corp/lib/event-sources/stripeRevenue.js`, observe-level (authority 0), same pattern as existing adapters |
-| "Commission creative directly" (no Pilot hop) proposal type | **Missing** | new, same shape as `pilotHandoff.js`, targets `e3d-creative` instead of a repo to engineer |
-| Ad-platform *write* access (launch creative, change budget) | **Missing**, and risky — gate at `FINANCIAL_ACTION`, human-approved in v1 | new executor behind the existing policy gate |
-| Outcome attribution to a specific creative/campaign ID | **Unverified** — needs a read of `e3d-corp/lib/outcomes/record.js` before assuming it's supported | — |
+| Stripe adapter (acquired users, revenue) | **Built, 2026-10-11** — read-only rolling pull, landed as `evidence.gathered`, same pattern as Meta/GA4 | `e3d-corp/lib/research/stripeRevenue.js`, `ops/reports/pollStripeRevenue.js` |
+| Stripe outcome attribution (webhook → Outcome on a specific chain) | **Built, 2026-10-11**, but currently always unattributed in practice — no FutCo product stamps `metadata.correlationId` on a Stripe object yet | `e3d-corp/lib/outcomes/stripeRevenue.js`, `/webhooks/stripe` in `lib/web/server.js` |
+| "Commission creative directly" (no Pilot hop) proposal type | **Built, 2026-10-11** — same shape as `pilotHandoff.js`, authority level 2, executor actually shells out to `e3d-creative`'s CLI. Verified end-to-end against the real engine and the live Anthropic API | `e3d-corp/lib/proposals/commissionCreative.js`, `lib/actions/commissionCreative.js` |
+| Ad-platform *write* access (launch creative, change budget) | **Missing**, and risky — gate at `FINANCIAL_ACTION`, human-approved in v1. Note: live introspection on 2026-10-11 found `META_ADS_READ_TOKEN` actually carries `ads_management` and several other broad scopes despite its name — treat as a real-stakes credential, not a scoped-down read key, when building this | new executor behind the existing policy gate |
+| Outcome attribution to a specific creative/campaign ID | **Resolved, 2026-10-11** — `recordOutcome`'s payload is already free-form (`lib/outcomes/record.js`), so no schema change was needed; attribution just requires the populating code (e.g. the Stripe webhook above) to include a campaign/creative ID when it has one | — |
 | e3d-pilot idea lifecycle (discover/ideate/draft/negotiate/review/execute) | **Exists, reusable as-is** for building `e3d-creative` | `e3d-pilot/lib/ideas/*`, `bin/e3d-pilot` |
 | Hosted job pipeline (billing, tiers, upload, worker, webhook) | **Exists**, unchanged role, dispatches to pod2vid today | `e3d-cast/src/{server,worker}` |
 | Per-product rendering | **Exists**, but visually dated — needs a provider-abstraction upgrade (modern AI video-gen, not 80s-looking output) | `e3d-pod2vid/make_*_short.py` |
@@ -79,6 +80,6 @@ OppScan's HVAC ad is the proving instance, not the ceiling. Once the loop and `e
 - Not building the multi-product generalization before OppScan proves the loop works.
 - Not fabricating conversion/ROI claims before real data exists.
 
-## 7. Open question carried into the companion specs
+## 7. Open question carried into the companion specs — resolved
 
-`e3d-corp/lib/outcomes/record.js` needs to be read before assuming outcome-to-creative attribution works out of the box — flagged here, to be resolved in the first phase of whichever spec touches outcome recording.
+`e3d-corp/lib/outcomes/record.js` was read on 2026-10-11: outcome payloads are a free-form object, so creative/campaign-ID attribution needed no schema change. What's still missing is the thing that *populates* that field — no FutCo product checkout flow stamps `metadata.correlationId` on a Stripe object yet, so the new `/webhooks/stripe` endpoint (`e3d-corp`) is wired and tested but always unattributed in practice today. Whichever product's checkout flow is updated first to stamp that field is the real unblock, not another e3d-corp change.
