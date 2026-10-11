@@ -19,7 +19,7 @@ Set up e3d-pilot on this machine and get it running on a schedule.
 Context: e3d-pilot is a Bash CLI that autonomously researches a target git
 repo, proposes an idea (optionally re-ranked by a read-only scoring
 ensemble), gets independent AI models to agree on a spec, executes it via
-codex-spec-runner in an isolated worktree by default, verifies the result,
+spec2code in an isolated worktree by default, verifies the result,
 and opens a draft PR (or leaves a local review branch) — it never merges
 anything itself. This machine is a dedicated runner for it, separate from
 any production server. Full docs: https://github.com/spacepacket1/e3d-pilot
@@ -40,9 +40,9 @@ with me before doing, same as you would a push or a force-reset.
   public now (no auth needed just to clone it), but `gh` auth is still
   required for any target repo that uses the `github` publish backend
   (pushing branches, opening draft PRs, listing issues/PRs for dedup).
-- codex-spec-runner: clone https://github.com/spacepacket1/codex-spec-runner
+- spec2code: clone https://github.com/spacepacket1/spec2code
   and put its `bin/` on PATH. e3d-pilot's execute stage shells out to it via
-  `command -v codex-spec-runner`, so it must resolve on PATH, not a fixed
+  `command -v spec2code`, so it must resolve on PATH, not a fixed
   path.
 - Ask me which model CLI(s) I want available — `claude`, `codex`, `devin`,
   `grok` (e3d-pilot's `grok-build` provider), or a self-hosted
@@ -58,7 +58,7 @@ with me before doing, same as you would a push or a force-reset.
     --device-auth` or `XAI_API_KEY`. Naming `"grok-build"` in config is the
     opt-in (no extra enable flag). Ask me whether I want it as a reasoning
     provider, as `candidate_scoring.provider`, both, or not at all. Default
-    execute stays `csr` unless I explicitly ask for
+    execute stays `s2c` unless I explicitly ask for
     `providers.execute: "grok-build"`.
   - local model: ask me for the endpoint URL and model name; these become
     `LOCAL_MODEL_ENDPOINT` / `LOCAL_MODEL_NAME` env vars. Note today's local
@@ -86,7 +86,7 @@ Ask me, explicitly, one at a time if that's easier:
   never touch, `research_topics` / `analogy_domains` hints, which provider(s)
   for `discover`/`ideate`/`draft`/`negotiate`/`review`, whether
   `candidate_scoring` should run (provider + workers 3–5; omitted means no
-  scoring), `providers.execute` (`csr` unless I explicitly choose
+  scoring), `providers.execute` (`s2c` unless I explicitly choose
   `grok-build`), `max_diff_files` / `max_diff_lines`, and `pr.backend`
   (`auto`, `github`, or `local`).
 - For fleet discover: the same `candidate_scoring` question applies to
