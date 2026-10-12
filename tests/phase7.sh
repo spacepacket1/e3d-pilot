@@ -188,6 +188,52 @@ execute_uses_isolated_worktree_and_copies_s2c_artifacts() {
   rm -rf "$bin_dir" "$trace_file"
 }
 
+execute_reuses_nested_subpackage_node_modules() {
+  local repo run_id run_dir bin_dir out worktree_record worktree
+  repo="$(make_repo_with_commit)"
+  printf 'node_modules/\n' > "$repo/.gitignore"
+  git -C "$repo" add .gitignore
+  git -C "$repo" commit -q -m "ignore dependencies"
+  # No top-level node_modules at all -- a repo laid out as separate
+  # sub-packages (server/, client/), the real shape this was written for.
+  mkdir -p "$repo/server/node_modules/.bin" "$repo/client/node_modules/.bin"
+  printf 'server dependency marker\n' > "$repo/server/node_modules/.bin/fixture-tool"
+  printf 'client dependency marker\n' > "$repo/client/node_modules/.bin/fixture-tool"
+  write_phase7_config "$repo" 10 50
+  run_id="2026-07-27-repo-execute-nested-node-modules"
+  run_dir="$repo/.e3d-pilot/runs/$run_id"
+  write_phase7_spec_final "$repo" "$run_id" "README.md"
+
+  bin_dir="$(mktemp -d)"
+  make_fake_s2c_bin "$bin_dir"
+
+  out="$(PATH="$bin_dir:$PATH" FAKE_S2C_MODE="small-diff" "$BIN" run --repo "$repo" --stage execute --run-id "$run_id")"
+
+  worktree_record="$(cut -f2 "$run_dir/execute-worktree.txt")"
+  worktree="$(cd "$worktree_record" && pwd -P)"
+
+  [[ ! -e "$worktree/node_modules" ]] || { echo "no top-level node_modules exists in the repo; the worktree should not invent one" >&2; exit 1; }
+  [[ -L "$worktree/server/node_modules" ]] || { echo "expected execute worktree to reuse installed server/node_modules" >&2; exit 1; }
+  [[ -L "$worktree/client/node_modules" ]] || { echo "expected execute worktree to reuse installed client/node_modules" >&2; exit 1; }
+  assert_eq "$(cd "$(readlink "$worktree/server/node_modules")" && pwd -P)" "$(cd "$repo/server/node_modules" && pwd -P)" "worktree server/node_modules symlink target"
+  assert_eq "$(cd "$(readlink "$worktree/client/node_modules")" && pwd -P)" "$(cd "$repo/client/node_modules" && pwd -P)" "worktree client/node_modules symlink target"
+  assert_contains "$out" "execute: completed s2c run"
+
+  # The actual bug this symlinking exists to avoid reintroducing: a tracked
+  # .gitignore pattern ending in "/" (set above) only matches real
+  # directories, never a symlink, so `git add -A` (exactly what publish_stage
+  # runs before committing) would otherwise happily stage these symlinks
+  # into the real branch diff. ensure_worktree must also record an explicit,
+  # non-slash-terminated local exclude entry for each one.
+  if git -C "$worktree" add -A --dry-run 2>/dev/null | grep -q "node_modules"; then
+    echo "a node_modules symlink would be staged by git add -A -- it must never enter the branch diff" >&2
+    git -C "$worktree" add -A --dry-run >&2
+    exit 1
+  fi
+
+  rm -rf "$bin_dir"
+}
+
 execute_rejects_protected_path_before_invoking_s2c() {
   local repo run_id bin_dir trace_file out status
   repo="$(make_repo_with_commit)"
@@ -396,6 +442,7 @@ execute_oversized_diff_halts_stage_all_before_review_and_publish() {
 
 main() {
   execute_uses_isolated_worktree_and_copies_s2c_artifacts
+  execute_reuses_nested_subpackage_node_modules
   execute_does_not_link_unignored_dependencies
   execute_rejects_protected_path_before_invoking_s2c
   execute_stops_when_diff_exceeds_ceiling

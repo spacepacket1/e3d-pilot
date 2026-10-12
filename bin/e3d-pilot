@@ -1429,14 +1429,40 @@ ensure_worktree() {
     die "failed to create execute worktree for branch $branch"
   fi
 
-  # Git worktrees intentionally omit ignored dependency directories. Reuse a
-  # dependency installation already prepared in the primary clone so s2c's
+  # Git worktrees intentionally omit ignored dependency directories. Reuse
+  # dependency installations already prepared in the primary clone so s2c's
   # phase-level verification can run without downloading packages on every
-  # autonomous execution. The ignored symlink never enters the branch diff.
-  if [[ -d "$repo/node_modules" && ! -e "$worktree_dir/node_modules" ]] \
-    && git -C "$repo" check-ignore -q node_modules; then
-    ln -s "$repo/node_modules" "$worktree_dir/node_modules"
-  fi
+  # autonomous execution. Each ignored symlink never enters the branch diff.
+  # Not just the repo root: a repo laid out as separate sub-packages (e.g.
+  # server/node_modules, client/node_modules, with no top-level node_modules
+  # at all) needs every one of those symlinked too, or verification fails on
+  # a missing-module error that has nothing to do with the spec being
+  # executed. Depth 3 covers server/node_modules and similar one-level-deep
+  # packages without walking into installed packages' own node_modules.
+  # A tracked .gitignore pattern ending in a slash (e.g. "node_modules/")
+  # only ever matches a real directory, never a symlink -- so `git add -A`
+  # at publish time can and does pick up these symlinks as ordinary
+  # untracked files despite the path being "ignored" by check-ignore here
+  # (confirmed the hard way: spacepacket/e3d's own gitignore is exactly this
+  # shape, and an earlier version of this function let three node_modules
+  # symlinks get committed into a real PR). Belt and suspenders: also add an
+  # explicit, non-slash-terminated entry to this worktree's local
+  # info/exclude for every symlink created, which matches symlinks too and
+  # is never part of any branch diff regardless of the tracked .gitignore's
+  # own pattern shape.
+  local nm_dir nm_rel exclude_file
+  exclude_file="$(git -C "$worktree_dir" rev-parse --git-path info/exclude 2>/dev/null || true)"
+  while IFS= read -r nm_dir; do
+    [[ -n "$nm_dir" ]] || continue
+    nm_rel="${nm_dir#"$repo"/}"
+    if [[ ! -e "$worktree_dir/$nm_rel" ]] && git -C "$repo" check-ignore -q "$nm_rel"; then
+      mkdir -p "$(dirname "$worktree_dir/$nm_rel")"
+      ln -s "$nm_dir" "$worktree_dir/$nm_rel"
+      if [[ -n "$exclude_file" ]] && ! grep -qxF "$nm_rel" "$exclude_file" 2>/dev/null; then
+        printf '%s\n' "$nm_rel" >> "$exclude_file"
+      fi
+    fi
+  done < <(find "$repo" -maxdepth 3 -type d -name node_modules 2>/dev/null)
 
   printf '%s\t%s\n' "$branch" "$worktree_dir" > "$run_dir/execute-worktree.txt"
   printf '%s' "$worktree_dir"
