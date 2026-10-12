@@ -74,7 +74,7 @@ You don't need the rest of e3d-pilot to use `e3d-debate` on its own — see [e3d
 
 Autonomous coding agents solved the *execution* half of the problem: point a good model at a good spec, and it will faithfully implement it. What's still missing is everything **before** that — noticing what's worth building, making sure it isn't a rehash of a closed PR or last week's abandoned branch, and getting more than one model to actually agree the plan is safe and sound before anything touches a working tree. Skip that half and you get agents that happily reimplement existing features, argue with themselves in a PR nobody asked for, or quietly blow through a repo's real diff budget.
 
-e3d-pilot exists to be that missing half: a small, auditable layer that sits *above* s2c rather than duplicating it. s2c stays the dumb, reliable phase executor — "run this spec." e3d-pilot's job is deciding what the spec should even be, proving it's worth doing, and refusing to let it run unsupervised past the point where a human needs to look.
+e3d-pilot exists to be that missing half: a small, auditable layer that sits *above* s2c (spec2code) rather than duplicating it. s2c stays the dumb, reliable phase executor — "run this spec." e3d-pilot's job is deciding what the spec should even be, proving it's worth doing, and refusing to let it run unsupervised past the point where a human needs to look.
 
 The other reason: good ideas rarely come from staring harder at the same backlog. e3d-pilot's discover stage explicitly borrows from domains outside a repo's own category — a game's progression loop, a marketplace's liquidity trick, a social feed's notification mechanics — and its ideate stage grades every candidate on attraction and retention (does this bring people in, does it bring them back) with revenue treated as a secondary tiebreaker, never the deciding factor. The goal is features people actually want, not just the next item on an internal TODO list.
 
@@ -121,9 +121,9 @@ flowchart LR
 1. **discover** — writes `findings.md`: Git history, branches, issues/PRs, existing docs and TODOs, plus a model-researched "External Context" section that includes an explicit cross-domain "Analogous Patterns" subsection (see [Ideation sourcing](#ideation-sourcing-and-scoring) below).
 2. **ideate** — writes ranked, deduplicated `candidates.md` and materializes every non-duplicate candidate as a `proposed` idea. `selected: none` is a valid, clean stop when everything proposed is already covered. If `candidate_scoring` is configured, an ensemble of read-only workers re-ranks non-duplicate candidates before materialization; the original model pick is stored as `model_selected`.
 3. **approval gate 1** — a human approves or rejects the exact idea. `proposed` never means rejected, and no source-mutating stage can run without current implementation approval.
-4. **draft** — turns the approved candidate into a s2c-shaped `spec-draft.md`, with machine-readable `pilot:touches` annotations per phase so later guards can check real paths instead of guessing from prose.
+4. **draft** — turns the approved candidate into an s2c-shaped `spec-draft.md`, with machine-readable `pilot:touches` annotations per phase so later guards can check real paths instead of guessing from prose.
 5. **negotiate** — every configured reviewer must approve the same unchanged draft in one pass; disagreement drives bounded revision rounds, ending in `spec-final.md` on success or a clean "needs human" stop.
-6. **execute** — hands `spec-final.md` to the configured execute backend inside an isolated worktree on its own branch, then enforces `protected_paths` and the real post-execution `max_diff_files`/`max_diff_lines` ceilings. The default backend is s2c. `providers.execute: "grok-build"` is an experimental alternative that still uses the same worktree, ceilings, review, and draft-PR path.
+6. **execute** — hands `spec-final.md` to the configured execute backend inside an isolated worktree on its own branch, then enforces `protected_paths` and the real post-execution `max_diff_files`/`max_diff_lines` ceilings. The default backend is s2c (spec2code). `providers.execute: "grok-build"` is an experimental alternative that still uses the same worktree, ceilings, review, and draft-PR path.
 7. **review** — runs (or auto-detects) verification commands and asks an independent review provider to inspect the actual diff.
 8. **publish** — only after verification passes: commits the run's audit artifacts to the branch and hands off to a publish backend (`github` or `local`) to open a draft PR or leave a local review branch.
 9. **approval gate 2** — a human runs `approve-merge` after reviewing the draft PR/local branch. For GitHub targets, e3d-pilot records the current PR head SHA and refuses to merge any later head without a new approval.
@@ -135,6 +135,12 @@ Generated run artifacts live under `.e3d-pilot/runs/<run-id>/` in the *target* r
 Discover's model call doesn't just summarize "state of the art" — it's asked to pick the 2-3 most transferable entries from a configurable `analogy_domains` list (or a sensible built-in default spanning games, social platforms, marketplaces, dev tools, and fintech) and name, concretely, how each mechanic could apply to *this* repo.
 
 Ideate then scores every non-duplicate candidate on `Attraction` and `Retention` (1-5 each), tags a `Category` (data, workflow, social, gamification, testing, marketing, selling, or other), cites the `Analogy` it drew on, and estimates `Effort`. Ranking is driven primarily by `Attraction + Retention`; an optional `Revenue` score can only break ties between otherwise-equal candidates — it can never outrank a candidate that attracts or retains users better. That priority order is deliberate: growing and keeping users is the point, revenue is a secondary outcome of doing that well.
+
+### Semantic duplicate detection (Jev, optional)
+
+Exact-duplicate candidates are already caught by hashing the proposal (`ideas_find_duplicate_by_digest`) before materialization. Separately, if `TYPESAFE_API_KEY` is set, every newly materialized idea is checked against the other live ideas in the same ledger via Jev (TypeSafe's System One Choice API) for a *semantic* duplicate — same underlying gap, different wording — that hashing can't catch. This runs automatically on every `ideas ingest`/propose call; no config flag turns it on beyond the credential being present, and its absence is a silent no-op, not an error.
+
+It is shadow-mode and advisory-only: a match never blocks ingest or changes the candidate, it only appends a finding note ("possible semantic duplicate of `<idea-id>`, confidence `<level>` — does not block this idea") for a human to read during review. It stays advisory until a real calibration sample validates Jev's false-positive rate on this specific judgment (see `idea-980bf5b4df6b` / `idea-82a5c2225266`). See `lib/ideas/jev_dedup.sh`.
 
 ### Optional ensemble scoring
 
@@ -267,6 +273,8 @@ e3d-pilot fleet provenance trace  /path/to/fleet.json idea-abc123def456 [--json]
 Every `provenance export` also writes a sibling `<name>.manifest.json` (node/edge counts by type, orphan nodes, the highest-degree node, and a `graph_events_ratio` of derived graph size against source ledger size) — engineering telemetry to catch the graph quietly bloating or losing structure, not product analytics.
 
 The fixed `provenance query` subcommands summarize idea-to-outcome `lineage`, repeated review `reversals`, implementation `failures`, and fleet-only `cross-repo` propagation; each supports `--json`, fleet mode uses `e3d-pilot fleet provenance query <name> /path/to/fleet.json`, and repo mode uses `e3d-pilot provenance query <name> --repo /path/to/repository` (where `cross-repo` intentionally returns an empty result).
+
+A separate, standalone script — `bin/e3d-provenance-agreement --repo /path/to/repository` (same not-wired-into-the-subcommand-tree pattern as `e3d-debate`) — aggregates provider agreement across that repo's historical negotiate and review rounds under `.e3d-pilot/runs/`, reusing the existing `lib/negotiate/parse-status` and `lib/review/parse-verdict` parsers as subprocesses rather than re-deriving their contract. It prints JSON on stdout: each provider's negotiate approval rate, each provider-pair's agreement rate, and the specific disagreements (run ID, round, both providers' status and stated reason). Response files that predate the current format or fail to parse are skipped and counted separately, never counted as either agreement or disagreement.
 
 Implement approved ideas:
 
@@ -544,7 +552,7 @@ Both `E3D_PILOT_WEB_AUTH_USER` and `E3D_PILOT_WEB_AUTH_PASS` are required; there
 
 ## e3d-debate (experimental)
 
-`bin/e3d-debate` is a separate, standalone script — not wired into `bin/e3d-pilot`'s subcommand tree or `config.schema.json`, the same way `bin/e3d-backend-benchmark` and `bin/e3d-grok-workers` already aren't — for the "ask several models a question and see whether they actually agree" loop, applied to any question rather than repo work specifically. It reuses the same `lib/providers/<name>` adapters and the `lib/negotiate/convergence` primitive that discover/ideate/negotiate/review already depend on. "Experimental" here means untested by this repo's own test suite (no `tests/phase*.sh` coverage yet) — not unused: it has already been the deciding mechanism behind several real architecture and product-direction calls for this project, not just a demo.
+`bin/e3d-debate` is a separate, standalone script — not wired into `bin/e3d-pilot`'s subcommand tree or `config.schema.json`, the same way `bin/e3d-backend-benchmark` and `bin/e3d-grok-workers` already aren't — for the "ask several models a question and see whether they actually agree" loop, applied to any question rather than repo work specifically. It reuses the same `lib/providers/<name>` adapters and the `lib/negotiate/convergence` primitive that discover/ideate/negotiate/review already depend on. "Experimental" here means still standalone, not wired into the pipeline proper — not unused or untested: `tests/phase34.sh` covers the provenance-linking flags below, and it has already been the deciding mechanism behind several real architecture and product-direction calls for this project, not just a demo.
 
 ```bash
 bin/e3d-debate "Should this service store timestamps as UTC or local time+offset?" \
@@ -554,6 +562,14 @@ bin/e3d-debate "Should this service store timestamps as UTC or local time+offset
 Round 1: every listed provider answers independently. Round 2+: each provider sees every other provider's prior-round answer and is asked to restate its position, rebut, or concede, ending with `POSITION: <one-line answer>` and `status: approved|revise` — "approved" means a person acting on this answer and a person acting on every other participant's current answer would do the same thing; added nuance or extra caveats don't count as disagreement. Once every provider reports `approved`, `lib/negotiate/convergence` stops the debate early instead of burning the remaining rounds. After the last round (early-stopped or not), one designated `--synthesizer` (default `claude`) reads the full transcript and produces a `FINAL ANSWER` / `CONSENSUS` / `DISSENT` summary.
 
 Any `lib/providers` adapter can take part, including `devin` — useful if a Devin/Windsurf subscription would otherwise sit unused. The full transcript (prompts, every round's raw responses, and the synthesis) is written to a temp directory by default, or to `--out-dir <path>` if given.
+
+By default a debate's verdict goes nowhere but stdout/the transcript file — it isn't wired into any repo's provenance graph. Pass `--repo <path> --idea <idea-id>` (both required together, plus `--out-dir` pointed somewhere inside `--repo`, e.g. `docs/debates/<slug>`) to automatically record the verdict on an idea that already exists in that repo's ledger once synthesis succeeds, equivalent to running `e3d-pilot ideas note --decision --evidence <transcript-path> <idea-id> "<verdict>"` by hand:
+
+```bash
+bin/e3d-debate "Should we ship it?" --providers claude,codex --repo /path/to/repo --idea idea-abc123 --out-dir /path/to/repo/docs/debates/ship-it
+```
+
+This links the evidence, it does not create the idea — propose that separately (e.g. via `ideas ingest`) first. The transcript itself still needs to be committed for the evidence link to stay durable, the same way the existing `docs/debates/` transcripts are.
 
 ## Running on a schedule
 
