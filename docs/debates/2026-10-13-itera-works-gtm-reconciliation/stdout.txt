@@ -1,0 +1,305 @@
+=== Jev pre-screen (shadow mode, informational only -- does not skip the debate): obviousness noul=0.14 ===
+=== Round 1 ===
+--- Round 1 / claude ---
+**Recommendation: HighLevel is Itera's internal sales CRM only (option a). The client-delivered product runs on the e3d-corp event loop. Build the delivery-side Estimate Desk first, and run Itera's prospecting on thin glue.**
+
+**1. Where HighLevel sits**
+- HighLevel is the system of record for *Itera's own* pipeline: the 8 stages, outreach sequences, and the halt-on-reply rule.
+- For clients, it is a connector at most. It is never the brain.
+- Option (b) creates two systems of record. It also puts L2–L4 approval gates on a workflow builder that can't hash-pin policy and can't guarantee "zero unauthorized sends." HighLevel's native send actions bypass the authority table.
+- The exposure is the missed-call text-back and instant-response flows. If HighLevel owns those, nothing stops it from texting customers autonomously. Under option (a) the Estimate Desk drafts and queues, and a human approves.
+- Risk of (a): clients may already be on HighLevel through Itera's own white-label offering, so Itera has to resist the urge to build in it. That risk is acceptable.
+
+**2. Connector ranking**
+- HighLevel ranks below Gmail/Calendar, Twilio, Jobber/Housecall Pro and read-only QuickBooks for delivery. It is not a Phase 1 client connector.
+- Add it later as an optional write-target only if a signed client already uses it. Treat it as a tier-3 connector with L2 gating.
+- Twilio is the sole SMS path for clients, so there is one send path to gate.
+
+**3. Build order**
+- Delivery side first, with a thin Itera-side slice in parallel.
+- The Oct 7 gate needs ~100 real cases and one paying contractor. Prospecting automation doesn't produce either of those.
+- The only live-verified integration is draft-and-queue. That pattern covers Itera's outreach drafts, research briefs and sequencing as well.
+- Itera-side, build only ICP scoring, research briefs and outreach drafts. Use the same role pattern at authority level 0, with a digest email to the partners.
+- Sends and sequencing stay in HighLevel for the first 25-account batch. Don't build a custom sequencer.
+- The invoice-reminder prototype is not orphaned. It is the first Customer Reactivation component: overdue invoices and stale estimates, drafted and queued, using read-only QuickBooks. Make it the Phase 1 demo asset.
+- The invoice-reminder needs QuickBooks read-only on a real client. That access is the strongest reason to offer the free Revenue Leak Review as a data-access hook.
+
+**4. Acquire next**
+- A HighLevel agency account (API key, one sub-account for Itera).
+- A Twilio number with A2P 10DLC registration. Start this now, since approval takes weeks.
+- A Google Workspace sending domain with SPF/DKIM/DMARC, separate from the main domain.
+- A LinkedIn/Loom setup, kept manual.
+- A data source for account research: Google Places or Apollo.
+- One peer contractor's inbox, to start the ~100-case set.
+- Jobber/HCP developer access, applied for now.
+
+**5. Blocking business decisions (flagged, not resolved)**
+- The $750 audit: in the doc, missing from the site.
+- Vertical-agnostic vs HVAC/plumbing positioning. This blocks the vertical pack and the ICP scoring weights.
+- The Open Decisions list: geography, hard-filter thresholds, audit terms, implementation pricing, retainer triggers, system of record, and a single DRI per process.
+- One of these overlaps the architecture: the doc's "tech-stack system of record" is answered by (a).
+
+**Changes to the Oct 7 verdict**
+- Nothing in the architecture changes.
+- Two adjustments: the $1,000/mo gate should be reconciled with the doc's $2,500–$7,500 implementation price, and the ICP scoring is a new, small build.
+
+Load-bearing assumption: the contractor's work happens in Jobber/HCP, not HighLevel.
+
+--- Round 1 / codex ---
+1. **HighLevel’s role:** Use it as Itera’s internal prospecting CRM and sequencing engine. For clients, treat HighLevel only as an optional channel/pipeline adapter—not the product’s event loop, policy engine, approval gate, or canonical ledger. FutCo’s governed runtime remains authoritative and may instruct HighLevel after applying policy.
+
+This avoids duplicating client records while preserving L2–L4 approval guarantees HighLevel workflows cannot reliably enforce or evidence. Making HighLevel the client runtime would create two policy systems and weaken auditability; keeping it entirely internal risks integration work when a client already operates on HighLevel, hence the adapter boundary.
+
+2. **Connector ranking:** Add HighLevel, but do not elevate it above operational source systems:
+
+**Jobber/Housecall Pro → Gmail/Calendar → Twilio → HighLevel → read-only QuickBooks.**
+
+For Itera’s own GTM, HighLevel is first. For Estimate Desk delivery, it ranks below the field-service system and direct communication channels because it may contain duplicated or derived data. QuickBooks remains useful but peripheral to estimating.
+
+3. **Build order:** First build a deliberately narrow Itera acquisition loop using the proven draft-and-queue pattern:
+
+- Import and score ten researched HVAC accounts.
+- Generate cited research briefs and outreach drafts.
+- Require human approval for every account and message.
+- Push approved contacts/stages into HighLevel.
+- Let HighLevel schedule approved sequence steps, stopping on reply, opt-out, or booking.
+
+Time-box this to roughly one week; do not automate Looms, conclusions, pricing, or proposals. Then return immediately to Estimate Desk packet and follow-up-queue validation using the peer contractor’s real cases. Acquisition comes first because there is no customer through whom delivery can be validated, but it must not become a standalone sales-automation product.
+
+The invoice-reminder implementation is not orphaned: reuse its event, drafting, queue, digest, approval, and audit patterns. Overdue collections are not “Customer Reactivation,” however; keep them as a later governed receivables workflow.
+
+4. **Acquire/setup next:**
+
+- Itera HighLevel account, API access, pipeline, custom fields, opt-out rules, and service credentials.
+- Dedicated sending domain/mailboxes, Gmail/Calendar OAuth, and deliverability controls.
+- Ten-account source list with provenance and manual ICP scores.
+- Twilio account only if calls/SMS enter the first sequence.
+- Peer-contractor Gmail plus one Jobber or Housecall Pro sandbox/API path for delivery cases.
+- Preserve the existing QuickBooks sandbox; no additional accounting work yet.
+- Hash-pin separate GTM and client-delivery policies.
+
+5. **Blocking partner decisions:** The missing $750 audit, vertical-agnostic site versus HVAC/plumbing beachhead, and every listed Open Decision require explicit partner resolution before scaling or publishing a stable funnel.
+
+The Oct 7 technical verdict does **not** change. HighLevel is the new adapter; only Phase 1 sequencing changes by adding a thin, governed acquisition loop ahead of delivery validation.
+
+--- Round 1 / devin ---
+**1. HighLevel placement: answer (a), strictly Itera-internal.**
+HL runs Itera's own 8-stage sales pipeline. It does not run the delivered product. Reason: HL's native automation builder has no authority-level gating; the Oct 7 "zero unauthorized sends/material errors" gate is unenforceable inside HL workflows. If the three flagship systems run on HL, the policy kernel is bypassed entirely. Risk of (a): you rebuild "missed-call text-back / instant response" on e3d-corp that HL does natively — acceptable because the guarantee matters more than the rebuild cost. Risk of (b): ungoverned automation layer, parallel state, can't audit who sent what or why.
+
+**2. HighLevel connector rank: not on the client-connector list.**
+Since HL is Itera-internal, it doesn't belong in the Oct 7 connector ranking. For client-facing work the ranking holds: Gmail/Calendar > Twilio > Jobber or HCP > QuickBooks read-only. If a future client already runs HL, add a one-way event bridge (HL webhook → e3d-corp event loop), keeping HL as display/CRM and e3d-corp as policy engine.
+
+**3. Build order: Itera prospecting automation first.**
+The invoice-reminder prototype is not orphaned — it's the template. The pattern (find real data → LLM draft → append as event → human reviews → human sends) maps directly onto ICP scoring + research brief + outreach draft. Authority level 0, never auto-sends. Build this first because: (a) Itera has zero signed clients, so no client-side test cases exist yet; (b) prospecting automation produces the signed client needed to run the Estimate Desk gate; (c) the 100-case data collection (peer contractor inbox) runs in parallel, not blocked. Invoice-reminder pattern is reusable as Customer Reactivation too — dormant estimate follow-up is structurally identical.
+
+**4. Next acquisitions to move from slides to live test:**
+- HighLevel account + API key (Itera pipeline)
+- Jobber or HCP sandbox credentials (first client connector)
+- Twilio number (follow-up queue SMS)
+- Peer contractor inbox access (100-case corpus, day 1–14)
+- QuickBooks production upgrade from sandbox
+
+**5. Blocking business decisions (flag only, not resolved):**
+- Site skips $750 audit step entirely; doc has 4-stage ladder — pricing/funnel is unresolved
+- Site is vertical-agnostic; doc names HVAC/plumbing + NorCal — ICP scope unresolved
+- Doc's Open Decisions list (geography hard filters, pricing model, retainer triggers, system-of-record owner, DRI per process) — all partners' calls
+
+**Oct 7 verdict: no changes.** HighLevel is additive and internal; it doesn't touch the technical architecture.
+
+--- Round 1 / grok-build ---
+I'll pull the Oct 7 verdict, Itera's GTM docs, and the existing draft-and-queue pattern so the Phase 1 plan sits on the same facts.**Phase 1: HighLevel is Itera’s CRM only. e3d-corp remains the delivered kernel. Prospecting is the first live loop; the QBO invoice prototype is the delivery demo. Oct 7’s client verdict stands.**
+
+**1. HighLevel = (a).** It owns Itera’s 8-stage pipeline, approved sequences, and booking. Client Lead Conversion / Reactivation / Reputation run on e3d-corp’s event loop and L2 / L3–4 table, on the contractor’s Jobber or Housecall Pro, Gmail/Calendar, Twilio, and read-only QuickBooks. HighLevel must not send client-facing or binding messages.
+
+Risk of (a): two systems of record. Accept it; they are different owners and data. Sync is one-way: HighLevel “Implementation Won” appends an e3d-corp onboarding event.
+
+Risk of (b): HighLevel workflows can SMS/email without L2, without L3–4 `confirmAndExecute`, without a hash-pinned policy, and without the ledger — that fails the zero-unauthorized-send gate on day one. Itera becomes a HighLevel shop instead of FutCo governed ops.
+
+**2. Connector rank.** HighLevel does not join the Oct 7 *client* list. Internally it is Itera’s CRM of record. If a signed contractor already uses it, ingest it read-only **below** Jobber/HCP, Twilio, and QBO — marketing CRM, not job or money system of record.
+
+**3. Build order.** Build Itera prospecting first on the existing draft-and-queue pattern (L0 observe: score, research brief, outreach draft, follow-up queue, human digest). There is no signed HVAC client; Estimate Desk still needs ~100 real tickets. Keep the live QBO invoice-reminder running as the Customer Reactivation / AR demo and as the same pattern for outreach drafts — it is not orphaned. Expand the cited estimate packet, Jobber, and Twilio only when a peer inbox or first contractor grants access.
+
+**4. Acquire now.** HighLevel + API (contacts, pipeline, workflows, conversations); Itera Google Workspace, sending domain, Calendar; LinkedIn (human-sent); written peer-HVAC inbox read access (Oct 7 case source). Keep the QBO sandbox. Do not buy Jobber/HCP. Hash-pin policy before any L2 send.
+
+**5. Partners must close (not architecture):** the site drops the $750 audit and the HVAC / NorCal beachhead; Open Decisions — geography, ICP hard filters, audit name/price/founding terms, implementation pricing, retainer triggers, system of record, one owner per process.
+
+**Oct 7:** no client-side change (kernel, connectors, gates, no n8n/Temporal/vector, hardware later). Additive only: HighLevel as Itera GTM CRM. The ≥$1,000/month product gate still binds; Itera’s $1,500–$5,000 retainer is how they collect it.
+
+=== Round 2 ===
+--- Round 2 / claude ---
+Everyone agrees on the architecture. HighLevel is Itera's internal CRM only. The client runtime is the e3d-corp event loop. The Oct 7 verdict doesn't change. The disagreement is over build order and the connector rank.
+
+**Build order.** Codex and devin put Itera prospecting first. Grok-build does too, but only partly. My earlier position was delivery first with a thin Itera slice. I've changed it. The Oct 7 gate needs a signed contractor, and only Itera's funnel can produce one. Delivery-side work has no real cases until a peer inbox or client grants access. The two tracks use the same draft-and-queue pattern, so they barely compete. The sequence is:
+
+- **Week 1: thin Itera loop.** Score ten accounts and write research briefs and outreach drafts. Every account and message needs human approval. Approved contacts go into HighLevel. HighLevel schedules the sequence and stops it on a reply, opt-out or booking.
+- **In parallel: the 100-case corpus.** Start collecting the peer-inbox cases now. This is the real gating item, and it needs no Itera sales activity.
+- **Don't build a custom sequencer or a standalone sales product.** That is the failure mode codex rightly warns about.
+
+**Connector rank.** Codex puts HighLevel in the client list, at fourth place. Devin and grok-build keep it off the client list, and I agree with them. For Phase 1 it is Itera's CRM. If a signed client already uses HighLevel, add it later as a one-way adapter ranked below Jobber/HCP, Twilio and QuickBooks. Codex ranks Jobber/HCP above Gmail/Calendar and QuickBooks last. That is a minor difference with no effect on what gets built.
+
+**Invoice reminder.** Codex says overdue invoices aren't Customer Reactivation. That's a framing point. Stale estimates are the closer match, and the code is the same either way. I'd demo it as reactivation. The other answers also keep it as a live asset, so we'd all do the same thing.
+
+**Devin's "QuickBooks production upgrade."** This is premature. A production upgrade only makes sense once a real client grants access. Grok-build's "don't buy Jobber/HCP" is right. Apply for developer access now, since approval takes time, but don't pay for anything yet.
+
+**Twilio.** Register A2P 10DLC now because approval takes weeks. Don't put SMS in the first outbound sequence.
+
+**Open decisions.** These are the partners' calls. They include the $750 audit and the vertical-agnostic vs HVAC positioning. Both block ICP scoring weights and the vertical pack, so they should be settled before the ten accounts are scored.
+
+**One adjustment to Oct 7.** Reconcile the $1,000/month gate with Itera's $2,500–$7,500 implementation fee and $1,500–$5,000 retainer.
+
+POSITION: HighLevel is Itera's internal CRM only. Build a thin human-approved Itera prospecting loop first, in parallel with collecting the 100-case corpus. The Oct 7 architecture is unchanged, and the partners' business decisions stay flagged, not resolved.
+status: approved
+
+--- Round 2 / codex ---
+My prior position mostly holds, with one correction: I would no longer place HighLevel above QuickBooks in a universal delivery connector ranking.
+
+HighLevel should be Itera’s internal CRM and sequencer. FutCo’s event loop remains the client-delivery authority, policy, approval, and ledger layer. Client HighLevel accounts may later be adapters, never the governing runtime. Claude, Devin, and Grok are right on this boundary. Option (b) cannot presently demonstrate hash-pinned policy, L2–L4 enforcement, or zero unauthorized sends.
+
+For delivery, retain the existing priorities: Gmail/Calendar, Jobber or Housecall Pro, Twilio, and read-only QuickBooks. HighLevel ranks last and conditionally—only when a signed client already depends on it. For Itera’s own GTM, it ranks first. Devin and Grok’s statement that it never joins the client list is too absolute; an existing client deployment may require a governed adapter.
+
+Keep my build-order recommendation: time-box one week for a ten-account acquisition loop—manual/provenance-backed scoring, cited briefs, L0 drafts, human approval, then approved records and sequences in HighLevel. Simultaneously start peer-inbox case collection; immediately afterward, resume Estimate Desk validation. Claude’s delivery-first answer risks polishing without a customer, while unrestricted prospecting-first could become a distracting second product.
+
+The invoice-reminder code is reusable infrastructure, but overdue collections are not Customer Reactivation. Reuse its events, drafts, queue, digest, approvals, and ledger; treat stale-estimate follow-up as reactivation and invoice reminders as governed AR. Claude, Devin, and Grok blur that product distinction.
+
+Acquire HighLevel/API access, Itera Workspace and sending domain, ten sourced accounts, peer-inbox authorization, and Jobber/HCP developer access. Keep the QuickBooks sandbox; do not seek production access before a client. Add Twilio/A2P only if the first test includes SMS.
+
+Oct 7’s architecture does not change. Flag for partner resolution: the missing $750 audit, vertical positioning conflict, and every documented Open Decision.
+
+POSITION: HighLevel should run Itera’s thin, human-approved acquisition loop, while FutCo’s governed event loop remains the client product and HighLevel is only a conditional last-priority client adapter.
+status: revise
+
+--- Round 2 / devin ---
+All four answers agree on HL=(a). The two real disagreements are build order (me vs. Claude) and HL's connector rank (me/Claude/Grok vs. Codex).
+
+**On connector rank:** Codex puts HighLevel 4th in the client-delivery list as an "adapter." This is wrong as a Phase 1 position. There are no signed clients running on HL. Adding it to the connector list now means building an integration with no validated demand. If a future client already uses HL, a one-way webhook (HL → e3d-corp event loop) is the right boundary, but that's not a Phase 1 connector — it's a future conditional. My position holds; Grok-build and Claude agree.
+
+**On build order:** Claude says delivery-first with "thin Itera-side slice in parallel." I said prospecting-first. These are close but produce different first-sprint priorities. Claude's strongest point: "Prospecting automation doesn't produce the signed client." True — but neither does building Estimate Desk mechanics in the absence of a client. The 100-case corpus comes from a peer contractor's inbox (parallel, not blocked by either build). The peer inbox is the data source for delivery validation; the signed client is the output of prospecting. So the chain is: prospecting → signed client → delivery validation, not the reverse.
+
+Claude's framing is functionally acceptable only if "thin Itera slice in parallel" means ICP scoring and outreach drafts land in sprint 1, not sprint 2. If they're truly parallel and equal-weight, the outputs converge. But the framing matters for resourcing: if one person is building, delivery-first delays the only thing that produces the client gate.
+
+**What Grok-build adds that I missed:** the one-way sync from HL "Implementation Won" → e3d-corp onboarding event is a clean boundary condition I should have named explicitly. That's right and I'm adopting it.
+
+**Invoice-reminder reuse:** I called it Customer Reactivation. Codex says "overdue collections are not Customer Reactivation." Fair distinction — AR collections are a receivables workflow; Customer Reactivation is dormant-estimate / past-customer outreach. Separate workflows, same pattern. Both are valid. My framing was imprecise; Codex's correction is right.
+
+**Oct 7 verdict:** unchanged. All four agree.
+
+POSITION: Build Itera prospecting automation (ICP scoring, research briefs, outreach drafts at L0) first using the existing draft-and-queue pattern, because no signed clients exist and prospecting is the only path to the delivery gate; HighLevel is Itera-internal only and does not join the client connector list.
+status: revise
+
+--- Round 2 / grok-build ---
+I'll check the Oct 7 connector order and the invoice-reminder role so the Phase 1 call matches the repo, not just the prior round.I changed my mind on one point. The QuickBooks invoice reminder is not Customer Reactivation.
+
+**1. HighLevel is (a).** It is Itera's 8-stage CRM and sends only human-approved sequences. The three client systems run on the e3d-corp event loop and L2 / L3–4 table, on Jobber or Housecall Pro, Gmail/Calendar, Twilio, and read-only QuickBooks.
+
+(a) is two records with different owners. One-way sync: "Implementation Won" appends an onboarding event. (b) fails zero-unauthorized-sends. So do Codex's "instruct HighLevel" and Claude's later write-target: HighLevel can email or SMS with no hash-pinned policy, no L2, no confirm, and no ledger. A client already on HighLevel is read-only ingest, below the Oct 7 four, never a send path.
+
+**2. Rank.** Leave HighLevel off the client list. Oct 7 stays Gmail/Calendar, Twilio, Jobber or Housecall Pro, read-only QuickBooks. Codex's Jobber-first, HighLevel-above-QuickBooks order connects marketing CRM before the books and before the inbox that supplies the ~100 cases. HighLevel ranks first only for Itera's own pipeline.
+
+**3. Prospecting first**, about a week, authority 0, on the live draft-and-queue role. Score 10 HVAC accounts, draft cited briefs and outreach, digest the partners, approve, then push contacts into HighLevel. HighLevel sequences and stops on reply, opt-out, or booking. No custom sequencer. Then the estimate packet. Claude's delivery-first builds packets with no cases and no buyer. Collect the peer inbox in parallel. Packet code waits on that access.
+
+Codex is right on invoices. The reminder donates the pattern and later becomes receivables. Doc reactivation is dormant estimates and past customers. Payment reminders are money-adjacent and L3–4 if they send. Do not pitch the sandbox as the flagship. Keep the code.
+
+**4. Acquire now.** HighLevel account, API, pipeline, opt-out rules. Itera Workspace and a sending domain with SPF/DKIM/DMARC. Ten named HVAC accounts. Written peer-inbox access. Keep the QuickBooks sandbox. No Jobber, Housecall Pro, or QuickBooks production until that access exists. Twilio and 10DLC wait until client SMS is in scope. Hash-pin GTM policy before a send leaves the queue.
+
+**5. Partners only.** The site drops the $750 audit and the HVAC/Northern California beachhead. Still open: geography, filters, audit terms, implementation price, retainer triggers, system of record, one owner per process.
+
+**Oct 7 stands.** Kernel, authority table, client connectors, gates, and the bans on n8n, Temporal, and a vector index do not change. The ≥$1,000/month gate still binds. The retainer is how Itera collects it.
+
+POSITION: HighLevel is Itera's internal CRM only; run a one-week authority-0 prospecting loop on draft-and-queue, then the Estimate Desk, with Oct 7's client architecture unchanged.
+status: revise
+
+=== Round 3 ===
+--- Round 3 / claude ---
+I'm keeping my round-2 position, with one concession to codex. Nobody disputes the architecture.
+
+**Agreed by all four.**
+- HighLevel is Itera's internal CRM and sequencer only.
+- The client runtime is the e3d-corp event loop, with its authority table and ledger.
+- The Oct 7 architecture is unchanged.
+- The partners own the $750 audit, the vertical positioning and the Open Decisions.
+
+**Build order.** All four now put a thin, human-approved Itera prospecting loop first, for about a week, and collect the peer-inbox cases in parallel. Devin's worry about resourcing is fair, so "thin" has to be a hard time-box. It means 10 accounts, cited briefs and L0 drafts, with HighLevel doing the scheduling. If it grows toward a custom sequencer or a standalone sales product, cut it. Codex's warning about a distracting second product is right.
+
+**Connector rank.** Codex's last-place conditional HighLevel adapter does not conflict with the rest of us in Phase 1. Devin's objection is that it is speculative, and I agree. Grok-build makes the better point that if a signed client already runs HighLevel, the adapter should be read-only ingest, not a send path. HighLevel can send email and SMS with no hash-pinned policy, no L2 approval and no ledger. The practical result is the same: nobody builds it now. I'd record it as "read-only ingest, only on a signed client's demand."
+
+**Invoice reminder.** Codex and grok-build are right that overdue-invoice reminders are receivables, not Customer Reactivation. I'm adopting that correction. Stale-estimate follow-up is the reactivation fit. The code is reusable either way, so the sandbox is a pattern donor and not the pitch.
+
+**Acquire now.** HighLevel account and API access, an Itera sending domain with SPF/DKIM/DMARC, ten named accounts, and written peer-inbox access. Start the Jobber/HCP developer application, which is free, but buy nothing. QuickBooks production waits for a client. A2P 10DLC registration is cheap insurance, but SMS stays out of the first sequence.
+
+**Gate reconciliation.** Itera's $2,500–$7,500 implementation fee plus its $1,500–$5,000 monthly retainer sit above the ≥$1,000/month gate. The gate is a floor, not a conflict. Say so explicitly.
+
+POSITION: HighLevel is Itera's internal CRM only. Run a one-week, human-approved prospecting loop on draft-and-queue while collecting the peer-inbox cases in parallel, and leave Oct 7's client architecture unchanged.
+status: approved
+
+--- Round 3 / codex ---
+My position holds. The substantive consensus is stronger than the labels suggest.
+
+HighLevel should be Itera’s internal CRM and sequencer, not FutCo’s governing client runtime. Approved contacts and an explicitly approved sequence may execute there; replies, opt-outs, and bookings must halt it. FutCo’s hash-pinned policy, authority checks, approvals, confirmations, and ledger remain authoritative for delivered client workflows. “Implementation Won” should create a one-way onboarding event.
+
+On connector ranking, Devin and Grok are right operationally: HighLevel is not a Phase 1 delivery connector. My earlier “conditional last-priority adapter” describes a future client-specific exception, not something to build now. If demanded later, prefer read-only/webhook ingestion; never let HighLevel become an ungoverned client send path.
+
+Build one time-boxed acquisition slice first: ten HVAC accounts, provenance-backed scoring and briefs, L0 drafts, partner approval, then HighLevel sequencing. Do not build a custom sequencer. In parallel, obtain written peer-inbox access and begin assembling the 100-case corpus; then return immediately to estimate packets and the follow-up queue. Claude’s revised plan, Devin’s, Grok’s, and mine now produce essentially the same sprint.
+
+The invoice-reminder implementation is reusable infrastructure, not Customer Reactivation itself. Dormant estimates and past customers belong to reactivation; overdue invoices remain governed receivables.
+
+Acquire HighLevel/API access, Itera’s sending domain and authentication, the configured pipeline and suppression rules, ten named accounts, peer-inbox authorization, and Jobber/HCP developer access where free. Keep the QuickBooks sandbox. I disagree with Claude’s immediate A2P registration: defer Twilio/A2P until a concrete, consent-valid SMS use case exists.
+
+Nothing architectural in Oct 7 changes. The partners must resolve the missing audit stage, vertical positioning conflict, and every listed Open Decision before scoring rules and commercial handoffs are treated as stable.
+
+POSITION: Use HighLevel only for Itera’s approved acquisition pipeline, build a one-week ten-account prospecting slice while collecting peer cases, then validate the FutCo-governed Estimate Desk with the original client connector priorities unchanged.
+status: revise
+
+--- Round 3 / devin ---
+**Connector rank:** Codex's "conditional last-priority client adapter" for HighLevel is the only remaining actionable disagreement. It's premature. Building even a conditional adapter requires scoping, testing, and maintaining a boundary with no validated demand behind it. The right boundary if a future client already uses HL is a one-way webhook (HL → e3d-corp event loop), and that decision gets made when a real client brings it, not now. Claude, Devin, and Grok-build are correct: HL stays off the client connector list in Phase 1.
+
+**Build order:** Claude's "delivery-first with thin Itera slice" and Devin/Grok's "prospecting-first" have converged. Both land the same sprint 1: score 10 accounts, draft cited briefs and outreach at L0, human approves, approved contacts enter HighLevel, HighLevel sequences and halts on reply/opt-out/booking. Corpus collection runs in parallel and is not blocked by either track. The framing difference is real only if one person is building — in that case, prospecting first is correct because the signed client is the gate, and delivery mechanics have nowhere to validate without it.
+
+**Invoice reminder:** Codex and Grok-build are right. Overdue AR reminders are money-adjacent, L3–4 if they send, and the product framing is receivables, not Customer Reactivation. Customer Reactivation is dormant estimates and past customers. Same pattern, different workflow, different approval level. Claude's "demo it as reactivation" muddies the product story. Keep the code; use it as AR infrastructure; don't pitch it as a flagship.
+
+**Oct 7 verdict:** Unchanged. Nothing in this round alters the kernel, authority table, connector priorities, gates, or bans.
+
+**Partners' decisions still flagged:** $750 audit, vertical-agnostic vs. HVAC positioning, and every documented Open Decision. These block ICP scoring weights and should be resolved before the 10-account run.
+
+**One carry-forward from Claude:** register Twilio A2P 10DLC now (approval takes weeks); don't include SMS in the first outbound sequence. Apply for Jobber/HCP developer access now; don't pay until a client exists.
+
+All four answers now produce the same Phase 1 actions: prospecting automation at L0, HL as Itera CRM only, Oct 7 client architecture intact, corpus collection in parallel. The only residual difference — Codex's conditional HL client adapter — generates no Phase 1 work and is correctly deferred.
+
+POSITION: Build Itera prospecting automation first at L0 using the existing draft-and-queue pattern; HighLevel is Itera's internal CRM only and does not join the client connector list in Phase 1; Oct 7 architecture is unchanged.
+status: approved
+
+--- Round 3 / grok-build ---
+I changed one action. File Jobber and Housecall Pro developer applications now, and pay for nothing. Do not write those connectors, and do not move QuickBooks past the sandbox, until a peer inbox or a signed client exists.
+
+HighLevel stays Itera’s CRM only. It stores human-approved contacts and runs the 15-day sequence, stopping on reply, opt-out, or booking. Client work stays on the e3d-corp event loop, the L2 / L3–4 table, and the Oct 7 connectors: Gmail/Calendar, Twilio, Jobber or Housecall Pro, read-only QuickBooks. HighLevel is not on that list. A client already on it is later read-only ingest, never a send path. Codex’s “conditional adapter” is acceptable only with that ban. HighLevel cannot hash-pin policy, enforce L2, or require confirm.
+
+Build the authority-0 loop this week on the live draft-and-queue role: briefs, outreach drafts, partner digest. Do not finalize the ten scores or the email copy until the partners pick the beachhead and whether the $750 audit exists. Those two choices change who is scored and what is offered. Claude is right that they block scoring, and wrong to also say “score ten accounts” in week 1 as if the choice were made. I will not pick HVAC over the site, or the doc ladder over the live funnel. Setup does not wait. Peer-inbox collection runs in parallel. No custom sequencer. The estimate packet follows that access.
+
+Do not demo the invoice reminder as Customer Reactivation. Reuse the events, drafts, queue, digest, and ledger. Reactivation is dormant estimates and past customers. Invoice reminders are receivables, and L3–4 if they send.
+
+Do not register A2P 10DLC now. The first sequence is email, LinkedIn, call, and Loom. Client SMS waits on a signed Lead Conversion scope.
+
+Oct 7 stands: kernel, authority table, connector order, gates, no n8n, no Temporal unless a restart test fails, no vector index. A $3,500 implementation does not authorize expansion. The retainer is what clears ≥$1,000/month. Partners still own geography, ICP filters, audit terms, implementation price, retainer triggers, their system-of-record sentence, and one owner per process.
+
+POSITION: HighLevel is Itera’s internal CRM only; build the authority-0 draft-and-queue loop now, but score and send only after the partners settle beachhead and the audit step, leaving Oct 7’s client runtime unchanged.
+status: revise
+
+=== Synthesis (claude) ===
+FINAL ANSWER: HighLevel is Itera's internal CRM and sequencer only (option a). It holds the 8-stage pipeline and runs approved sequences that halt on reply, opt-out, or booking. Delivered client work stays on the e3d-corp event loop, with its authority table, hash-pinned policy and ledger. HighLevel is not on the Oct 7 client connector list: Gmail/Calendar, Twilio, Jobber/HCP and read-only QuickBooks stay as ranked. If a signed client already runs HighLevel, add read-only ingest then, never a send path. "Implementation Won" appends a one-way onboarding event to e3d-corp.
+
+Build order: spend one week on a human-approved, authority-0 prospecting loop on the existing draft-and-queue role. It covers ICP scoring, cited research briefs and outreach drafts, with a partner digest and HighLevel scheduling. Do not build a custom sequencer. In parallel, get written peer-inbox access and start the ~100-case corpus, then move straight to the estimate packet and follow-up queue.
+
+Treat the invoice-reminder code as a pattern donor and receivables infrastructure (L3–4 if it sends). It is not the Customer Reactivation pitch; stale-estimate follow-up is. Acquire now:
+- A HighLevel account with API access, pipeline and suppression rules.
+- An Itera sending domain with SPF/DKIM/DMARC.
+- Ten sourced accounts.
+- Peer-inbox authorization.
+- A free Jobber/HCP developer application, with nothing bought.
+- Keep the QuickBooks sandbox, with no production access until a client exists.
+- SMS and A2P 10DLC only once a consent-valid use case exists.
+
+Oct 7's architecture does not change. The ≥$1,000/month gate is a floor that Itera's retainer clears. Blocking partner decisions, flagged and not resolved: the missing $750 audit step, vertical-agnostic site versus the HVAC/NorCal beachhead, and every Open Decision. Those decisions must be settled before the ten accounts are finally scored or sent.
+
+CONSENSUS: majority
+
+DISSENT: Grok-build and Codex would hold final scoring and sending until the partners settle the beachhead and audit step. Codex would also defer A2P registration, while Claude and Devin want it started now. Codex would keep a conditional, last-priority HighLevel client adapter; the others leave it off the list until a client needs it.
+transcript: docs/debates/2026-10-13-itera-works-gtm-reconciliation/transcript.md
