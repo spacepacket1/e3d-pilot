@@ -22,6 +22,8 @@ source "$REPO_ROOT/lib/ideas/ledger.sh"
 source "$REPO_ROOT/lib/ideas/materialize.sh"
 # shellcheck source=lib/ideas/jev_dedup.sh
 source "$REPO_ROOT/lib/ideas/jev_dedup.sh"
+# shellcheck source=lib/ideas/brain_recall.sh
+source "$REPO_ROOT/lib/ideas/brain_recall.sh"
 # shellcheck source=lib/ideas/project_tracking.sh
 source "$REPO_ROOT/lib/ideas/project_tracking.sh"
 # shellcheck source=lib/training/export.sh
@@ -801,6 +803,7 @@ build_ideate_prompt() {
     printf 'For EACH candidate you must explicitly check it against the git branches, the\n'
     printf 'PR list (when available), and past runs candidates/specs listed below, and\n'
     printf 'state plainly whether it duplicates something that already exists.\n\n'
+    brain_recall_block "$focus"
     if [[ "$focus" == "revenue" ]]; then
       printf 'This ideate run is explicitly focused on revenue-generating ideas. Draw on\n'
       printf 'the findings'"'"' "Analogous Patterns" and (when present) "Monetization\n'
