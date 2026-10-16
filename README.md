@@ -204,6 +204,14 @@ Sampling can only answer text-in, text-out prompts, so it works for debates and 
 
 Add them to the server's `env` in `mcp.json`, e.g. `"env": { "E3D_MCP_REPOS": "/Users/me/work/app" }`.
 
+### Hosted / remote use
+
+`e3d-mcp --http [--host H] [--port N]` serves the same server over MCP's streamable HTTP transport, and `deploy/Dockerfile` packages it as a container, so clients that cannot run local tools (such as the Copilot coding agent) can still request debates. **Nothing is deployed:** no cloud account has been used, and the AWS and Azure notes in [deploy/README.md](deploy/README.md) are untested.
+
+- **Who pays:** the operator's model credentials (Azure OpenAI, Bedrock, or a local endpoint, via the new `azure-openai` and `bedrock` providers), not the caller's. Each bearer token (`E3D_MCP_AUTH_TOKENS="name:token"`) is a budget principal with a daily call and estimated-token cap, checked before a debate starts. These caps are per token, not global, and live in files on one instance.
+- **What is off over HTTP, and why:** the `e3d_pilot_*` pipeline tools, provenance and idea listing (they act on repositories on the server's disk) are hidden by default; sampling, elicitation and roots are disabled (they need server-to-client requests), so approvals stay read-only. A non-loopback bind refuses to start without tokens, and TLS is expected from a reverse proxy.
+- **Usage reporting also works locally:** `e3d_debate` results now include `usage` (model calls and estimated tokens) and `budget`, `e3d_usage` shows today's totals, and `E3D_MCP_DAILY_CALLS` / `E3D_MCP_DAILY_EST_TOKENS` set optional caps in stdio mode too (unlimited by default there).
+
 ## Why we built this
 
 Autonomous coding agents solved the *execution* half of the problem: point a good model at a good spec, and it will faithfully implement it. What's still missing is everything **before** that — noticing what's worth building, making sure it isn't a rehash of a closed PR or last week's abandoned branch, and getting more than one model to actually agree the plan is safe and sound before anything touches a working tree. Skip that half and you get agents that happily reimplement existing features, argue with themselves in a PR nobody asked for, or quietly blow through a repo's real diff budget.
