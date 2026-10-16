@@ -3,6 +3,7 @@ set -euo pipefail
 
 # Protocol + validation tests for bin/e3d-mcp. Makes no model calls (no credit spend).
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export E3D_MCP_STATE_DIR="$(mktemp -d)"  # keep usage accounting out of ~/.e3d-pilot during tests
 SERVER="$ROOT/bin/e3d-mcp"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }

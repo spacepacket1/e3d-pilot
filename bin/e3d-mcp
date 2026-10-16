@@ -29,6 +29,7 @@ import { createPipelineTools } from '../lib/mcp/pipeline-tools.js';
 import { createPipelineActions } from '../lib/mcp/pipeline-actions.js';
 import { createSampling } from '../lib/mcp/sampling.js';
 import { chooseVoices, independence, isSampling } from '../lib/mcp/voices.js';
+import { createUsage, usageFromTranscript, worstCase, usageTool, usageHandler } from '../lib/mcp/usage.js';
 
 const SERVER_INFO = { name: 'e3d-pilot', version: '0.1.1' };
 const SUPPORTED_PROTOCOLS = ['2025-06-18', '2025-03-26', '2024-11-05'];
@@ -140,6 +141,12 @@ async function toolDebate(args, progress, ctx) {
   const claudeUp = stubbed || known.some((k) => k.name === 'claude' && k.available);
   if (synthesizer === undefined) synthesizer = samplingOn && providers.includes('mcp-sampling') ? 'mcp-sampling' : (claudeUp ? 'claude' : providers[0]);
 
+  // Refuse BEFORE spending if the worst case for this request would break today's cap.
+  const principal = ctx?.principal ?? 'local';
+  const worst = worstCase({ providers: providers.length, rounds, maxWords, questionChars: question.length });
+  const allowed = await usage.check(principal, worst);
+  if (!allowed.ok) return text(`error: daily budget: ${allowed.reason}`, true);
+
   if (activeDebates >= LIMITS.concurrent) return text(`error: ${LIMITS.concurrent} debates already running; retry shortly`, true);
   activeDebates++;
   const dir = await mkdtemp(join(tmpdir(), 'e3d-mcp-'));
@@ -157,11 +164,14 @@ async function toolDebate(args, progress, ctx) {
       env: { ...process.env, ...samplingEnv },
       onStderr: (s) => { for (const m of s.matchAll(/^=== (.+?) ===$/gm)) progress?.(++step, m[1]); },
     });
+    // Calls that actually ran are counted from the transcript, whether or not the debate succeeded.
+    const transcript = await readFile(join(dir, 'out', 'transcript.md'), 'utf8').catch(() => '');
+    const spent = usageFromTranscript(transcript, question);
+    const budget = spent.calls > 0 ? await usage.record(principal, spent) : await usage.snapshot(principal);
     if (r.timedOut) return text(`error: debate timed out after ${LIMITS.timeoutMs / 1000}s`, true);
     const verdict = parseVerdict(r.out);
     if (r.code !== 0 || !verdict) return text(`error: debate failed (exit ${r.code})\n${redact(r.err.slice(-1500))}`, true);
 
-    const transcript = await readFile(join(dir, 'out', 'transcript.md'), 'utf8').catch(() => '');
     const { roundsRan, positions } = parsePositions(transcript);
     const samplingModels = sampling.drain(tag).map((m) => ({ provider: m.voice === 'b' ? 'mcp-sampling-b' : 'mcp-sampling', model: m.model, hint: m.hint }));
     const indep = usesSampling ? independence(providers, samplingModels) : { independent: true, warnings: [] };
@@ -171,6 +181,8 @@ async function toolDebate(args, progress, ctx) {
       selection, selection_note: selectionNote, synthesizer,
       ...(samplingModels.length ? { models: samplingModels } : {}),
       independent: indep.independent, warnings: indep.warnings,
+      usage: { model_calls: spent.calls, est_input_tokens: spent.inTokens, est_output_tokens: spent.outTokens, estimate: true },
+      budget,
       positions,
       ...(args.include_transcript ? { transcript: transcript.trim() } : {}),
     };
@@ -313,10 +325,13 @@ const rpc = createRpc(send);
 const guard = createRepoGuard();
 const jobs = createJobs();
 const pipeline = createPipelineTools({ guard, jobs });
+const HTTP_MODE = process.argv.includes('--http');
+// stdio: unlimited unless E3D_MCP_DAILY_* are set; hosted (HTTP) mode ships with finite defaults.
+const usage = createUsage({ defaults: HTTP_MODE ? { calls: 100, tokens: 500000 } : { calls: 0, tokens: 0 } });
 const sampling = createSampling({ rpc, log });
 const session = { clientInfo: null, capabilities: {}, rootsReady: null };
 const actions = createPipelineActions({ guard, jobs, base: pipeline });
-TOOLS.push(...pipeline.tools, ...actions.tools);
+TOOLS.push(...pipeline.tools, ...actions.tools, usageTool);
 
 // The client's workspace folders (MCP roots) are the default set of repos the pipeline tools may touch.
 async function refreshRoots() {
@@ -334,6 +349,7 @@ const HANDLERS = {
   e3d_ideas_list: toolIdeasList,
   ...pipeline.handlers,
   ...actions.handlers,
+  e3d_usage: usageHandler(usage),
 };
 
 async function handle(msg) {
@@ -366,7 +382,7 @@ async function handle(msg) {
         send({ jsonrpc: '2.0', method: 'notifications/progress', params: { progressToken: token, progress: n, message } });
       try {
         await session.rootsReady;
-        return reply(await handler(params.arguments ?? {}, progress, { session, rpc, sampling, samplingEnv: (tag) => sampling.env(session, { tag }) }));
+        return reply(await handler(params.arguments ?? {}, progress, { session, rpc, sampling, principal: process.env.E3D_MCP_PRINCIPAL || 'local', samplingEnv: (tag) => sampling.env(session, { tag }) }));
       } catch (e) {
         return reply(text(`error: ${e.message}`, true));
       }

@@ -4,6 +4,7 @@ set -euo pipefail
 # End-to-end tests of the pipeline-over-MCP tools: propose -> approve gate -> implement (pauses) -> code_plan
 # -> execute -> PR, plus the refusals. Fake providers, a fake e3d-code and a fake gh: no credits, no network.
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export E3D_MCP_STATE_DIR="$(mktemp -d)"  # keep usage accounting out of ~/.e3d-pilot during tests
 SERVER="$ROOT/bin/e3d-mcp"
 BIN="$ROOT/bin/e3d-pilot"
 CLIENT="$ROOT/tests/fixtures/mcp-test-client.mjs"
