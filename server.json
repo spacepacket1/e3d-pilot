@@ -1,10 +1,23 @@
 {
-  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-07-09/server.schema.json",
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.spacepacket1/e3d-pilot",
-  "description": "Multi-model debate (independent answers, critique, convergence, named dissent) plus decision provenance queries.",
+  "description": "Multi-model debate with named dissent, plus decision provenance queries for AI coding work.",
   "repository": { "url": "https://github.com/spacepacket1/e3d-pilot", "source": "github" },
   "version": "0.1.0",
   "packages": [
-    { "registry_type": "npm", "identifier": "e3d-pilot", "version": "0.1.0", "transport": { "type": "stdio" } }
+    {
+      "registryType": "npm",
+      "identifier": "e3d-pilot",
+      "version": "0.1.0",
+      "runtimeHint": "npx",
+      "packageArguments": [],
+      "transport": { "type": "stdio" },
+      "environmentVariables": [
+        { "name": "E3D_MCP_MAX_ROUNDS", "description": "Maximum debate rounds per call (default 3).", "isRequired": false, "format": "number" },
+        { "name": "E3D_MCP_MAX_PROVIDERS", "description": "Maximum model providers per debate (default 4).", "isRequired": false, "format": "number" },
+        { "name": "E3D_MCP_MAX_CONCURRENT", "description": "Maximum concurrent debates (default 2).", "isRequired": false, "format": "number" },
+        { "name": "E3D_MCP_TIMEOUT_SEC", "description": "Per-debate timeout in seconds (default 900).", "isRequired": false, "format": "number" }
+      ]
+    }
   ]
 }
