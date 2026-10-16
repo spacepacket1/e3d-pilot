@@ -1,0 +1,265 @@
+#!/usr/bin/env node
+// e3d-mcp: Model Context Protocol server (stdio) exposing e3d-pilot to any MCP
+// client -- GitHub Copilot (VS Code agent mode, coding agent), Claude Code, Cursor, etc.
+//
+// Zero dependencies on purpose: MCP over stdio is newline-delimited JSON-RPC 2.0,
+// small enough to speak directly, so `npx`/clone-and-run needs no install step.
+//
+// Tools:
+//   e3d_debate          multi-model debate -> decisive answer + consensus + named dissent
+//   e3d_list_providers  which model providers are configured on this machine
+//   e3d_provenance_trace / e3d_ideas_list   read-only "why does this exist?" queries
+//
+// Debate cost guard: every debate spends the *server operator's* model credits, so
+// rounds/providers/concurrency are capped (E3D_MCP_MAX_ROUNDS, E3D_MCP_MAX_PROVIDERS,
+// E3D_MCP_MAX_CONCURRENT, E3D_MCP_TIMEOUT_SEC). Nothing here writes to a repo.
+
+import { spawn } from 'node:child_process';
+import { mkdtemp, writeFile, readFile, rm, stat } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join, dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { createInterface } from 'node:readline';
+
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const SERVER_INFO = { name: 'e3d-pilot', version: '0.1.0' };
+const SUPPORTED_PROTOCOLS = ['2025-06-18', '2025-03-26', '2024-11-05'];
+
+const envInt = (name, dflt) => {
+  const n = Number.parseInt(process.env[name] ?? '', 10);
+  return Number.isFinite(n) && n > 0 ? n : dflt;
+};
+const LIMITS = {
+  rounds: envInt('E3D_MCP_MAX_ROUNDS', 3),
+  providers: envInt('E3D_MCP_MAX_PROVIDERS', 4),
+  concurrent: envInt('E3D_MCP_MAX_CONCURRENT', 2),
+  timeoutMs: envInt('E3D_MCP_TIMEOUT_SEC', 900) * 1000,
+  maxWords: 600,
+  questionChars: 20000,
+};
+let activeDebates = 0;
+
+const log = (...a) => process.stderr.write(`[e3d-mcp] ${a.join(' ')}\n`);
+const send = (msg) => process.stdout.write(`${JSON.stringify(msg)}\n`);
+const text = (t, isError = false) => ({ content: [{ type: 'text', text: t }], ...(isError ? { isError: true } : {}) });
+
+function run(cmd, args, { timeoutMs = 60000, onStderr } = {}) {
+  return new Promise((res) => {
+    const child = spawn(cmd, args, { cwd: ROOT, env: process.env, stdio: ['ignore', 'pipe', 'pipe'] });
+    let out = '', err = '', timedOut = false;
+    const timer = setTimeout(() => { timedOut = true; child.kill('SIGTERM'); }, timeoutMs);
+    child.stdout.on('data', (d) => { out += d; });
+    child.stderr.on('data', (d) => { err += d; onStderr?.(String(d)); });
+    child.on('error', (e) => { clearTimeout(timer); res({ code: 127, out, err: String(e), timedOut }); });
+    child.on('close', (code) => { clearTimeout(timer); res({ code, out, err, timedOut }); });
+  });
+}
+
+async function configuredProviders() {
+  const r = await run(join(ROOT, 'bin/e3d-pilot'), ['providers', 'list'], { timeoutMs: 30000 });
+  return r.out.split('\n').map((l) => l.trim().split(/\s{2,}|\s+/)).filter((p) => p.length >= 2)
+    .map(([name, state, ...rest]) => ({ name, available: state === 'available', detail: rest.join(' ') }));
+}
+
+const NAME_RE = /^[a-z0-9][a-z0-9_-]*$/;
+
+async function toolDebate(args, progress) {
+  const question = typeof args.question === 'string' ? args.question.trim() : '';
+  if (!question) return text('error: `question` is required', true);
+  if (question.length > LIMITS.questionChars) return text(`error: question exceeds ${LIMITS.questionChars} characters`, true);
+
+  const rounds = args.rounds ?? 2;
+  if (!Number.isInteger(rounds) || rounds < 1 || rounds > LIMITS.rounds) return text(`error: rounds must be an integer 1..${LIMITS.rounds}`, true);
+  const maxWords = args.max_words ?? 200;
+  if (!Number.isInteger(maxWords) || maxWords < 20 || maxWords > LIMITS.maxWords) return text(`error: max_words must be an integer 20..${LIMITS.maxWords}`, true);
+
+  const known = await configuredProviders();
+  let providers = args.providers;
+  if (providers === undefined) {
+    providers = known.filter((p) => p.available && ['claude', 'codex'].includes(p.name)).map((p) => p.name);
+  }
+  if (!Array.isArray(providers) || providers.some((p) => typeof p !== 'string' || !NAME_RE.test(p))) return text('error: providers must be an array of provider names', true);
+  providers = [...new Set(providers)];
+  if (providers.length < 2) return text('error: need at least 2 available providers to debate (call e3d_list_providers); only found: ' + (providers.join(', ') || 'none'), true);
+  if (providers.length > LIMITS.providers) return text(`error: at most ${LIMITS.providers} providers per debate`, true);
+  const unavailable = providers.filter((p) => !known.find((k) => k.name === p && k.available));
+  if (unavailable.length) return text(`error: provider(s) not available on this machine: ${unavailable.join(', ')}`, true);
+
+  if (activeDebates >= LIMITS.concurrent) return text(`error: ${LIMITS.concurrent} debates already running; retry shortly`, true);
+  activeDebates++;
+  const dir = await mkdtemp(join(tmpdir(), 'e3d-mcp-'));
+  try {
+    const qfile = join(dir, 'question.md');
+    await writeFile(qfile, question);
+    const cliArgs = ['--question-file', qfile, '--providers', providers.join(','), '--rounds', String(rounds),
+      '--max-words', String(maxWords), '--out-dir', join(dir, 'out')];
+    let step = 0;
+    const r = await run(join(ROOT, 'bin/e3d-debate'), cliArgs, {
+      timeoutMs: LIMITS.timeoutMs,
+      onStderr: (s) => { for (const m of s.matchAll(/^=== (.+?) ===$/gm)) progress?.(++step, m[1]); },
+    });
+    if (r.timedOut) return text(`error: debate timed out after ${LIMITS.timeoutMs / 1000}s`, true);
+    const verdict = r.out.match(/FINAL ANSWER:[\s\S]*$/)?.[0]?.trim();
+    if (r.code !== 0 || !verdict) return text(`error: debate failed (exit ${r.code})\n${r.err.slice(-1500)}`, true);
+
+    const transcript = { out: await readFile(join(dir, 'out', 'transcript.md'), 'utf8') };
+    const body = [
+      `# Debate verdict (${providers.join(', ')}; up to ${rounds} rounds)`,
+      '', verdict, '',
+      '<details><summary>Full transcript</summary>', '', transcript.out.trim(), '', '</details>',
+    ].join('\n');
+    return text(body);
+  } finally {
+    activeDebates--;
+    rm(dir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+async function toolListProviders() {
+  const known = await configuredProviders();
+  return text(known.map((p) => `${p.name}: ${p.available ? 'available' : 'UNAVAILABLE'} -- ${p.detail}`).join('\n') || 'no providers found');
+}
+
+async function requireRepo(path) {
+  if (typeof path !== 'string' || !path) throw new Error('`repo` (absolute path to a repo using e3d-pilot) is required');
+  const abs = resolve(path);
+  try { if (!(await stat(join(abs, '.e3d-pilot'))).isDirectory()) throw 0; }
+  catch { throw new Error(`${abs} has no .e3d-pilot directory -- not an e3d-pilot repo`); }
+  return abs;
+}
+
+async function toolProvenanceTrace(args) {
+  const repo = await requireRepo(args.repo);
+  if (typeof args.idea_id !== 'string' || !/^idea-[A-Za-z0-9]+$/.test(args.idea_id)) return text('error: idea_id must look like idea-<hex>', true);
+  const r = await run(join(ROOT, 'bin/e3d-pilot'), ['provenance', 'trace', '--repo', repo, args.idea_id, '--json']);
+  return r.code === 0 ? text(r.out) : text(`error: ${r.err || r.out}`, true);
+}
+
+async function toolIdeasList(args) {
+  const repo = await requireRepo(args.repo);
+  const cli = ['ideas', 'list', '--repo', repo, '--json'];
+  if (args.status !== undefined) {
+    if (typeof args.status !== 'string' || !NAME_RE.test(args.status)) return text('error: invalid status', true);
+    cli.push('--status', args.status);
+  }
+  const r = await run(join(ROOT, 'bin/e3d-pilot'), cli);
+  if (r.code !== 0) return text(`error: ${r.err || r.out}`, true);
+  // Raw idea records carry full notes/provenance (hundreds of KB per repo); return a compact index.
+  const ideas = JSON.parse(r.out);
+  const limit = 50;
+  const rows = ideas.slice(0, limit).map((i) => ({
+    idea_id: i.idea_id, status: i.status, title: i.title, category: i.category,
+    updated_at: i.updated_at, last_decision_at: i.last_decision_at,
+  }));
+  return text(JSON.stringify({ total: ideas.length, shown: rows.length, ideas: rows }, null, 2));
+}
+
+const TOOLS = [
+  {
+    name: 'e3d_debate',
+    description: 'Get a multi-model second opinion on a decision or design question. Several independent AI models answer, critique each other across rounds, and converge; returns a decisive final answer, a consensus level (full/majority/split), and any named dissent, plus the full transcript. Use for architectural choices, tradeoffs, and contestable judgment calls -- not for lookups or questions with an obvious answer. Slow (minutes) and spends model credits.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        question: { type: 'string', description: 'The decision or question, with enough context for models that cannot see your code.' },
+        providers: { type: 'array', items: { type: 'string' }, description: 'Provider names (see e3d_list_providers). Default: claude + codex.' },
+        rounds: { type: 'integer', minimum: 1, maximum: LIMITS.rounds, description: 'Max debate rounds; stops early on convergence. Default 2.' },
+        max_words: { type: 'integer', minimum: 20, maximum: LIMITS.maxWords, description: 'Per-provider per-round answer cap. Default 200.' },
+      },
+      required: ['question'],
+      additionalProperties: false,
+    },
+    annotations: { title: 'Multi-model debate', readOnlyHint: true, openWorldHint: true, idempotentHint: false },
+  },
+  {
+    name: 'e3d_list_providers',
+    description: 'List the model providers configured on this machine and whether each is available to join a debate.',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+    annotations: { title: 'List debate providers', readOnlyHint: true, openWorldHint: false },
+  },
+  {
+    name: 'e3d_provenance_trace',
+    description: 'Trace why a change exists: for an e3d-pilot idea, return its lineage -- origin, debates and decisions (with dissent), approvals, execution, review, outcome. Read-only.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        repo: { type: 'string', description: 'Absolute path to a repo managed by e3d-pilot (has .e3d-pilot/).' },
+        idea_id: { type: 'string', description: 'Idea id, e.g. idea-a785c206642b.' },
+      },
+      required: ['repo', 'idea_id'],
+      additionalProperties: false,
+    },
+    annotations: { title: 'Trace decision provenance', readOnlyHint: true, openWorldHint: false },
+  },
+  {
+    name: 'e3d_ideas_list',
+    description: 'List the ideas tracked by e3d-pilot in a repo, optionally filtered by status, to find an idea id for e3d_provenance_trace. Read-only.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        repo: { type: 'string', description: 'Absolute path to a repo managed by e3d-pilot.' },
+        status: { type: 'string', description: 'Optional status filter, e.g. approved, implemented.' },
+      },
+      required: ['repo'],
+      additionalProperties: false,
+    },
+    annotations: { title: 'List ideas', readOnlyHint: true, openWorldHint: false },
+  },
+];
+
+const HANDLERS = {
+  e3d_debate: toolDebate,
+  e3d_list_providers: toolListProviders,
+  e3d_provenance_trace: toolProvenanceTrace,
+  e3d_ideas_list: toolIdeasList,
+};
+
+async function handle(msg) {
+  const { id, method, params } = msg;
+  const isRequest = id !== undefined && id !== null;
+  const reply = (result) => isRequest && send({ jsonrpc: '2.0', id, result });
+  const fail = (code, message) => isRequest && send({ jsonrpc: '2.0', id, error: { code, message } });
+
+  switch (method) {
+    case 'initialize': {
+      const want = params?.protocolVersion;
+      return reply({
+        protocolVersion: SUPPORTED_PROTOCOLS.includes(want) ? want : SUPPORTED_PROTOCOLS[0],
+        capabilities: { tools: { listChanged: false } },
+        serverInfo: SERVER_INFO,
+        instructions: 'Use e3d_debate for contestable decisions where independent model perspectives and recorded dissent add value. It is slow and costs credits; do not use it for simple lookups.',
+      });
+    }
+    case 'ping': return reply({});
+    case 'tools/list': return reply({ tools: TOOLS });
+    case 'tools/call': {
+      const handler = HANDLERS[params?.name];
+      if (!handler) return fail(-32602, `unknown tool: ${params?.name}`);
+      const token = params?._meta?.progressToken;
+      const progress = token === undefined ? undefined : (n, message) =>
+        send({ jsonrpc: '2.0', method: 'notifications/progress', params: { progressToken: token, progress: n, message } });
+      try {
+        return reply(await handler(params.arguments ?? {}, progress));
+      } catch (e) {
+        return reply(text(`error: ${e.message}`, true));
+      }
+    }
+    default:
+      if (!isRequest) return; // notifications (initialized, cancelled, ...) need no reply
+      return fail(-32601, `method not found: ${method}`);
+  }
+}
+
+const rl = createInterface({ input: process.stdin });
+const pending = new Set();
+rl.on('line', (line) => {
+  if (!line.trim()) return;
+  let msg;
+  try { msg = JSON.parse(line); }
+  catch { return send({ jsonrpc: '2.0', id: null, error: { code: -32700, message: 'parse error' } }); }
+  const p = handle(msg).catch((e) => log('handler error:', e.stack || e)).finally(() => pending.delete(p));
+  pending.add(p);
+});
+// Exit only once in-flight calls finish, so a client closing stdin after its last request still gets the reply.
+rl.on('close', () => Promise.allSettled([...pending]).then(() => process.exit(0)));
+log(`ready (limits: ${JSON.stringify(LIMITS)})`);

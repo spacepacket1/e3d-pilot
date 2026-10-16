@@ -70,6 +70,30 @@ demand instead — a real, named disagreement the tool didn't paper over.
 
 You don't need the rest of e3d-pilot to use `e3d-debate` on its own — see [e3d-debate](#e3d-debate-experimental) below for the full flag reference. Keep reading for the part that takes a debate's answer all the way to a shipped, reviewed, provenance-tracked change.
 
+## Use e3d-debate from GitHub Copilot (MCP)
+
+`bin/e3d-mcp` is a zero-dependency [Model Context Protocol](https://modelcontextprotocol.io) server, so Copilot agent mode in VS Code (and any other MCP client: Claude Code, Cursor, ...) can ask for a multi-model second opinion mid-task.
+
+Tools: `e3d_debate` (answer + consensus + named dissent + transcript), `e3d_list_providers`, and read-only `e3d_provenance_trace` / `e3d_ideas_list` ("why does this change exist?").
+
+VS Code, `.vscode/mcp.json` (or your user MCP config):
+
+```json
+{
+  "servers": {
+    "e3d-pilot": { "type": "stdio", "command": "/path/to/e3d-pilot/bin/e3d-mcp" }
+  }
+}
+```
+
+Then, in Copilot agent mode: *"Before you pick a storage layer, run e3d_debate on SQLite vs flat JSON for this CLI."* To make Copilot do that unprompted for contestable design choices, add a line to `.github/copilot-instructions.md` or `AGENTS.md`.
+
+Notes:
+- Debates are slow (minutes) and spend **your** model credits. The server caps rounds/providers/concurrency: `E3D_MCP_MAX_ROUNDS` (3), `E3D_MCP_MAX_PROVIDERS` (4), `E3D_MCP_MAX_CONCURRENT` (2), `E3D_MCP_TIMEOUT_SEC` (900).
+- It uses whatever provider CLIs/keys are in the server's environment (`claude`, `codex`, ... see `e3d-pilot providers list`). Needs at least two available.
+- The Copilot *coding agent* runs on GitHub-hosted runners, where those provider CLIs are not installed; use the local (stdio) setup above for now.
+- The server never writes to a repo. Recording a verdict into provenance is still `e3d-debate --repo --idea`.
+
 ## Why we built this
 
 Autonomous coding agents solved the *execution* half of the problem: point a good model at a good spec, and it will faithfully implement it. What's still missing is everything **before** that — noticing what's worth building, making sure it isn't a rehash of a closed PR or last week's abandoned branch, and getting more than one model to actually agree the plan is safe and sound before anything touches a working tree. Skip that half and you get agents that happily reimplement existing features, argue with themselves in a PR nobody asked for, or quietly blow through a repo's real diff budget.
