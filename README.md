@@ -138,7 +138,71 @@ In Copilot agent mode (or any client), ask: *"Before you pick a storage layer, r
 - `quick` debates take seconds to a minute and `thorough` ones a few minutes; both spend **your** model credits. The server caps `e3d_debate` with `E3D_MCP_MAX_ROUNDS` (3), `E3D_MCP_MAX_PROVIDERS` (4), `E3D_MCP_MAX_CONCURRENT` (2), and `E3D_MCP_TIMEOUT_SEC` (900).
 - It uses whatever provider CLIs and keys are in the server's environment (see `e3d-pilot providers list`).
 - The Copilot *coding agent* runs on GitHub-hosted runners, where those provider CLIs aren't installed. Use the local (stdio) setup above for now.
-- The server never writes to a repo. Recording a verdict into provenance is still `e3d-debate --repo --idea`.
+- `e3d_debate` and the read-only tools never write to a repo. The pipeline tools below do, only through the same gated CLI paths as a person would, and `e3d_pilot_propose` writes to the repo's `.e3d-pilot/` ledger.
+
+### Run the pipeline from your editor
+
+Besides debates, `e3d-mcp` can drive the human-gated pipeline, so an assistant can go from a decision to a draft PR without leaving the editor. The tools call the same CLI code paths a person would; they never reimplement a stage or weaken a gate.
+
+| Tool | Cost | What it does |
+| --- | --- | --- |
+| `e3d_pilot_config_check` | free | Validates `.e3d-pilot/config.json` and reports whether `e3d-code` (the code-writing executor) is installed. |
+| `e3d_pilot_propose` | free | Records an idea in the repo's ledger, optionally attaching an `e3d_debate` result as provenance evidence. |
+| `e3d_pilot_start` | **spends credits** | Starts `discover` or `ideate` as a background job. (`all` is not offered: it would run past the plan preview.) |
+| `e3d_pilot_job_status` | free | State, stage reached, artifacts, and log tail of a job. Jobs live on disk under `.e3d-pilot/mcp-jobs/` and survive server restarts. `wait_seconds` waits for a job to settle. |
+| `e3d_pilot_approve` | gate | **Human gate 1.** Read-only by default: returns `waiting_for_human` and the exact command to run (see the trust model). |
+| `e3d_pilot_reject` | gate | Rejects a proposed idea. Confirmed in the editor, or with an exact `confirm_phrase`. |
+| `e3d_pilot_implement` | **spends credits** | For an approved idea: drafts the spec and has reviewers negotiate it, then **pauses before any code is written**. |
+| `e3d_pilot_code_plan` | free | Shows what execute would do: each phase, the runner and model, files touched, verify commands, preflight result. Returns a `plan_token`. |
+| `e3d_pilot_execute` | **spends credits, writes code** | Needs a fresh `plan_token` for exactly that spec. Writes code in an isolated worktree on its own branch, verifies, reviews, opens a **draft** PR. |
+| `e3d_pilot_cancel_paused` | free | Abandons a paused implementation (records a failed attempt with your reason). |
+| `e3d_pilot_request_changes` | gate | After a draft PR exists, sends the idea back for rework. |
+| `e3d_pilot_artifact` | free | Reads one run artifact from a fixed list (spec, negotiation log, review, per-phase results from the `e3d-code` manifest), size-capped and redacted. |
+
+**A worked flow from Copilot agent mode**
+
+1. *"We need local persistence. Run `e3d_debate` on JSON vs SQLite."* The verdict comes back with its dissent.
+2. *"Propose that as an idea, with the debate as evidence."* `e3d_pilot_propose` records it as `proposed`.
+3. *(optional)* `e3d_pilot_start` with `discover` then `ideate` to have the pipeline find ideas for the repo itself.
+4. **You approve it** (see below). Nothing is drafted or written before this.
+5. *"Implement it."* `e3d_pilot_implement` drafts and negotiates a phased spec, then pauses. Poll `e3d_pilot_job_status`.
+6. *"Show me the plan."* `e3d_pilot_code_plan` lists each phase with its model, the files it touches, and the verify commands.
+7. If it looks right: `e3d_pilot_execute`. If not: `e3d_pilot_cancel_paused`. Execution ends with a draft PR for a person to review.
+8. **Merging is not available over MCP.** `approve-merge` and `merge` stay CLI-only on purpose, so the last gate is always a person at a terminal (or the web UI).
+
+**Trust model**
+
+- **Gate 1 is a person's decision.** `e3d_pilot_approve` does not approve by default. If the server operator sets `E3D_MCP_ALLOW_APPROVAL=1` *and* the editor supports MCP elicitation, it asks the person in the editor's own prompt; an agent cannot answer that prompt for them. Without both, it returns the command to run (`e3d-pilot ideas approve ...`) or you can use the web dashboard.
+- `confirm_phrase` alone would only prevent accidents (an agent can read it from an error message), which is why it is not the approval mechanism. `reject` and `request_changes` accept it because they only stop work.
+- **The CLI enforces approval itself.** Every mutating stage checks a digest-bound approval inside the stage, so no tool here can skip it.
+- **Repo allowlist.** Pipeline tools only operate on `E3D_MCP_REPOS` (a `:`-separated list), the client's workspace folders, or, if neither exists, the git repository the server was started in. Paths are resolved through symlinks, must be a git repository's top level, and anything outside is rejected. (The four original tools predate this and are unchanged.)
+- **Code is written in a separate worktree** on a per-run branch, under the existing `protected_paths`, `max_diff_files`/`max_diff_lines` ceilings and verify-before-publish rules. Your working tree is untouched.
+- Logs, artifacts and errors pass through secret redaction.
+
+**Cost model**
+
+- Tools say in their descriptions whether they are `FREE` or `SPEND MODEL CREDITS`. `code_plan` uses `e3d-code --list` and `--preflight` only, which write nothing (`--dry-run` is deliberately avoided because it records a "completed" phase in the manifest).
+- Caps: one job per repo at a time, `E3D_MCP_MAX_JOBS` (2) across repos, `E3D_MCP_JOB_TIMEOUT_SEC` (3600), `E3D_MCP_MAX_PHASES` (8), plan tokens expire after `E3D_MCP_PLAN_TTL_SEC` (1800) and are void if the spec or the repo's HEAD changes.
+- There is still no per-day or per-session spend cap and no cost reporting. Treat the caps above as guardrails, not a budget.
+
+**Copilot's own models by default**
+
+When the client supports MCP *sampling* (VS Code does, per its docs), `e3d_debate` uses the client's own models (Copilot) as one or two of its voices and adds any model CLIs it detects on the machine (`claude`, `codex`, `gemini`, ...), instead of requiring two CLIs. The first request prompts you to authorize the server to use your models; you can restrict which in *MCP: List Servers > Configure Model Access*. Results report which models actually answered and warn when every voice resolved to the same model (that is one model arguing with itself, not a debate). Without sampling, the default is the original `claude` + `codex`. Pin it with `E3D_MCP_PROVIDERS=claude,codex`, or cap it with `E3D_MCP_AUTO_VOICES`. Sampling spends your Copilot usage.
+
+Sampling can only answer text-in, text-out prompts, so it works for debates and for the `negotiate` and `review` stages if you name `mcp-sampling` in a repo's `providers`. `discover`, `ideate`, `draft` and `execute` must read or edit the repository and still need a model CLI. `e3d_pilot_config_check` warns about this. A job that uses a sampling provider fails if the editor or server stops mid-run.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `E3D_MCP_REPOS` | workspace roots | `:`-separated repos the pipeline tools may use. |
+| `E3D_MCP_ALLOW_APPROVAL` | off | `1` lets a person approve from the editor via elicitation. |
+| `E3D_MCP_ACTOR` | `mcp:<client>` | Actor name recorded in the ledger for MCP actions. |
+| `E3D_MCP_MAX_JOBS` / `E3D_MCP_JOB_TIMEOUT_SEC` | 2 / 3600 | Concurrent jobs, per-job timeout. |
+| `E3D_MCP_MAX_PHASES` / `E3D_MCP_PLAN_TTL_SEC` | 8 / 1800 | Phase cap for execute, plan lifetime. |
+| `E3D_MCP_MAX_ARTIFACT_BYTES` | 100000 | Largest artifact read. |
+| `E3D_MCP_PROVIDERS` / `E3D_MCP_AUTO_VOICES` | auto / 3 (2 without sampling) | Pin or cap the default debate voices. |
+| `E3D_MCP_SAMPLING_HINTS` | `claude,gpt` | Model-name hints for the two sampling voices. |
+
+Add them to the server's `env` in `mcp.json`, e.g. `"env": { "E3D_MCP_REPOS": "/Users/me/work/app" }`.
 
 ## Why we built this
 
@@ -369,6 +433,16 @@ e3d-pilot ideas repair-run --repo /path/to/repository --run-id <run-id> [--from-
 ```
 
 `--from-stage` defaults to `publish`. Every stage strictly before the resume point must already have its real success artifact on disk — this can only skip work that's provably already done, never work that never happened.
+
+Pause before any code is written, look at the plan, then continue or abandon:
+
+```bash
+e3d-pilot ideas implement --repo /path/to/repository --stop-before execute idea-abc123def456   # draft + negotiate, then stop
+e3d-pilot ideas resume    --repo /path/to/repository idea-abc123def456                          # execute -> review -> publish
+e3d-pilot ideas cancel-paused --repo /path/to/repository --reason "plan too broad" idea-abc123def456
+```
+
+`--stop-before` accepts `negotiate`, `execute`, `review`, or `publish`. A paused idea stays `implementing` (no new ledger state) with a `paused-before.txt` marker in its run directory. `resume` re-checks the approval digest, that every earlier stage's artifact exists, and that the base SHA has not moved, then finishes with the usual implemented/failed outcome. `cancel-paused` records an `implementation_failed` outcome with your reason so a normal `ideas implement` can retry.
 
 After reviewing the draft PR, approve and perform merge with the second gate:
 
@@ -705,7 +779,7 @@ Run the repository test suite with:
 
 ```bash
 set -e
-for test_file in tests/phase{1..25}.sh; do bash "$test_file"; done
+for test_file in tests/*.sh; do bash "$test_file"; done
 ```
 
 ## License
