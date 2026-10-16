@@ -4,6 +4,7 @@ set -euo pipefail
 # Tests for the Copilot-first default: MCP sampling bridge, voice selection, independence warnings.
 # The "editor" is a scripted test client answering sampling/createMessage; no real model is ever called.
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export E3D_MCP_STATE_DIR="$(mktemp -d)"  # keep usage accounting out of ~/.e3d-pilot during tests
 SERVER="$ROOT/bin/e3d-mcp"
 CLIENT="$ROOT/tests/fixtures/mcp-test-client.mjs"
 SAMPLE_CONFIG="$ROOT/examples/sample-config.json"

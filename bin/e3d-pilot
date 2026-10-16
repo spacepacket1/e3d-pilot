@@ -5060,7 +5060,7 @@ cmd_ideas() {
 # means adding its name to this list and its script under lib/providers/.
 providers_list() {
   local provider script output status exit_code
-  for provider in claude codex local devin grok-build gemini; do
+  for provider in claude codex local devin grok-build gemini bedrock azure-openai; do
     script="$REPO_ROOT/lib/providers/$provider"
     [[ -x "$script" ]] || die "provider script missing or not executable: $script"
     if output="$(provider_availability_probe "$script")"; then

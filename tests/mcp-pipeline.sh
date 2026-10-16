@@ -4,6 +4,7 @@ set -euo pipefail
 # Tests for the pipeline-over-MCP tools (bin/e3d-mcp). Uses fake providers and a fake e3d-code only,
 # so it spends no credits and needs no network.
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export E3D_MCP_STATE_DIR="$(mktemp -d)"  # keep usage accounting out of ~/.e3d-pilot during tests
 SERVER="$ROOT/bin/e3d-mcp"
 CLIENT="$ROOT/tests/fixtures/mcp-test-client.mjs"
 SAMPLE_CONFIG="$ROOT/examples/sample-config.json"
