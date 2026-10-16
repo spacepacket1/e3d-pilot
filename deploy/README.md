@@ -57,7 +57,7 @@ A tool that is hidden is reported exactly like one that does not exist.
 | `E3D_MCP_TIMEOUT_SEC` | 120 (hosted) | Per-debate timeout; kept low to fit load-balancer timeouts |
 | `E3D_MCP_HTTP_REQUEST_TIMEOUT_SEC` | 900 | Per-request ceiling (504) |
 | `E3D_MCP_PROVIDERS` / `E3D_MCP_AUTO_VOICES` | auto | Pin or cap the debate voices |
-| model providers | | `AZURE_OPENAI_ENDPOINT/_DEPLOYMENT/_API_KEY[_FILE]`, `BEDROCK_MODEL_ID` + `AWS_REGION` (+ AWS credentials), `LOCAL_MODEL_ENDPOINT/_NAME`; see the main README's Providers section |
+| model providers | | `AZURE_OPENAI_ENDPOINT/_DEPLOYMENT/_API_KEY[_FILE]`, `BEDROCK_MODEL_ID` + `AWS_REGION` (+ AWS credentials), `LOCAL_MODEL_ENDPOINT/_NAME`, `ANTHROPIC_API_KEY[_FILE]`/`ANTHROPIC_API_MODEL`, `OPENAI_API_KEY[_FILE]`/`OPENAI_API_MODEL`; see the main README's Providers section |
 
 ## Budgets and who pays
 
@@ -75,9 +75,12 @@ Things this does **not** give you:
 
 ## Providers inside the container
 
-The image has no `claude`/`codex` CLIs. A debate needs **at least two distinct providers** from `azure-openai`,
-`bedrock` (build with `INSTALL_AWS_CLI=true`) and `local`, so a deployment with only one Azure deployment cannot
-debate until a second provider is configured (there is currently one deployment per adapter).
+The image has no `claude`/`codex` CLIs. A debate needs **at least two distinct providers** from `anthropic-api`,
+`openai-api`, `azure-openai`, `bedrock` (build with `INSTALL_AWS_CLI=true`) and `local`. The simplest hosted setup
+is `anthropic-api` plus `openai-api`, which only need keys (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY` and
+`OPENAI_API_MODEL`; use `*_API_KEY_FILE` with a mounted secret instead of putting keys in the environment). A
+deployment with only one Azure deployment or one Bedrock model still cannot debate, because there is one slot per
+adapter. Pin the voices with `E3D_MCP_PROVIDERS=anthropic-api,openai-api`.
 
 ## Putting it on a cloud (untested notes)
 

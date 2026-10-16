@@ -210,7 +210,7 @@ Add them to the server's `env` in `mcp.json`, e.g. `"env": { "E3D_MCP_REPOS": "/
 
 `e3d-mcp --http [--host H] [--port N]` serves the same server over MCP's streamable HTTP transport, and `deploy/Dockerfile` packages it as a container, so clients that cannot run local tools (such as the Copilot coding agent) can still request debates. **Nothing is deployed:** no cloud account has been used, and the AWS and Azure notes in [deploy/README.md](deploy/README.md) are untested.
 
-- **Who pays:** the operator's model credentials (Azure OpenAI, Bedrock, or a local endpoint, via the new `azure-openai` and `bedrock` providers), not the caller's. Each bearer token (`E3D_MCP_AUTH_TOKENS="name:token"`) is a budget principal with a daily call and estimated-token cap, checked before a debate starts. These caps are per token, not global, and live in files on one instance.
+- **Who pays:** the operator's model credentials (Azure OpenAI, Bedrock, or a local endpoint, via the `azure-openai`, `bedrock`, `anthropic-api` and `openai-api` providers), not the caller's. Each bearer token (`E3D_MCP_AUTH_TOKENS="name:token"`) is a budget principal with a daily call and estimated-token cap, checked before a debate starts. These caps are per token, not global, and live in files on one instance.
 - **What is off over HTTP, and why:** the `e3d_pilot_*` pipeline tools, provenance and idea listing (they act on repositories on the server's disk) are hidden by default; sampling, elicitation and roots are disabled (they need server-to-client requests), so approvals stay read-only. A non-loopback bind refuses to start without tokens, and TLS is expected from a reverse proxy.
 - **Usage reporting also works locally:** `e3d_debate` results now include `usage` (model calls and estimated tokens) and `budget`, `e3d_usage` shows today's totals, and `E3D_MCP_DAILY_CALLS` / `E3D_MCP_DAILY_EST_TOKENS` set optional caps in stdio mode too (unlimited by default there).
 
@@ -489,8 +489,9 @@ Existing open e3d-pilot PRs should be adopted only through an explicit adoption 
 ## Providers and negotiation
 
 Built-in adapters are `claude`, `codex`, `local`, `devin`, `grok-build`, the
-opt-in `gemini` trial adapter, and two cloud adapters, `bedrock` and
-`azure-openai`; check them with `e3d-pilot providers list`.
+opt-in `gemini` trial adapter, two cloud adapters, `bedrock` and
+`azure-openai`, and two direct API adapters, `anthropic-api` and `openai-api`
+(no CLI needed, for servers and containers); check them with `e3d-pilot providers list`.
 `grok-build` is selected the same way as the others: name it in `providers.*`.
 It is available when the `grok` binary is on `PATH` (override with
 `GROK_BUILD_BIN`).
@@ -572,6 +573,17 @@ export AZURE_OPENAI_API_KEY=...                       # or AZURE_OPENAI_API_KEY_
 ```
 
 The key is sent from a mode-0600 header file, never on the command line, and is never printed or probed by `providers list`. Optional: `AZURE_OPENAI_API_VERSION` (2024-10-21), `AZURE_OPENAI_MAX_TOKENS`, `AZURE_OPENAI_TIMEOUT` (120 seconds). Both adapters report token usage and honor `E3D_PILOT_PROVIDER_TOKEN_LIMIT`. Neither has been run against the real service in this repo's tests (they use a fake `aws` and a fake local HTTP server).
+
+**anthropic-api** and **openai-api** — the Anthropic Messages API and OpenAI chat completions over HTTPS (curl + jq), with no `claude` or `codex` CLI. They are what a server or container uses with your own API keys, and two distinct providers are enough for a debate (`--providers anthropic-api,openai-api`).
+
+```bash
+export ANTHROPIC_API_KEY=...        # or ANTHROPIC_API_KEY_FILE=/path/to/file (the key alone, or an `export ANTHROPIC_API_KEY=...` line)
+export ANTHROPIC_API_MODEL=claude-sonnet-5-5    # optional; this is the default
+export OPENAI_API_KEY=...           # or OPENAI_API_KEY_FILE=...
+export OPENAI_API_MODEL=...         # required: there is deliberately no default, because model names change
+```
+
+Keys are sent from a mode-0600 header file, never on the command line, and are never printed or sent by `providers list` (it only checks that the key is set and the API is reachable). Optional: `ANTHROPIC_API_MAX_TOKENS` (4096), `OPENAI_API_MAX_TOKENS`, `ANTHROPIC_API_BASE_URL` / `OPENAI_API_BASE_URL` (any compatible endpoint), and the usual `E3D_PILOT_PROVIDER_TOKEN_LIMIT` ceiling. These calls are billed to the key's owner.
 
 **local** — calls an OpenAI-compatible endpoint. Useful for a self-hosted model (e.g. Qwen via Ollama) as a third negotiate reviewer:
 

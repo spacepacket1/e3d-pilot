@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# OpenAI chat-completions provider (curl + jq; no SDK, no `codex` CLI needed), for servers and containers.
+#   OPENAI_API_KEY        or OPENAI_API_KEY_FILE (a file holding the key, or an `export OPENAI_API_KEY=...` line)
+#   OPENAI_API_MODEL      required: there is deliberately no default, because valid model names change
+#   OPENAI_API_MAX_TOKENS optional (sent as max_completion_tokens)
+#   OPENAI_API_BASE_URL   default https://api.openai.com/v1 (any OpenAI-compatible endpoint works)
+# The key is sent from a 0600 header file, never on the command line, and is never printed.
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=./common.sh
+source "$SCRIPT_DIR/common.sh"
+
+OPENAI_API_BASE_URL="${OPENAI_API_BASE_URL:-https://api.openai.com/v1}"
+PROVIDER_TOKEN_LIMIT="${E3D_PILOT_PROVIDER_TOKEN_LIMIT:-200000}"
+
+openai_key() {
+  if [[ -n "${OPENAI_API_KEY:-}" ]]; then printf '%s' "$OPENAI_API_KEY"
+  else provider_key_from_file "${OPENAI_API_KEY_FILE:-}" OPENAI_API_KEY
+  fi
+}
+
+if [[ "${E3D_PILOT_CHECK:-0}" == "1" ]]; then
+  if ! provider_binary_available curl || ! provider_binary_available jq; then
+    printf 'unavailable: curl and jq are required\n'
+    exit "$PROVIDER_EXIT_UNAVAILABLE"
+  fi
+  if [[ -z "$(openai_key)" ]]; then
+    printf 'unavailable: set OPENAI_API_KEY (or OPENAI_API_KEY_FILE)\n'
+    exit "$PROVIDER_EXIT_UNAVAILABLE"
+  fi
+  if [[ -z "${OPENAI_API_MODEL:-}" ]]; then
+    printf 'unavailable: set OPENAI_API_MODEL (no default: model names change)\n'
+    exit "$PROVIDER_EXIT_UNAVAILABLE"
+  fi
+  # Reachability only: no key is sent and nothing is billed.
+  if curl -s -o /dev/null -m "${OPENAI_API_CHECK_TIMEOUT:-3}" "${OPENAI_API_BASE_URL%/}"; then
+    printf 'available (%s)\n' "$OPENAI_API_MODEL"
+    exit "$PROVIDER_EXIT_OK"
+  fi
+  printf 'unavailable: API not reachable (%s)\n' "${OPENAI_API_BASE_URL%/}"
+  exit "$PROVIDER_EXIT_UNAVAILABLE"
+fi
+
+if [[ -z "$(openai_key)" || -z "${OPENAI_API_MODEL:-}" ]]; then
+  echo "error: openai-api is not configured (OPENAI_API_KEY or OPENAI_API_KEY_FILE, and OPENAI_API_MODEL)" >&2
+  exit "$PROVIDER_EXIT_UNAVAILABLE"
+fi
+
+PROMPT_FILE="${1:-}"
+provider_require_prompt_file "$PROMPT_FILE"
+
+URL="${OPENAI_API_BASE_URL%/}/chat/completions"
+
+if [[ "${E3D_PILOT_DRY_RUN:-0}" == "1" ]]; then
+  printf 'curl -sS -X POST %q -H %q -H %q -d @- (model=%s) < %q\n' "$URL" 'Authorization: Bearer [redacted]' 'Content-Type: application/json' "$OPENAI_API_MODEL" "$PROMPT_FILE"
+  exit "$PROVIDER_EXIT_OK"
+fi
+
+work="$(mktemp -d "${TMPDIR:-/tmp}/e3d-pilot-openai.XXXXXX")"
+trap 'rm -rf "$work"' EXIT
+chmod 700 "$work"
+( umask 077; printf 'Authorization: Bearer %s\nContent-Type: application/json\n' "$(openai_key)" > "$work/headers" )
+
+jq -n --rawfile content "$PROMPT_FILE" --arg model "$OPENAI_API_MODEL" --arg max "${OPENAI_API_MAX_TOKENS:-}" \
+  '{model: $model, messages: [{role: "user", content: $content}]} + (if $max != "" then {max_completion_tokens: ($max | tonumber)} else {} end)' > "$work/payload.json"
+
+set +e
+http_code="$(curl -sS -m "${OPENAI_API_TIMEOUT:-180}" -o "$work/response.json" -w '%{http_code}' \
+  -H "@$work/headers" -d "@$work/payload.json" "$URL" 2> "$work/curl.err")"
+status=$?
+set -e
+
+if [[ $status -ne 0 ]]; then
+  printf 'error: openai-api request failed (curl exit %s): %s\n' "$status" "$(head -c 300 "$work/curl.err" | tr '\n' ' ')" >&2
+  exit "$PROVIDER_EXIT_FAILURE"
+fi
+if [[ "$http_code" != 2* ]]; then
+  msg="$(jq -r '.error.message // empty' "$work/response.json" 2>/dev/null | head -c 300)"
+  printf 'error: openai-api HTTP %s%s\n' "$http_code" "${msg:+: $msg}" >&2
+  exit "$PROVIDER_EXIT_FAILURE"
+fi
+
+content="$(jq -r '.choices[0].message.content // empty' "$work/response.json")"
+if [[ -z "$content" ]]; then
+  echo "error: openai-api returned no message content" >&2
+  exit "$PROVIDER_EXIT_FAILURE"
+fi
+tokens="$(jq '.usage.total_tokens // 0' "$work/response.json")"
+printf 'e3d_provider_usage=%s\n' "$(jq -c --arg m "$OPENAI_API_MODEL" '{provider:"openai-api",model:(.model // $m),tokens:(.usage.total_tokens // null),usage:(.usage // null)}' "$work/response.json")" >&2
+printf '%s\n' "$content"
+
+if [[ "$PROVIDER_TOKEN_LIMIT" =~ ^[0-9]+$ ]] && (( PROVIDER_TOKEN_LIMIT > 0 && tokens > PROVIDER_TOKEN_LIMIT )); then
+  printf 'error: openai-api provider token ceiling exceeded (%s > %s)\n' "$tokens" "$PROVIDER_TOKEN_LIMIT" >&2
+  exit "$PROVIDER_EXIT_FAILURE"
+fi

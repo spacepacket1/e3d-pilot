@@ -114,3 +114,15 @@ provider_run_with_timeout() {
   trap - INT TERM HUP
   return "$status"
 }
+
+# Reads an API key from a file that holds either just the key or a shell-style `export NAME=key` line
+# (the format of ~/.config/e3d-pilot/anthropic-api-key). Parsed, never sourced, and never printed.
+provider_key_from_file() {
+  local file="${1:-}" name="${2:-}"
+  [[ -n "$file" && -f "$file" ]] || return 0
+  if grep -Eq "^[[:space:]]*(export[[:space:]]+)?${name}=" "$file"; then
+    sed -nE "s/^[[:space:]]*(export[[:space:]]+)?${name}=//p" "$file" | head -1 | tr -d "\"' \r\n"
+  else
+    tr -d '\n\r ' < "$file"
+  fi
+}
