@@ -22,6 +22,10 @@ import { createInterface } from 'node:readline';
 import { ROOT, log, text, run, configuredProviders, providerLine, NAME_RE } from '../lib/mcp/util.js';
 import { redact } from '../lib/mcp/redact.js';
 import { doctor, checkoutConfigHint } from '../lib/mcp/doctor.js';
+import { createRpc } from '../lib/mcp/rpc.js';
+import { createRepoGuard } from '../lib/mcp/repos.js';
+import { createJobs } from '../lib/mcp/jobs.js';
+import { createPipelineTools } from '../lib/mcp/pipeline-tools.js';
 
 const SERVER_INFO = { name: 'e3d-pilot', version: '0.1.1' };
 const SUPPORTED_PROTOCOLS = ['2025-06-18', '2025-03-26', '2024-11-05'];
@@ -261,11 +265,29 @@ const TOOLS = [
   },
 ];
 
+// ---- pipeline-over-MCP (jobs, repo allowlist, gates); the four tools above are unchanged ----
+const rpc = createRpc(send);
+const guard = createRepoGuard();
+const jobs = createJobs();
+const pipeline = createPipelineTools({ guard, jobs });
+const session = { clientInfo: null, capabilities: {}, rootsReady: null };
+TOOLS.push(...pipeline.tools);
+
+// The client's workspace folders (MCP roots) are the default set of repos the pipeline tools may touch.
+async function refreshRoots() {
+  if (!session.capabilities.roots) return;
+  try {
+    const r = await rpc.request('roots/list', {}, 10000);
+    guard.setClientRoots((r?.roots ?? []).map((x) => x.uri));
+  } catch (e) { log('roots/list failed:', e.message); }
+}
+
 const HANDLERS = {
   e3d_debate: toolDebate,
   e3d_list_providers: toolListProviders,
   e3d_provenance_trace: toolProvenanceTrace,
   e3d_ideas_list: toolIdeasList,
+  ...pipeline.handlers,
 };
 
 async function handle(msg) {
@@ -276,6 +298,8 @@ async function handle(msg) {
 
   switch (method) {
     case 'initialize': {
+      session.clientInfo = params?.clientInfo ?? null;
+      session.capabilities = params?.capabilities ?? {};
       const want = params?.protocolVersion;
       return reply({
         protocolVersion: SUPPORTED_PROTOCOLS.includes(want) ? want : SUPPORTED_PROTOCOLS[0],
@@ -284,6 +308,8 @@ async function handle(msg) {
         instructions: 'Use e3d_debate for contestable decisions where independent model perspectives and recorded dissent add value. It is slow and costs credits; do not use it for simple lookups.',
       });
     }
+    case 'notifications/initialized': session.rootsReady = refreshRoots(); return;
+    case 'notifications/roots/list_changed': session.rootsReady = refreshRoots(); return;
     case 'ping': return reply({});
     case 'tools/list': return reply({ tools: TOOLS });
     case 'tools/call': {
@@ -293,7 +319,8 @@ async function handle(msg) {
       const progress = token === undefined ? undefined : (n, message) =>
         send({ jsonrpc: '2.0', method: 'notifications/progress', params: { progressToken: token, progress: n, message } });
       try {
-        return reply(await handler(params.arguments ?? {}, progress));
+        await session.rootsReady;
+        return reply(await handler(params.arguments ?? {}, progress, { session, rpc }));
       } catch (e) {
         return reply(text(`error: ${e.message}`, true));
       }
@@ -329,6 +356,7 @@ rl.on('line', (line) => {
   let msg;
   try { msg = JSON.parse(line); }
   catch { return send({ jsonrpc: '2.0', id: null, error: { code: -32700, message: 'parse error' } }); }
+  if (rpc.handleResponse(msg)) return; // an answer to a request this server made (roots/list, ...)
   const p = handle(msg).catch((e) => log('handler error:', e.stack || e)).finally(() => pending.delete(p));
   pending.add(p);
 });

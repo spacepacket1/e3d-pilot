@@ -1,0 +1,204 @@
+[
+  {
+    "annotations": {
+      "idempotentHint": false,
+      "openWorldHint": true,
+      "readOnlyHint": true,
+      "title": "Multi-model debate"
+    },
+    "description": "Get a multi-model second opinion on a decision or design question. Independent AI models answer, and a synthesizer returns a final answer, a consensus level (full/majority/split), and any dissent, plus each model's final position. ALWAYS report the dissent and consensus level to the user -- the disagreement is the point; never present a split verdict as settled. Write a self-contained question: the models cannot see your code. mode \"quick\" (default): one round, usually well under a minute. mode \"thorough\": models also critique each other, a few minutes. Use for architectural choices, tradeoffs, and contestable judgment calls -- not for lookups or questions with an obvious answer. Spends the user's model credits.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "include_transcript": {
+          "description": "Also return the full transcript (large). Default false.",
+          "type": "boolean"
+        },
+        "max_words": {
+          "description": "Override the mode's per-provider per-round answer cap.",
+          "maximum": 600,
+          "minimum": 20,
+          "type": "integer"
+        },
+        "mode": {
+          "description": "quick (default): 1 round, short answers, no cross-critique. thorough: 2 rounds where models see and rebut each other.",
+          "enum": [
+            "quick",
+            "thorough"
+          ],
+          "type": "string"
+        },
+        "providers": {
+          "description": "Provider names (see e3d_list_providers). Default: claude + codex.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "question": {
+          "description": "The decision or question, with enough context for models that cannot see your code.",
+          "type": "string"
+        },
+        "rounds": {
+          "description": "Override the mode's round count. Stops early on convergence.",
+          "maximum": 3,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "question"
+      ],
+      "type": "object"
+    },
+    "name": "e3d_debate",
+    "outputSchema": {
+      "properties": {
+        "consensus": {
+          "enum": [
+            "full",
+            "majority",
+            "split",
+            "unknown"
+          ],
+          "type": "string"
+        },
+        "dissent": {
+          "properties": {
+            "present": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "summary": {
+              "description": "\"none\" when there is no dissent.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "present",
+            "summary"
+          ],
+          "type": "object"
+        },
+        "final_answer": {
+          "type": "string"
+        },
+        "mode": {
+          "type": "string"
+        },
+        "positions": {
+          "items": {
+            "properties": {
+              "provider": {
+                "type": "string"
+              },
+              "text": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "provider",
+              "text"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "providers": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "rounds_ran": {
+          "type": "integer"
+        },
+        "rounds_requested": {
+          "type": "integer"
+        },
+        "transcript": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "final_answer",
+        "consensus",
+        "dissent",
+        "positions",
+        "mode",
+        "providers",
+        "rounds_ran"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "annotations": {
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "List debate providers"
+    },
+    "description": "List the model providers configured on this machine and whether each is available to join a debate.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {},
+      "type": "object"
+    },
+    "name": "e3d_list_providers"
+  },
+  {
+    "annotations": {
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Trace decision provenance"
+    },
+    "description": "Trace why a change exists: for an e3d-pilot idea, return its lineage -- origin, debates and decisions (with dissent), approvals, execution, review, outcome. Read-only.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "idea_id": {
+          "description": "Idea id, e.g. idea-a785c206642b.",
+          "type": "string"
+        },
+        "repo": {
+          "description": "Absolute path to a repo managed by e3d-pilot (has .e3d-pilot/).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "repo",
+        "idea_id"
+      ],
+      "type": "object"
+    },
+    "name": "e3d_provenance_trace"
+  },
+  {
+    "annotations": {
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "List ideas"
+    },
+    "description": "List the ideas tracked by e3d-pilot in a repo, optionally filtered by status, to find an idea id for e3d_provenance_trace. Read-only.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "repo": {
+          "description": "Absolute path to a repo managed by e3d-pilot.",
+          "type": "string"
+        },
+        "status": {
+          "description": "Optional status filter, e.g. approved, implemented.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "repo"
+      ],
+      "type": "object"
+    },
+    "name": "e3d_ideas_list"
+  }
+]

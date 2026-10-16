@@ -25,7 +25,9 @@ field() { jq -r --argjson id "$1" "select(.id==\$id) | $2" <<< "$responses"; }
 
 [[ "$(field 1 .result.serverInfo.name)" == "e3d-pilot" ]] || fail "initialize serverInfo"
 [[ "$(field 1 .result.protocolVersion)" == "2025-06-18" ]] || fail "protocol version negotiation"
-[[ "$(field 2 '.result.tools|map(.name)|join(",")')" == "e3d_debate,e3d_list_providers,e3d_provenance_trace,e3d_ideas_list" ]] || fail "tools/list"
+# The four original tools must stay byte-for-byte identical in schema; new tools may only be added after them.
+[[ "$(field 2 '.result.tools[0:4]|map(.name)|join(",")')" == "e3d_debate,e3d_list_providers,e3d_provenance_trace,e3d_ideas_list" ]] || fail "tools/list: original four tools must come first, in order"
+[[ "$(field 2 '.result.tools[0:4]|sort_by(.name)' | jq -S .)" == "$(jq -S 'sort_by(.name)' "$ROOT/tests/fixtures/mcp-original-tools.json")" ]] || fail "the original four tools' definitions changed"
 [[ "$(field 3 .result.content[0].text)" == *claude* ]] || fail "list_providers should mention claude"
 [[ "$(field 4 .result.isError)" == "true" ]] || fail "rounds over cap must be rejected"
 [[ "$(field 5 .result.content[0].text)" == *"question"* ]] || fail "missing question must be rejected"
