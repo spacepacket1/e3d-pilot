@@ -2,11 +2,11 @@
 
 **Multi-model AI problem solving: independent answers → critique → convergence → human decision → execution → review → provenance.**
 
-![e3d-debate: independent AI models answer a question, critique each other across rounds, converge on a synthesis with consensus and named dissent, then hand off to a human decision, execution, and provenance](docs/images/debate-convergence.svg)
+![e3d-debate: independent AI models answer a question, critique each other across rounds, converge on a synthesis with consensus and named dissent, then hand off to a human decision, execution, and provenance](https://raw.githubusercontent.com/spacepacket1/e3d-pilot/main/docs/images/debate-convergence.svg)
 
 e3d-pilot is an open-source system for getting multiple AI models to work on the same problem instead of trusting a single model's answer — from a one-off question to a fully executed, human-gated software change.
 
-It starts simply. Ask several configured models (Claude, Codex, Grok, Devin, or others you wire in) the same question. Let them answer independently, see and critique each other's positions, revise, expose real dissent, and converge on the strongest answer. That's `bin/e3d-debate` — a standalone tool, no repo or pipeline required.
+It starts simply. Ask several configured models (Claude, Codex, Grok, Devin, or others you wire in) the same question. Let them answer independently, see and critique each other's positions, revise, expose real dissent, and converge on the strongest answer. That's `bin/e3d-debate` — a standalone tool, no repo or pipeline required. It's also available inside your editor as an MCP server: [use it from GitHub Copilot, Claude Code, or Cursor](#use-e3d-pilot-from-github-copilot-claude-code-and-cursor-mcp) with one `npx` line.
 
 Then e3d-pilot takes the same instinct further, into real software work: `discover → ideate → approve → draft → negotiate → execute → review → publish → outcome`. Every step is preserved in an append-only ledger, so the system (or a human, or a fresh AI session) can later reconstruct where an idea came from, which models or people influenced it, what it produced, and what happened afterward.
 
@@ -70,13 +70,34 @@ demand instead — a real, named disagreement the tool didn't paper over.
 
 You don't need the rest of e3d-pilot to use `e3d-debate` on its own — see [e3d-debate](#e3d-debate-experimental) below for the full flag reference. Keep reading for the part that takes a debate's answer all the way to a shipped, reviewed, provenance-tracked change.
 
-## Use e3d-debate from GitHub Copilot (MCP)
+## Use e3d-pilot from GitHub Copilot, Claude Code, and Cursor (MCP)
 
-`bin/e3d-mcp` is a zero-dependency [Model Context Protocol](https://modelcontextprotocol.io) server, so Copilot agent mode in VS Code (and any other MCP client: Claude Code, Cursor, ...) can ask for a multi-model second opinion mid-task.
+`e3d-mcp` is a zero-dependency [Model Context Protocol](https://modelcontextprotocol.io) server. It lets an AI coding assistant ask for a multi-model second opinion mid-task, instead of committing to the first answer one model gives it. It's published on npm as [`e3d-pilot`](https://www.npmjs.com/package/e3d-pilot) and listed in the official MCP registry as `io.github.spacepacket1/e3d-pilot`.
 
-Tools: `e3d_debate` (answer + consensus + named dissent + transcript), `e3d_list_providers`, and read-only `e3d_provenance_trace` / `e3d_ideas_list` ("why does this change exist?").
+| Tool | What it does |
+| --- | --- |
+| `e3d_debate` | Several independent models answer, critique each other across rounds, and converge. Returns a decisive answer, a consensus level (`full` / `majority` / `split`), any named dissent, and the full transcript. |
+| `e3d_list_providers` | Shows which model providers are available on this machine. A debate needs at least two. |
+| `e3d_provenance_trace` | Read-only: traces why a change exists, from its origin through debates, approvals, execution, review, and outcome. |
+| `e3d_ideas_list` | Read-only: lists the ideas e3d-pilot tracks in a repo, to find an id for the trace. |
 
-**Install (VS Code / Copilot agent mode):** [one-click install](https://insiders.vscode.dev/redirect/mcp/install?name=e3d-pilot&config=%7B%22command%22%3A%22npx%22%2C%22args%22%3A%5B%22-y%22%2C%22-p%22%2C%22e3d-pilot%22%2C%22e3d-mcp%22%5D%7D), or add this to `.vscode/mcp.json`:
+A real result, from asking whether a small CLI should default to a flat JSON file or SQLite (one round, two models):
+
+```text
+FINAL ANSWER: Default to a flat JSON file for a small CLI. It has no dependencies, is
+human-readable and diffable, and is easy to hand-edit and debug. Write it atomically
+(temp file, then rename). Move to SQLite once you need indexed queries, concurrent
+writers, or data beyond a few MB.
+CONSENSUS: split
+DISSENT: Codex prefers SQLite as the default for any persistent mutable state because
+it gives transactions, concurrency safety, and schema evolution at low cost.
+```
+
+The disagreement is the point: you get the answer and the strongest case against it, instead of one model's confident guess.
+
+### Install
+
+**VS Code (GitHub Copilot agent mode):** [one-click install](https://insiders.vscode.dev/redirect/mcp/install?name=e3d-pilot&config=%7B%22command%22%3A%22npx%22%2C%22args%22%3A%5B%22-y%22%2C%22-p%22%2C%22e3d-pilot%22%2C%22e3d-mcp%22%5D%7D), or add this to `.vscode/mcp.json`:
 
 ```json
 {
@@ -86,14 +107,37 @@ Tools: `e3d_debate` (answer + consensus + named dissent + transcript), `e3d_list
 }
 ```
 
-Prerequisites: Node 18+, `jq`, bash 4+ (macOS: `brew install bash jq`), and at least two model CLIs logged in (e.g. `claude` and `codex`). Check them all with `npx -y -p e3d-pilot e3d-mcp --doctor`. From a clone, `bin/e3d-mcp --print-config --local` prints a config pointing at your checkout.
+**Claude Code:**
 
-Then, in Copilot agent mode: *"Before you pick a storage layer, run e3d_debate on SQLite vs flat JSON for this CLI."* To make Copilot do that unprompted for contestable design choices, copy [examples/copilot-instructions.md](examples/copilot-instructions.md) into `.github/copilot-instructions.md` or `AGENTS.md`.
+```bash
+claude mcp add e3d-pilot -- npx -y -p e3d-pilot e3d-mcp
+```
 
-Notes:
-- Debates are slow (minutes) and spend **your** model credits. The server caps rounds/providers/concurrency: `E3D_MCP_MAX_ROUNDS` (3), `E3D_MCP_MAX_PROVIDERS` (4), `E3D_MCP_MAX_CONCURRENT` (2), `E3D_MCP_TIMEOUT_SEC` (900).
-- It uses whatever provider CLIs/keys are in the server's environment (`claude`, `codex`, ... see `e3d-pilot providers list`). Needs at least two available.
-- The Copilot *coding agent* runs on GitHub-hosted runners, where those provider CLIs are not installed; use the local (stdio) setup above for now.
+**Cursor** (`~/.cursor/mcp.json`) and other clients that use the `mcpServers` shape:
+
+```json
+{ "mcpServers": { "e3d-pilot": { "command": "npx", "args": ["-y", "-p", "e3d-pilot", "e3d-mcp"] } } }
+```
+
+Any MCP client that can launch a stdio server should work; the shapes above are each client's standard format.
+
+**Prerequisites:** Node 18+, `jq`, bash 4+ (macOS ships 3.2: `brew install bash jq`), and at least two model CLIs logged in (e.g. `claude` and `codex`). Check them all at once:
+
+```bash
+npx -y -p e3d-pilot e3d-mcp --doctor
+```
+
+`--doctor` reports what's missing and how to fix it. It does not need the full pipeline's `e3d-code` executor (it only notes whether that is installed). From a clone, `bin/e3d-mcp --print-config --local` prints a config that points at your checkout.
+
+### Using it
+
+In Copilot agent mode (or any client), ask: *"Before you pick a storage layer, run e3d_debate on SQLite vs flat JSON for this CLI."* To make the assistant do this unprompted for contestable design choices, copy [examples/copilot-instructions.md](examples/copilot-instructions.md) into `.github/copilot-instructions.md` or `AGENTS.md`. Don't use it for lookups or questions with an obvious answer; it is slow and costs money.
+
+### Cost and limits
+
+- Debates take minutes and spend **your** model credits. The server caps `e3d_debate` with `E3D_MCP_MAX_ROUNDS` (3), `E3D_MCP_MAX_PROVIDERS` (4), `E3D_MCP_MAX_CONCURRENT` (2), and `E3D_MCP_TIMEOUT_SEC` (900).
+- It uses whatever provider CLIs and keys are in the server's environment (see `e3d-pilot providers list`).
+- The Copilot *coding agent* runs on GitHub-hosted runners, where those provider CLIs aren't installed. Use the local (stdio) setup above for now.
 - The server never writes to a repo. Recording a verdict into provenance is still `e3d-debate --repo --idea`.
 
 ## Why we built this
@@ -209,10 +253,17 @@ Start from [`examples/sample-fleet-config-with-ops.json`](examples/sample-fleet-
 Install Bash, Git, `jq`, and `curl`; the full pipeline's execute stage also needs [`e3d-code`](https://github.com/spacepacket1/e3d-code) (formerly `spec2code`; the debate and MCP tools do not). Install and authenticate whichever model CLIs and forge CLI your configuration uses (`claude`, `codex`, `devin`, a local OpenAI-compatible endpoint, and/or `grok` for `grok-build`). Add this repository's `bin` directory to `PATH`:
 
 ```bash
+# From npm (also installs e3d-code, the execute-stage dependency, when it can):
+npm install -g e3d-pilot
+e3d-pilot --help
+
+# Or from a clone:
 git clone https://github.com/spacepacket1/e3d-pilot.git
 export PATH="$PWD/e3d-pilot/bin:$PATH"
 e3d-pilot --help
 ```
+
+The npm package provides three commands: `e3d-pilot`, `e3d-debate`, and `e3d-mcp`.
 
 Node.js is only needed for the optional `e3d-pilot web` dashboard (see [Web UI](#web-ui-optional) below) — every other command needs only Bash, Git, `jq`, and `curl`.
 
@@ -577,6 +628,8 @@ Clicking **Implement** spawns `e3d-pilot ideas implement` as a detached backgrou
 Both `E3D_PILOT_WEB_AUTH_USER` and `E3D_PILOT_WEB_AUTH_PASS` are required; there is no unauthenticated mode. This is meant to run on a trusted machine or behind your own reverse proxy/tunnel — it has no built-in TLS, rate limiting, or multi-user accounts.
 
 ## e3d-debate (experimental)
+
+> Want this inside your editor? `e3d-debate` is also exposed as an [MCP tool](#use-e3d-pilot-from-github-copilot-claude-code-and-cursor-mcp) for Copilot, Claude Code, and Cursor.
 
 `bin/e3d-debate` is a separate, standalone script — not wired into `bin/e3d-pilot`'s subcommand tree or `config.schema.json`, the same way `bin/e3d-backend-benchmark` and `bin/e3d-grok-workers` already aren't — for the "ask several models a question and see whether they actually agree" loop, applied to any question rather than repo work specifically. It reuses the same `lib/providers/<name>` adapters and the `lib/negotiate/convergence` primitive that discover/ideate/negotiate/review already depend on. "Experimental" here means still standalone, not wired into the pipeline proper — not unused or untested: `tests/phase34.sh` covers the provenance-linking flags below, and it has already been the deciding mechanism behind several real architecture and product-direction calls for this project, not just a demo.
 
