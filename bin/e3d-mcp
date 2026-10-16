@@ -26,6 +26,7 @@ import { createRpc } from '../lib/mcp/rpc.js';
 import { createRepoGuard } from '../lib/mcp/repos.js';
 import { createJobs } from '../lib/mcp/jobs.js';
 import { createPipelineTools } from '../lib/mcp/pipeline-tools.js';
+import { createPipelineActions } from '../lib/mcp/pipeline-actions.js';
 
 const SERVER_INFO = { name: 'e3d-pilot', version: '0.1.1' };
 const SUPPORTED_PROTOCOLS = ['2025-06-18', '2025-03-26', '2024-11-05'];
@@ -271,7 +272,8 @@ const guard = createRepoGuard();
 const jobs = createJobs();
 const pipeline = createPipelineTools({ guard, jobs });
 const session = { clientInfo: null, capabilities: {}, rootsReady: null };
-TOOLS.push(...pipeline.tools);
+const actions = createPipelineActions({ guard, jobs, base: pipeline });
+TOOLS.push(...pipeline.tools, ...actions.tools);
 
 // The client's workspace folders (MCP roots) are the default set of repos the pipeline tools may touch.
 async function refreshRoots() {
@@ -288,6 +290,7 @@ const HANDLERS = {
   e3d_provenance_trace: toolProvenanceTrace,
   e3d_ideas_list: toolIdeasList,
   ...pipeline.handlers,
+  ...actions.handlers,
 };
 
 async function handle(msg) {
@@ -305,7 +308,7 @@ async function handle(msg) {
         protocolVersion: SUPPORTED_PROTOCOLS.includes(want) ? want : SUPPORTED_PROTOCOLS[0],
         capabilities: { tools: { listChanged: false } },
         serverInfo: SERVER_INFO,
-        instructions: 'Use e3d_debate for contestable decisions where independent model perspectives and recorded dissent add value. It is slow and costs credits; do not use it for simple lookups.',
+        instructions: 'Use e3d_debate for contestable decisions where independent model perspectives and recorded dissent add value; always report its dissent. It costs credits; do not use it for simple lookups. The e3d_pilot_* tools run a human-gated pipeline: propose an idea, a human approves it (e3d_pilot_approve tells you how; never approve on your own), e3d_pilot_implement drafts and negotiates a spec and pauses, e3d_pilot_code_plan shows the plan, and only after the user agrees does e3d_pilot_execute write code and open a draft PR. Tools marked FREE spend nothing; tools marked SPENDS MODEL CREDITS do. Merging is never available here.',
       });
     }
     case 'notifications/initialized': session.rootsReady = refreshRoots(); return;
