@@ -5,14 +5,36 @@
   "type": "module",
   "license": "MIT",
   "mcpName": "io.github.spacepacket1/e3d-pilot",
-  "repository": { "type": "git", "url": "git+https://github.com/spacepacket1/e3d-pilot.git" },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/spacepacket1/e3d-pilot.git"
+  },
   "homepage": "https://github.com/spacepacket1/e3d-pilot#use-e3d-debate-from-github-copilot-mcp",
-  "keywords": ["mcp", "model-context-protocol", "github-copilot", "multi-model", "debate", "provenance", "ai-agents"],
-  "engines": { "node": ">=18" },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "github-copilot",
+    "multi-model",
+    "debate",
+    "provenance",
+    "ai-agents"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
   "bin": {
     "e3d-pilot": "bin/e3d-pilot",
     "e3d-mcp": "bin/e3d-mcp",
     "e3d-debate": "bin/e3d-debate"
   },
-  "files": ["bin", "lib", "config.schema.json", "README.md", "LICENSE"]
+  "files": [
+    "bin",
+    "lib",
+    "config.schema.json",
+    "README.md",
+    "LICENSE"
+  ],
+  "optionalDependencies": {
+    "e3d-code": "^0.4.0"
+  }
 }

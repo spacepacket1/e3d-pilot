@@ -1613,6 +1613,11 @@ execute_stage() {
   case "$execute_backend" in
     e3d-code|s2c)  # "s2c" is the pre-rename config value, still accepted
       e3d_code_bin="$(command -v e3d-code || command -v spec2code || true)"
+      if [[ -z "$e3d_code_bin" ]]; then  # npm install layouts: e3d-code as a sibling or nested dependency
+        for candidate in "$REPO_ROOT/../e3d-code/bin/e3d-code" "$REPO_ROOT/node_modules/e3d-code/bin/e3d-code"; do
+          [[ -x "$candidate" ]] && { e3d_code_bin="$candidate"; break; }
+        done
+      fi
       [[ -n "$e3d_code_bin" ]] || die "e3d-code not found on PATH (needed only for the execute stage; install: https://github.com/spacepacket1/e3d-code). Debate and MCP tools do not need it."
 
       e3d_code_stdout="$run_dir/execute-e3d-code.stdout"
