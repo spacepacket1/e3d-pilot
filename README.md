@@ -478,8 +478,9 @@ Existing open e3d-pilot PRs should be adopted only through an explicit adoption 
 
 ## Providers and negotiation
 
-Built-in adapters are `claude`, `codex`, `local`, `devin`, `grok-build`, and
-the opt-in `gemini` trial adapter; check them with `e3d-pilot providers list`.
+Built-in adapters are `claude`, `codex`, `local`, `devin`, `grok-build`, the
+opt-in `gemini` trial adapter, and two cloud adapters, `bedrock` and
+`azure-openai`; check them with `e3d-pilot providers list`.
 `grok-build` is selected the same way as the others: name it in `providers.*`.
 It is available when the `grok` binary is on `PATH` (override with
 `GROK_BUILD_BIN`).
@@ -542,6 +543,25 @@ export DEVIN_BIN=devin                          # binary path (default: devin)
 export DEVIN_MODEL=claude-sonnet-4-6-thinking-1m  # model override
 export DEVIN_PERMISSION_MODE=auto               # permission mode (default: auto)
 ```
+
+**bedrock** — Amazon Bedrock through the AWS CLI's Converse API (no SDK). Needs `aws` on `PATH`, a model id and a region; credentials come from the normal AWS chain (env, profile, SSO, instance or task role):
+
+```bash
+export BEDROCK_MODEL_ID=anthropic.claude-3-5-sonnet-20241022-v2:0   # or an inference-profile id
+export AWS_REGION=us-east-1
+```
+
+`providers list` only checks that the CLI, model id and region are set; a missing permission shows up as a clear error on the first real call. The request goes through a payload file, so large prompts work and never appear in `ps`. Optional: `BEDROCK_MAX_TOKENS` (4096), `AWS_BIN`.
+
+**azure-openai** — an Azure OpenAI deployment over HTTPS (curl + jq):
+
+```bash
+export AZURE_OPENAI_ENDPOINT=https://my-resource.openai.azure.com
+export AZURE_OPENAI_DEPLOYMENT=my-deployment          # the deployment name, not the model name
+export AZURE_OPENAI_API_KEY=...                       # or AZURE_OPENAI_API_KEY_FILE=/path/to/file-with-only-the-key
+```
+
+The key is sent from a mode-0600 header file, never on the command line, and is never printed or probed by `providers list`. Optional: `AZURE_OPENAI_API_VERSION` (2024-10-21), `AZURE_OPENAI_MAX_TOKENS`, `AZURE_OPENAI_TIMEOUT` (120 seconds). Both adapters report token usage and honor `E3D_PILOT_PROVIDER_TOKEN_LIMIT`. Neither has been run against the real service in this repo's tests (they use a fake `aws` and a fake local HTTP server).
 
 **local** — calls an OpenAI-compatible endpoint. Useful for a self-hosted model (e.g. Qwen via Ollama) as a third negotiate reviewer:
 

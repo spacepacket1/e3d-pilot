@@ -1,0 +1,96 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Azure OpenAI chat-completions provider (curl + jq; no SDK).
+#   AZURE_OPENAI_ENDPOINT     e.g. https://my-resource.openai.azure.com
+#   AZURE_OPENAI_DEPLOYMENT   the deployment name (not the model name)
+#   AZURE_OPENAI_API_KEY      or AZURE_OPENAI_API_KEY_FILE (a file holding only the key)
+#   AZURE_OPENAI_API_VERSION  default 2024-10-21
+# The key is sent from a 0600 header file, never on the command line, and is never printed.
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=./common.sh
+source "$SCRIPT_DIR/common.sh"
+
+AZURE_OPENAI_API_VERSION="${AZURE_OPENAI_API_VERSION:-2024-10-21}"
+PROVIDER_TOKEN_LIMIT="${E3D_PILOT_PROVIDER_TOKEN_LIMIT:-200000}"
+
+azure_key() {
+  if [[ -n "${AZURE_OPENAI_API_KEY:-}" ]]; then printf '%s' "$AZURE_OPENAI_API_KEY"
+  elif [[ -n "${AZURE_OPENAI_API_KEY_FILE:-}" && -f "$AZURE_OPENAI_API_KEY_FILE" ]]; then tr -d '\n\r ' < "$AZURE_OPENAI_API_KEY_FILE"
+  fi
+}
+azure_configured() {
+  [[ -n "${AZURE_OPENAI_ENDPOINT:-}" && -n "${AZURE_OPENAI_DEPLOYMENT:-}" && -n "$(azure_key)" ]]
+}
+
+if [[ "${E3D_PILOT_CHECK:-0}" == "1" ]]; then
+  if ! provider_binary_available curl || ! provider_binary_available jq; then
+    printf 'unavailable: curl and jq are required\n'
+    exit "$PROVIDER_EXIT_UNAVAILABLE"
+  fi
+  if ! azure_configured; then
+    printf 'unavailable: set AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_DEPLOYMENT and AZURE_OPENAI_API_KEY\n'
+    exit "$PROVIDER_EXIT_UNAVAILABLE"
+  fi
+  # Reachability only: no key is sent and nothing is billed.
+  if curl -s -o /dev/null -m "${AZURE_OPENAI_CHECK_TIMEOUT:-3}" "${AZURE_OPENAI_ENDPOINT%/}"; then
+    printf 'available (deployment %s)\n' "$AZURE_OPENAI_DEPLOYMENT"
+    exit "$PROVIDER_EXIT_OK"
+  fi
+  printf 'unavailable: endpoint not reachable (%s)\n' "${AZURE_OPENAI_ENDPOINT%/}"
+  exit "$PROVIDER_EXIT_UNAVAILABLE"
+fi
+
+if ! azure_configured; then
+  echo "error: azure-openai is not configured (AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_DEPLOYMENT, AZURE_OPENAI_API_KEY)" >&2
+  exit "$PROVIDER_EXIT_UNAVAILABLE"
+fi
+
+PROMPT_FILE="${1:-}"
+provider_require_prompt_file "$PROMPT_FILE"
+
+URL="${AZURE_OPENAI_ENDPOINT%/}/openai/deployments/${AZURE_OPENAI_DEPLOYMENT}/chat/completions?api-version=${AZURE_OPENAI_API_VERSION}"
+
+if [[ "${E3D_PILOT_DRY_RUN:-0}" == "1" ]]; then
+  printf 'curl -sS -X POST %q -H %q -H %q -d @- < %q\n' "$URL" 'api-key: [redacted]' 'Content-Type: application/json' "$PROMPT_FILE"
+  exit "$PROVIDER_EXIT_OK"
+fi
+
+work="$(mktemp -d "${TMPDIR:-/tmp}/e3d-pilot-azure.XXXXXX")"
+trap 'rm -rf "$work"' EXIT
+chmod 700 "$work"
+( umask 077; printf 'api-key: %s\nContent-Type: application/json\n' "$(azure_key)" > "$work/headers" )
+
+jq -n --rawfile content "$PROMPT_FILE" --arg max "${AZURE_OPENAI_MAX_TOKENS:-}" \
+  '{messages: [{role: "user", content: $content}]} + (if $max != "" then {max_completion_tokens: ($max | tonumber)} else {} end)' > "$work/payload.json"
+
+set +e
+http_code="$(curl -sS -m "${AZURE_OPENAI_TIMEOUT:-120}" -o "$work/response.json" -w '%{http_code}' \
+  -H "@$work/headers" -d "@$work/payload.json" "$URL" 2> "$work/curl.err")"
+status=$?
+set -e
+
+if [[ $status -ne 0 ]]; then
+  printf 'error: azure-openai request failed (curl exit %s): %s\n' "$status" "$(head -c 300 "$work/curl.err" | tr '\n' ' ')" >&2
+  exit "$PROVIDER_EXIT_FAILURE"
+fi
+if [[ "$http_code" != 2* ]]; then
+  msg="$(jq -r '.error.message // empty' "$work/response.json" 2>/dev/null | head -c 300)"
+  printf 'error: azure-openai HTTP %s%s\n' "$http_code" "${msg:+: $msg}" >&2
+  exit "$PROVIDER_EXIT_FAILURE"
+fi
+
+content="$(jq -r '.choices[0].message.content // empty' "$work/response.json")"
+if [[ -z "$content" ]]; then
+  echo "error: azure-openai returned no message content" >&2
+  exit "$PROVIDER_EXIT_FAILURE"
+fi
+tokens="$(jq '.usage.total_tokens // 0' "$work/response.json")"
+printf 'e3d_provider_usage=%s\n' "$(jq -c --arg d "$AZURE_OPENAI_DEPLOYMENT" '{provider:"azure-openai",model:(.model // $d),tokens:(.usage.total_tokens // null),usage:(.usage // null)}' "$work/response.json")" >&2
+printf '%s\n' "$content"
+
+if [[ "$PROVIDER_TOKEN_LIMIT" =~ ^[0-9]+$ ]] && (( PROVIDER_TOKEN_LIMIT > 0 && tokens > PROVIDER_TOKEN_LIMIT )); then
+  printf 'error: azure-openai provider token ceiling exceeded (%s > %s)\n' "$tokens" "$PROVIDER_TOKEN_LIMIT" >&2
+  exit "$PROVIDER_EXIT_FAILURE"
+fi
