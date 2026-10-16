@@ -628,3 +628,7 @@ Run the repository test suite with:
 set -e
 for test_file in tests/phase{1..25}.sh; do bash "$test_file"; done
 ```
+
+## License
+
+[MIT](LICENSE) © 2026 FutCo LLC. Part of the [FutCo](https://futco.ai/projects) open-source ecosystem.
