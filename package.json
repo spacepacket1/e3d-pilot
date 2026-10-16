@@ -1,11 +1,18 @@
 {
   "name": "e3d-pilot",
-  "version": "0.0.0",
-  "private": true,
-  "description": "Repo-agnostic orchestrator scaffold",
+  "version": "0.1.0",
+  "description": "Multi-model debate and decision provenance for AI coding work. Includes an MCP server (e3d-mcp) for GitHub Copilot, Claude Code, Cursor and other MCP clients.",
   "type": "module",
+  "license": "MIT",
+  "mcpName": "io.github.spacepacket1/e3d-pilot",
+  "repository": { "type": "git", "url": "git+https://github.com/spacepacket1/e3d-pilot.git" },
+  "homepage": "https://github.com/spacepacket1/e3d-pilot#use-e3d-debate-from-github-copilot-mcp",
+  "keywords": ["mcp", "model-context-protocol", "github-copilot", "multi-model", "debate", "provenance", "ai-agents"],
+  "engines": { "node": ">=18" },
   "bin": {
-    "e3d-pilot": "bin/e3d-pilot"
-  }
+    "e3d-pilot": "bin/e3d-pilot",
+    "e3d-mcp": "bin/e3d-mcp",
+    "e3d-debate": "bin/e3d-debate"
+  },
+  "files": ["bin", "lib", "config.schema.json", "README.md", "LICENSE"]
 }
-

@@ -250,6 +250,42 @@ async function handle(msg) {
   }
 }
 
+// ---- CLI helpers: `e3d-mcp --doctor` and `e3d-mcp --print-config` (no server) ----
+const CLIENT_ARGS = ['-y', '-p', 'e3d-pilot', 'e3d-mcp'];
+
+async function doctor() {
+  let ok = true;
+  const check = (pass, label, fix) => {
+    console.log(`${pass ? 'ok  ' : 'FAIL'}  ${label}${pass ? '' : `\n      -> ${fix}`}`);
+    if (!pass) ok = false;
+  };
+  const major = Number.parseInt(process.versions.node, 10);
+  check(major >= 18, `node ${process.versions.node}`, 'install Node 18 or newer');
+  const bash = await run('bash', ['-c', 'echo ${BASH_VERSINFO[0]}'], { timeoutMs: 5000 });
+  const bashMajor = Number.parseInt(bash.out, 10);
+  check(bashMajor >= 4, `bash on PATH is version ${Number.isFinite(bashMajor) ? bashMajor : 'missing'} (e3d-debate needs 4+)`,
+    'macOS ships bash 3.2: `brew install bash` and make sure it comes first on PATH');
+  const jq = await run('jq', ['--version'], { timeoutMs: 5000 });
+  check(jq.code === 0, 'jq installed', 'brew install jq  (or apt install jq)');
+  const providers = await configuredProviders();
+  const avail = providers.filter((p) => p.available);
+  console.log('\nProviders:');
+  for (const p of providers) console.log(`  ${p.available ? 'ok  ' : '--  '} ${p.name}  ${p.detail}`);
+  check(avail.length >= 2, `${avail.length} provider(s) available (a debate needs at least 2)`,
+    'install and log in to two model CLIs, e.g. `claude` and `codex`; see README "Providers"');
+  console.log(ok ? '\nAll good. Run `e3d-mcp --print-config` for the Copilot/VS Code config.' : '\nFix the FAIL items above, then re-run.');
+  process.exit(ok ? 0 : 1);
+}
+
+if (process.argv.includes('--doctor')) await doctor();
+if (process.argv.includes('--print-config')) {
+  const local = process.argv.includes('--local');
+  const cmd = local ? { command: process.execPath, args: [fileURLToPath(import.meta.url)] } : { command: 'npx', args: CLIENT_ARGS };
+  console.log(JSON.stringify({ servers: { 'e3d-pilot': { type: 'stdio', ...cmd } } }, null, 2));
+  console.error(`# Put this in .vscode/mcp.json (VS Code / Copilot agent mode).${local ? '' : ' Add --local to point at this checkout instead of npx.'}`);
+  process.exit(0);
+}
+
 const rl = createInterface({ input: process.stdin });
 const pending = new Set();
 rl.on('line', (line) => {

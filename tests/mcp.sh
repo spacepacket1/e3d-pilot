@@ -36,4 +36,10 @@ field() { jq -r --argjson id "$1" "select(.id==\$id) | $2" <<< "$responses"; }
 [[ "$(jq -r 'select(.id==null) | .error.code' <<< "$responses")" == "-32700" ]] || fail "parse error"
 [[ "$(jq -s 'map(select(.method=="notifications/initialized"))|length' <<< "$responses")" == "0" ]] || fail "notifications must not be answered"
 
+"$SERVER" --print-config 2>/dev/null | jq -e '.servers["e3d-pilot"].args | index("e3d-mcp")' >/dev/null || fail "--print-config"
+npm_files="$(cd "$ROOT" && npm pack --dry-run --json 2>/dev/null | jq -r '.[0].files[].path')"
+for f in bin/e3d-mcp bin/e3d-debate lib/providers/jev.sh lib/negotiate/convergence; do
+  grep -qx "$f" <<< "$npm_files" || fail "npm package is missing $f"
+done
+
 echo "mcp.sh: ok"

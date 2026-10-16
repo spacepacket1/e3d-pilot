@@ -1,0 +1,10 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-07-09/server.schema.json",
+  "name": "io.github.spacepacket1/e3d-pilot",
+  "description": "Multi-model debate (independent answers, critique, convergence, named dissent) plus decision provenance queries.",
+  "repository": { "url": "https://github.com/spacepacket1/e3d-pilot", "source": "github" },
+  "version": "0.1.0",
+  "packages": [
+    { "registry_type": "npm", "identifier": "e3d-pilot", "version": "0.1.0", "transport": { "type": "stdio" } }
+  ]
+}

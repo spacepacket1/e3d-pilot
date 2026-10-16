@@ -76,17 +76,19 @@ You don't need the rest of e3d-pilot to use `e3d-debate` on its own — see [e3d
 
 Tools: `e3d_debate` (answer + consensus + named dissent + transcript), `e3d_list_providers`, and read-only `e3d_provenance_trace` / `e3d_ideas_list` ("why does this change exist?").
 
-VS Code, `.vscode/mcp.json` (or your user MCP config):
+**Install (VS Code / Copilot agent mode):** [one-click install](https://insiders.vscode.dev/redirect/mcp/install?name=e3d-pilot&config=%7B%22command%22%3A%22npx%22%2C%22args%22%3A%5B%22-y%22%2C%22-p%22%2C%22e3d-pilot%22%2C%22e3d-mcp%22%5D%7D), or add this to `.vscode/mcp.json`:
 
 ```json
 {
   "servers": {
-    "e3d-pilot": { "type": "stdio", "command": "/path/to/e3d-pilot/bin/e3d-mcp" }
+    "e3d-pilot": { "type": "stdio", "command": "npx", "args": ["-y", "-p", "e3d-pilot", "e3d-mcp"] }
   }
 }
 ```
 
-Then, in Copilot agent mode: *"Before you pick a storage layer, run e3d_debate on SQLite vs flat JSON for this CLI."* To make Copilot do that unprompted for contestable design choices, add a line to `.github/copilot-instructions.md` or `AGENTS.md`.
+Prerequisites: Node 18+, `jq`, bash 4+ (macOS: `brew install bash jq`), and at least two model CLIs logged in (e.g. `claude` and `codex`). Check them all with `npx -y -p e3d-pilot e3d-mcp --doctor`. From a clone, `bin/e3d-mcp --print-config --local` prints a config pointing at your checkout.
+
+Then, in Copilot agent mode: *"Before you pick a storage layer, run e3d_debate on SQLite vs flat JSON for this CLI."* To make Copilot do that unprompted for contestable design choices, copy [examples/copilot-instructions.md](examples/copilot-instructions.md) into `.github/copilot-instructions.md` or `AGENTS.md`.
 
 Notes:
 - Debates are slow (minutes) and spend **your** model credits. The server caps rounds/providers/concurrency: `E3D_MCP_MAX_ROUNDS` (3), `E3D_MCP_MAX_PROVIDERS` (4), `E3D_MCP_MAX_CONCURRENT` (2), `E3D_MCP_TIMEOUT_SEC` (900).
