@@ -42,4 +42,61 @@ for f in bin/e3d-mcp bin/e3d-debate lib/providers/jev.sh lib/negotiate/convergen
   grep -qx "$f" <<< "$npm_files" || fail "npm package is missing $f"
 done
 
+# ---- e3d_debate: modes + structured verdict, using a stub debate binary (no model calls) ----
+STUB="$(mktemp -d)/stub-debate"
+cat > "$STUB" <<'STUBEOF'
+#!/usr/bin/env bash
+out=""; rounds=""; words=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in --out-dir) out="$2"; shift 2 ;; --rounds) rounds="$2"; shift 2 ;; --max-words) words="$2"; shift 2 ;; *) shift ;; esac
+done
+echo "rounds=$rounds words=$words" >> "$STUB_ARGS_FILE"
+mkdir -p "$out"
+if [[ "${STUB_CASE:-split}" == "full" ]]; then
+  printf '# Debate\n\n## Round 1 -- claude\n\nUse X.\n\n## Round 1 -- codex\n\nUse X too.\n' > "$out/transcript.md"
+  printf 'FINAL ANSWER: Use X.\nCONSENSUS: full\nDISSENT: none\n'
+elif [[ "${STUB_CASE:-split}" == "garbled" ]]; then
+  printf '# Debate\n' > "$out/transcript.md"
+  printf 'FINAL ANSWER: Something unstructured with no consensus line.\n'
+else
+  printf '# Debate\n\n## Round 1 -- claude\n\nJSON file.\n\n## Round 1 -- codex\n\nSQLite.\n' > "$out/transcript.md"
+  printf 'FINAL ANSWER: Use a JSON file.\nCONSENSUS: split\nDISSENT: Codex prefers SQLite for transactions.\n'
+fi
+STUBEOF
+chmod +x "$STUB"
+ARGS_FILE="$(mktemp)"
+
+call_debate() {  # $1 = STUB_CASE, $2 = arguments JSON
+  printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"e3d_debate\",\"arguments\":$2}}" \
+    | E3D_MCP_DEBATE_BIN="$STUB" STUB_ARGS_FILE="$ARGS_FILE" STUB_CASE="$1" "$SERVER" 2>/dev/null
+}
+
+r="$(call_debate split '{"question":"JSON or SQLite?"}')"
+[[ "$(jq -r .result.structuredContent.consensus <<< "$r")" == "split" ]] || fail "structured consensus"
+[[ "$(jq -r .result.structuredContent.dissent.present <<< "$r")" == "true" ]] || fail "dissent.present should be true"
+[[ "$(jq -r .result.structuredContent.dissent.summary <<< "$r")" == *SQLite* ]] || fail "dissent.summary"
+[[ "$(jq -r '.result.structuredContent.positions|map(.provider)|join(",")' <<< "$r")" == "claude,codex" ]] || fail "positions"
+[[ "$(jq -r .result.structuredContent.mode <<< "$r")" == "quick" ]] || fail "default mode must be quick"
+[[ "$(jq -r '.result.structuredContent|has("transcript")' <<< "$r")" == "false" ]] || fail "transcript must be opt-in"
+[[ "$(jq -r .result.content[0].text <<< "$r")" == *"SPLIT"*"report this to the user"* ]] || fail "text must lead with SPLIT and carry the dissent instruction"
+tail -1 "$ARGS_FILE" | grep -qx "rounds=1 words=80" || fail "quick mode should run 1 round, 80 words (got: $(tail -1 "$ARGS_FILE"))"
+
+r="$(call_debate split '{"question":"q","mode":"thorough","include_transcript":true}')"
+tail -1 "$ARGS_FILE" | grep -qx "rounds=2 words=200" || fail "thorough mode should run 2 rounds, 200 words"
+[[ "$(jq -r '.result.structuredContent.transcript|length > 0' <<< "$r")" == "true" ]] || fail "include_transcript"
+
+call_debate split '{"question":"q","mode":"quick","rounds":3,"max_words":120}' >/dev/null
+tail -1 "$ARGS_FILE" | grep -qx "rounds=3 words=120" || fail "explicit rounds/max_words must override the mode"
+
+r="$(call_debate full '{"question":"q"}')"
+[[ "$(jq -r .result.structuredContent.dissent.present <<< "$r")" == "false" ]] || fail "full consensus has no dissent"
+[[ "$(jq -r .result.content[0].text <<< "$r")" == *"FULL CONSENSUS"*"**Dissent:** none"* ]] || fail "full-consensus rendering"
+
+r="$(call_debate garbled '{"question":"q"}')"
+[[ "$(jq -r .result.structuredContent.consensus <<< "$r")" == "unknown" ]] || fail "unparseable verdict -> consensus unknown"
+[[ "$(jq -r .result.structuredContent.dissent.present <<< "$r")" == "null" ]] || fail "unparseable verdict -> dissent.present null, not false"
+
+[[ "$(jq -r .result.isError <<< "$(call_debate split '{"question":"q","mode":"turbo"}')")" == "true" ]] || fail "invalid mode rejected"
+[[ "$(printf '%s\n' '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' | "$SERVER" 2>/dev/null | jq -r '.result.tools[0].outputSchema.required|index("dissent")!=null')" == "true" ]] || fail "e3d_debate must declare outputSchema with dissent"
+
 echo "mcp.sh: ok"

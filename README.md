@@ -76,12 +76,12 @@ You don't need the rest of e3d-pilot to use `e3d-debate` on its own — see [e3d
 
 | Tool | What it does |
 | --- | --- |
-| `e3d_debate` | Several independent models answer, critique each other across rounds, and converge. Returns a decisive answer, a consensus level (`full` / `majority` / `split`), any named dissent, and the full transcript. |
+| `e3d_debate` | Several independent models answer and a synthesizer returns a decisive answer, a consensus level (`full` / `majority` / `split`), any named dissent, and each model's final position, as both readable text and structured data (`dissent.present`, `dissent.summary`, `positions`). `mode: "quick"` (default) is one round and takes seconds; `mode: "thorough"` adds a critique round where models rebut each other. The full transcript is opt-in (`include_transcript`). |
 | `e3d_list_providers` | Shows which model providers are available on this machine. A debate needs at least two. |
 | `e3d_provenance_trace` | Read-only: traces why a change exists, from its origin through debates, approvals, execution, review, and outcome. |
 | `e3d_ideas_list` | Read-only: lists the ideas e3d-pilot tracks in a repo, to find an id for the trace. |
 
-A real result, from asking whether a small CLI should default to a flat JSON file or SQLite (one round, two models):
+A real result in `quick` mode (11 seconds, two models), from asking whether a small CLI should default to a flat JSON file or SQLite:
 
 ```text
 FINAL ANSWER: Default to a flat JSON file for a small CLI. It has no dependencies, is
@@ -135,7 +135,7 @@ In Copilot agent mode (or any client), ask: *"Before you pick a storage layer, r
 
 ### Cost and limits
 
-- Debates take minutes and spend **your** model credits. The server caps `e3d_debate` with `E3D_MCP_MAX_ROUNDS` (3), `E3D_MCP_MAX_PROVIDERS` (4), `E3D_MCP_MAX_CONCURRENT` (2), and `E3D_MCP_TIMEOUT_SEC` (900).
+- `quick` debates take seconds to a minute and `thorough` ones a few minutes; both spend **your** model credits. The server caps `e3d_debate` with `E3D_MCP_MAX_ROUNDS` (3), `E3D_MCP_MAX_PROVIDERS` (4), `E3D_MCP_MAX_CONCURRENT` (2), and `E3D_MCP_TIMEOUT_SEC` (900).
 - It uses whatever provider CLIs and keys are in the server's environment (see `e3d-pilot providers list`).
 - The Copilot *coding agent* runs on GitHub-hosted runners, where those provider CLIs aren't installed. Use the local (stdio) setup above for now.
 - The server never writes to a repo. Recording a verdict into provenance is still `e3d-debate --repo --idea`.

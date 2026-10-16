@@ -63,26 +63,79 @@ async function configuredProviders() {
 
 const NAME_RE = /^[a-z0-9][a-z0-9_-]*$/;
 
+// quick = one round of independent answers + one synthesis call (fast, no cross-critique);
+// thorough = the debate as originally shipped (2 rounds, models see and rebut each other).
+const MODES = { quick: { rounds: 1, maxWords: 80 }, thorough: { rounds: 2, maxWords: 200 } };
+
+// e3d-debate prints "FINAL ANSWER: ...\nCONSENSUS: ...\nDISSENT: ..." -- turn that into fields.
+function parseVerdict(out) {
+  const raw = out.match(/FINAL ANSWER:[\s\S]*$/)?.[0]?.trim();
+  if (!raw) return null;
+  const m = raw.match(/^FINAL ANSWER:\s*([\s\S]*?)\s*\n\s*CONSENSUS:\s*([^\n]*)\n\s*DISSENT:\s*([\s\S]*)$/);
+  if (!m) return { final_answer: raw.replace(/^FINAL ANSWER:\s*/, ''), consensus: 'unknown', dissent: { present: null, summary: 'Verdict could not be parsed; read the answer text in full.' } };
+  const consensus = ['full', 'majority', 'split'].find((c) => m[2].toLowerCase().includes(c)) ?? 'unknown';
+  const dissentText = m[3].trim();
+  const none = /^["'`]*none[."'`]*$/i.test(dissentText);
+  return { final_answer: m[1].trim(), consensus, dissent: { present: !none, summary: none ? 'none' : dissentText } };
+}
+
+// Each model's answer in the last round, from transcript.md ("## Round N -- provider").
+function parsePositions(transcript) {
+  const sections = transcript.split(/\n(?=## )/).map((c) => c.match(/^## Round (\d+) -- (\S+)\n\n([\s\S]*)$/)).filter(Boolean)
+    .map((m) => ({ round: Number(m[1]), provider: m[2], body: m[3].trim() }));
+  const last = Math.max(0, ...sections.map((x) => x.round));
+  return {
+    roundsRan: last,
+    positions: sections.filter((x) => x.round === last).map((x) => ({
+      provider: x.provider,
+      text: x.body.replace(/\n*status: (approved|revise)\s*$/i, '').replace(/\n*POSITION:[^\n]*$/, '').trim(),
+    })),
+  };
+}
+
+function renderDebate(d) {
+  const label = d.consensus === 'full' ? 'FULL CONSENSUS' : d.consensus === 'majority' ? 'MAJORITY (some dissent)' : d.consensus === 'split' ? 'SPLIT' : 'CONSENSUS UNKNOWN';
+  const lines = [
+    `# Debate verdict: ${label}`,
+    `_${d.providers.join(', ')} | ${d.mode} mode | ${d.rounds_ran} round${d.rounds_ran === 1 ? '' : 's'}_`,
+    '', `**Answer:** ${d.final_answer}`, '',
+  ];
+  if (d.dissent.present === false) lines.push('**Dissent:** none', '');
+  else lines.push(`**Dissent (report this to the user, do not drop it when summarizing):** ${d.dissent.summary}`, '');
+  if (d.positions.length) {
+    lines.push('**Each model\'s final position:**');
+    for (const p of d.positions) lines.push('', `**${p.provider}:**`, ...p.text.split('\n').map((l) => `> ${l}`));
+  }
+  if (d.transcript) lines.push('', '<details><summary>Full transcript</summary>', '', d.transcript, '', '</details>');
+  return lines.join('\n');
+}
+
 async function toolDebate(args, progress) {
   const question = typeof args.question === 'string' ? args.question.trim() : '';
   if (!question) return text('error: `question` is required', true);
   if (question.length > LIMITS.questionChars) return text(`error: question exceeds ${LIMITS.questionChars} characters`, true);
 
-  const rounds = args.rounds ?? 2;
+  const mode = args.mode ?? 'quick';
+  if (!MODES[mode]) return text('error: mode must be "quick" or "thorough"', true);
+  const rounds = args.rounds ?? MODES[mode].rounds;
   if (!Number.isInteger(rounds) || rounds < 1 || rounds > LIMITS.rounds) return text(`error: rounds must be an integer 1..${LIMITS.rounds}`, true);
-  const maxWords = args.max_words ?? 200;
+  const maxWords = args.max_words ?? MODES[mode].maxWords;
   if (!Number.isInteger(maxWords) || maxWords < 20 || maxWords > LIMITS.maxWords) return text(`error: max_words must be an integer 20..${LIMITS.maxWords}`, true);
+  if (args.include_transcript !== undefined && typeof args.include_transcript !== 'boolean') return text('error: include_transcript must be a boolean', true);
 
-  const known = await configuredProviders();
+  // E3D_MCP_DEBATE_BIN swaps in another debate executable (used by tests); provider checks are then that binary's job.
+  const debateBin = process.env.E3D_MCP_DEBATE_BIN || join(ROOT, 'bin/e3d-debate');
+  const stubbed = Boolean(process.env.E3D_MCP_DEBATE_BIN);
+  const known = stubbed ? [] : await configuredProviders();
   let providers = args.providers;
   if (providers === undefined) {
-    providers = known.filter((p) => p.available && ['claude', 'codex'].includes(p.name)).map((p) => p.name);
+    providers = stubbed ? ['claude', 'codex'] : known.filter((p) => p.available && ['claude', 'codex'].includes(p.name)).map((p) => p.name);
   }
   if (!Array.isArray(providers) || providers.some((p) => typeof p !== 'string' || !NAME_RE.test(p))) return text('error: providers must be an array of provider names', true);
   providers = [...new Set(providers)];
   if (providers.length < 2) return text('error: need at least 2 available providers to debate (call e3d_list_providers); only found: ' + (providers.join(', ') || 'none'), true);
   if (providers.length > LIMITS.providers) return text(`error: at most ${LIMITS.providers} providers per debate`, true);
-  const unavailable = providers.filter((p) => !known.find((k) => k.name === p && k.available));
+  const unavailable = stubbed ? [] : providers.filter((p) => !known.find((k) => k.name === p && k.available));
   if (unavailable.length) return text(`error: provider(s) not available on this machine: ${unavailable.join(', ')}`, true);
 
   if (activeDebates >= LIMITS.concurrent) return text(`error: ${LIMITS.concurrent} debates already running; retry shortly`, true);
@@ -94,21 +147,23 @@ async function toolDebate(args, progress) {
     const cliArgs = ['--question-file', qfile, '--providers', providers.join(','), '--rounds', String(rounds),
       '--max-words', String(maxWords), '--out-dir', join(dir, 'out')];
     let step = 0;
-    const r = await run(join(ROOT, 'bin/e3d-debate'), cliArgs, {
+    const r = await run(debateBin, cliArgs, {
       timeoutMs: LIMITS.timeoutMs,
       onStderr: (s) => { for (const m of s.matchAll(/^=== (.+?) ===$/gm)) progress?.(++step, m[1]); },
     });
     if (r.timedOut) return text(`error: debate timed out after ${LIMITS.timeoutMs / 1000}s`, true);
-    const verdict = r.out.match(/FINAL ANSWER:[\s\S]*$/)?.[0]?.trim();
+    const verdict = parseVerdict(r.out);
     if (r.code !== 0 || !verdict) return text(`error: debate failed (exit ${r.code})\n${r.err.slice(-1500)}`, true);
 
-    const transcript = { out: await readFile(join(dir, 'out', 'transcript.md'), 'utf8') };
-    const body = [
-      `# Debate verdict (${providers.join(', ')}; up to ${rounds} rounds)`,
-      '', verdict, '',
-      '<details><summary>Full transcript</summary>', '', transcript.out.trim(), '', '</details>',
-    ].join('\n');
-    return text(body);
+    const transcript = await readFile(join(dir, 'out', 'transcript.md'), 'utf8').catch(() => '');
+    const { roundsRan, positions } = parsePositions(transcript);
+    const result = {
+      ...verdict,
+      mode, providers, rounds_requested: rounds, rounds_ran: roundsRan || rounds,
+      positions,
+      ...(args.include_transcript ? { transcript: transcript.trim() } : {}),
+    };
+    return { content: [{ type: 'text', text: renderDebate(result) }], structuredContent: result };
   } finally {
     activeDebates--;
     rm(dir, { recursive: true, force: true }).catch(() => {});
@@ -157,17 +212,38 @@ async function toolIdeasList(args) {
 const TOOLS = [
   {
     name: 'e3d_debate',
-    description: 'Get a multi-model second opinion on a decision or design question. Several independent AI models answer, critique each other across rounds, and converge; returns a decisive final answer, a consensus level (full/majority/split), and any named dissent, plus the full transcript. Use for architectural choices, tradeoffs, and contestable judgment calls -- not for lookups or questions with an obvious answer. Slow (minutes) and spends model credits.',
+    description: 'Get a multi-model second opinion on a decision or design question. Independent AI models answer, and a synthesizer returns a final answer, a consensus level (full/majority/split), and any dissent, plus each model\'s final position. ALWAYS report the dissent and consensus level to the user -- the disagreement is the point; never present a split verdict as settled. Write a self-contained question: the models cannot see your code. mode "quick" (default): one round, usually well under a minute. mode "thorough": models also critique each other, a few minutes. Use for architectural choices, tradeoffs, and contestable judgment calls -- not for lookups or questions with an obvious answer. Spends the user\'s model credits.',
     inputSchema: {
       type: 'object',
       properties: {
         question: { type: 'string', description: 'The decision or question, with enough context for models that cannot see your code.' },
+        mode: { type: 'string', enum: ['quick', 'thorough'], description: 'quick (default): 1 round, short answers, no cross-critique. thorough: 2 rounds where models see and rebut each other.' },
         providers: { type: 'array', items: { type: 'string' }, description: 'Provider names (see e3d_list_providers). Default: claude + codex.' },
-        rounds: { type: 'integer', minimum: 1, maximum: LIMITS.rounds, description: 'Max debate rounds; stops early on convergence. Default 2.' },
-        max_words: { type: 'integer', minimum: 20, maximum: LIMITS.maxWords, description: 'Per-provider per-round answer cap. Default 200.' },
+        rounds: { type: 'integer', minimum: 1, maximum: LIMITS.rounds, description: 'Override the mode\'s round count. Stops early on convergence.' },
+        max_words: { type: 'integer', minimum: 20, maximum: LIMITS.maxWords, description: 'Override the mode\'s per-provider per-round answer cap.' },
+        include_transcript: { type: 'boolean', description: 'Also return the full transcript (large). Default false.' },
       },
       required: ['question'],
       additionalProperties: false,
+    },
+    outputSchema: {
+      type: 'object',
+      properties: {
+        final_answer: { type: 'string' },
+        consensus: { type: 'string', enum: ['full', 'majority', 'split', 'unknown'] },
+        dissent: {
+          type: 'object',
+          properties: { present: { type: ['boolean', 'null'] }, summary: { type: 'string', description: '"none" when there is no dissent.' } },
+          required: ['present', 'summary'],
+        },
+        positions: { type: 'array', items: { type: 'object', properties: { provider: { type: 'string' }, text: { type: 'string' } }, required: ['provider', 'text'] } },
+        mode: { type: 'string' },
+        providers: { type: 'array', items: { type: 'string' } },
+        rounds_requested: { type: 'integer' },
+        rounds_ran: { type: 'integer' },
+        transcript: { type: 'string' },
+      },
+      required: ['final_answer', 'consensus', 'dissent', 'positions', 'mode', 'providers', 'rounds_ran'],
     },
     annotations: { title: 'Multi-model debate', readOnlyHint: true, openWorldHint: true, idempotentHint: false },
   },
