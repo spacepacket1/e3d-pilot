@@ -1,6 +1,6 @@
 {
   "name": "e3d-pilot",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Multi-model debate and decision provenance for AI coding work. Includes an MCP server (e3d-mcp) for GitHub Copilot, Claude Code, Cursor and other MCP clients.",
   "type": "module",
   "license": "MIT",
