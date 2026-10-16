@@ -14,14 +14,15 @@
 // rounds/providers/concurrency are capped (E3D_MCP_MAX_ROUNDS, E3D_MCP_MAX_PROVIDERS,
 // E3D_MCP_MAX_CONCURRENT, E3D_MCP_TIMEOUT_SEC). Nothing here writes to a repo.
 
-import { spawn } from 'node:child_process';
 import { mkdtemp, writeFile, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, dirname, resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createInterface } from 'node:readline';
+import { ROOT, log, text, run, configuredProviders, providerLine, NAME_RE } from '../lib/mcp/util.js';
+import { redact } from '../lib/mcp/redact.js';
+import { doctor, checkoutConfigHint } from '../lib/mcp/doctor.js';
 
-const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const SERVER_INFO = { name: 'e3d-pilot', version: '0.1.1' };
 const SUPPORTED_PROTOCOLS = ['2025-06-18', '2025-03-26', '2024-11-05'];
 
@@ -39,30 +40,7 @@ const LIMITS = {
 };
 let activeDebates = 0;
 
-const log = (...a) => process.stderr.write(`[e3d-mcp] ${a.join(' ')}\n`);
 const send = (msg) => process.stdout.write(`${JSON.stringify(msg)}\n`);
-const text = (t, isError = false) => ({ content: [{ type: 'text', text: t }], ...(isError ? { isError: true } : {}) });
-
-function run(cmd, args, { timeoutMs = 60000, onStderr } = {}) {
-  return new Promise((res) => {
-    const child = spawn(cmd, args, { cwd: ROOT, env: process.env, stdio: ['ignore', 'pipe', 'pipe'] });
-    let out = '', err = '', timedOut = false;
-    const timer = setTimeout(() => { timedOut = true; child.kill('SIGTERM'); }, timeoutMs);
-    child.stdout.on('data', (d) => { out += d; });
-    child.stderr.on('data', (d) => { err += d; onStderr?.(String(d)); });
-    child.on('error', (e) => { clearTimeout(timer); res({ code: 127, out, err: String(e), timedOut }); });
-    child.on('close', (code) => { clearTimeout(timer); res({ code, out, err, timedOut }); });
-  });
-}
-
-async function configuredProviders() {
-  const r = await run(join(ROOT, 'bin/e3d-pilot'), ['providers', 'list'], { timeoutMs: 30000 });
-  return r.out.split('\n').map((l) => l.trim().split(/\s{2,}|\s+/)).filter((p) => p.length >= 2)
-    .map(([name, state, ...rest]) => ({ name, available: state === 'available', detail: rest.join(' ') }));
-}
-
-const NAME_RE = /^[a-z0-9][a-z0-9_-]*$/;
-
 // quick = one round of independent answers + one synthesis call (fast, no cross-critique);
 // thorough = the debate as originally shipped (2 rounds, models see and rebut each other).
 const MODES = { quick: { rounds: 1, maxWords: 80 }, thorough: { rounds: 2, maxWords: 200 } };
@@ -153,7 +131,7 @@ async function toolDebate(args, progress) {
     });
     if (r.timedOut) return text(`error: debate timed out after ${LIMITS.timeoutMs / 1000}s`, true);
     const verdict = parseVerdict(r.out);
-    if (r.code !== 0 || !verdict) return text(`error: debate failed (exit ${r.code})\n${r.err.slice(-1500)}`, true);
+    if (r.code !== 0 || !verdict) return text(`error: debate failed (exit ${r.code})\n${redact(r.err.slice(-1500))}`, true);
 
     const transcript = await readFile(join(dir, 'out', 'transcript.md'), 'utf8').catch(() => '');
     const { roundsRan, positions } = parsePositions(transcript);
@@ -172,7 +150,7 @@ async function toolDebate(args, progress) {
 
 async function toolListProviders() {
   const known = await configuredProviders();
-  return text(known.map((p) => `${p.name}: ${p.available ? 'available' : 'UNAVAILABLE'} -- ${p.detail}`).join('\n') || 'no providers found');
+  return text(known.map(providerLine).join('\n') || 'no providers found');
 }
 
 async function requireRepo(path) {
@@ -327,40 +305,20 @@ async function handle(msg) {
 }
 
 // ---- CLI helpers: `e3d-mcp --doctor` and `e3d-mcp --print-config` (no server) ----
-const CLIENT_ARGS = ['-y', '-p', 'e3d-pilot', 'e3d-mcp'];
+// --no-update-notifier keeps npm's "new version available" banner out of the editor's MCP log.
+const CLIENT_ARGS = ['-y', '--no-update-notifier', '-p', 'e3d-pilot', 'e3d-mcp'];
 
-async function doctor() {
-  let ok = true;
-  const check = (pass, label, fix) => {
-    console.log(`${pass ? 'ok  ' : 'FAIL'}  ${label}${pass ? '' : `\n      -> ${fix}`}`);
-    if (!pass) ok = false;
-  };
-  const major = Number.parseInt(process.versions.node, 10);
-  check(major >= 18, `node ${process.versions.node}`, 'install Node 18 or newer');
-  const bash = await run('bash', ['-c', 'echo ${BASH_VERSINFO[0]}'], { timeoutMs: 5000 });
-  const bashMajor = Number.parseInt(bash.out, 10);
-  check(bashMajor >= 4, `bash on PATH is version ${Number.isFinite(bashMajor) ? bashMajor : 'missing'} (e3d-debate needs 4+)`,
-    'macOS ships bash 3.2: `brew install bash` and make sure it comes first on PATH');
-  const jq = await run('jq', ['--version'], { timeoutMs: 5000 });
-  check(jq.code === 0, 'jq installed', 'brew install jq  (or apt install jq)');
-  const providers = await configuredProviders();
-  const avail = providers.filter((p) => p.available);
-  console.log('\nProviders:');
-  for (const p of providers) console.log(`  ${p.available ? 'ok  ' : '--  '} ${p.name}  ${p.detail}`);
-  check(avail.length >= 2, `${avail.length} provider(s) available (a debate needs at least 2)`,
-    'install and log in to two model CLIs, e.g. `claude` and `codex`; see README "Providers"');
-  const code = await run('bash', ['-c', `command -v e3d-code || command -v spec2code || ls "${ROOT}/../e3d-code/bin/e3d-code" "${ROOT}/node_modules/e3d-code/bin/e3d-code" 2>/dev/null | head -1`], { timeoutMs: 5000 });
-  console.log(`\n${code.code === 0 ? 'ok  ' : '--  '} e3d-code ${code.code === 0 ? `found (${code.out.trim()})` : 'not found -- only needed for the full pipeline execute stage, not for debate/MCP: https://github.com/spacepacket1/e3d-code'}`);
-  console.log(ok ? '\nAll good. Run `e3d-mcp --print-config` for the Copilot/VS Code config.' : '\nFix the FAIL items above, then re-run.');
-  process.exit(ok ? 0 : 1);
-}
-
-if (process.argv.includes('--doctor')) await doctor();
+if (process.argv.includes('--doctor')) process.exit(await doctor());
 if (process.argv.includes('--print-config')) {
   const local = process.argv.includes('--local');
   const cmd = local ? { command: process.execPath, args: [fileURLToPath(import.meta.url)] } : { command: 'npx', args: CLIENT_ARGS };
-  console.log(JSON.stringify({ servers: { 'e3d-pilot': { type: 'stdio', ...cmd } } }, null, 2));
-  console.error(`# Put this in .vscode/mcp.json (VS Code / Copilot agent mode).${local ? '' : ' Add --local to point at this checkout instead of npx.'}`);
+  // Same shape and formatting as the README snippet, so users can compare them by eye.
+  console.log(`{
+  "servers": {
+    "e3d-pilot": { "type": "stdio", "command": ${JSON.stringify(cmd.command)}, "args": ${JSON.stringify(cmd.args).replace(/,/g, ', ')} }
+  }
+}`);
+  console.error(`# Paste this into .vscode/mcp.json (VS Code / Copilot agent mode).${!local && checkoutConfigHint() ? ' Add --local to point at this checkout instead of the npm package.' : ''}`);
   process.exit(0);
 }
 

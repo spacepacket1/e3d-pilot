@@ -99,4 +99,24 @@ r="$(call_debate garbled '{"question":"q"}')"
 [[ "$(jq -r .result.isError <<< "$(call_debate split '{"question":"q","mode":"turbo"}')")" == "true" ]] || fail "invalid mode rejected"
 [[ "$(printf '%s\n' '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' | "$SERVER" 2>/dev/null | jq -r '.result.tools[0].outputSchema.required|index("dissent")!=null')" == "true" ]] || fail "e3d_debate must declare outputSchema with dissent"
 
+# ---- housekeeping: print-config matches README, provider wording, doctor ending, redaction ----
+cfg_out="$("$SERVER" --print-config 2>/dev/null)"
+while IFS= read -r line; do
+  grep -qF -- "$line" "$ROOT/README.md" || fail "--print-config line is not in the README snippet: $line"
+done <<< "$cfg_out"
+jq -e '.servers["e3d-pilot"].args | index("--no-update-notifier")' <<< "$cfg_out" >/dev/null || fail "--print-config should silence the npm update banner"
+
+prov="$(printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"e3d_list_providers","arguments":{}}}' | "$SERVER" 2>/dev/null | jq -r '.result.content[0].text')"
+grep -q "UNAVAILABLE" <<< "$prov" && fail "provider listing should say 'unavailable' in lowercase, like --doctor"
+grep -qiE "available[^()]*\(available" <<< "$prov" && fail "provider listing repeats the word 'available'"
+
+doc="$("$SERVER" --doctor 2>/dev/null || true)"
+grep -q "All good" <<< "$doc" && fail "--doctor must not claim 'All good' without checking an editor"
+grep -qE "Requirements met\.|Fix the FAIL items" <<< "$doc" || fail "--doctor should end with a conditional hint"
+grep -q "tool that writes code phase by phase" <<< "$doc" || grep -q "e3d-code found" <<< "$doc" || fail "--doctor must explain or report e3d-code"
+
+red="$(node -e "import('$ROOT/lib/mcp/redact.js').then(m=>console.log(m.redact('k=sk-abcdefghijklmnopqrstuvwx and ANTHROPIC_API_KEY=hunter2 and {\"password\":\"p4ss\"} plain')))")"
+[[ "$red" == *"plain" ]] || fail "redact should keep ordinary text"
+[[ "$red" != *abcdefghijklmnop* && "$red" != *hunter2* && "$red" != *p4ss* ]] || fail "redact leaked a secret: $red"
+
 echo "mcp.sh: ok"

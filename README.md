@@ -97,12 +97,12 @@ The disagreement is the point: you get the answer and the strongest case against
 
 ### Install
 
-**VS Code (GitHub Copilot agent mode):** [one-click install](https://insiders.vscode.dev/redirect/mcp/install?name=e3d-pilot&config=%7B%22command%22%3A%22npx%22%2C%22args%22%3A%5B%22-y%22%2C%22-p%22%2C%22e3d-pilot%22%2C%22e3d-mcp%22%5D%7D), or add this to `.vscode/mcp.json`:
+**VS Code (GitHub Copilot agent mode):** [one-click install](https://insiders.vscode.dev/redirect/mcp/install?name=e3d-pilot&config=%7B%22command%22%3A%22npx%22%2C%22args%22%3A%5B%22-y%22%2C%22--no-update-notifier%22%2C%22-p%22%2C%22e3d-pilot%22%2C%22e3d-mcp%22%5D%7D), or add this to `.vscode/mcp.json`:
 
 ```json
 {
   "servers": {
-    "e3d-pilot": { "type": "stdio", "command": "npx", "args": ["-y", "-p", "e3d-pilot", "e3d-mcp"] }
+    "e3d-pilot": { "type": "stdio", "command": "npx", "args": ["-y", "--no-update-notifier", "-p", "e3d-pilot", "e3d-mcp"] }
   }
 }
 ```
@@ -110,13 +110,13 @@ The disagreement is the point: you get the answer and the strongest case against
 **Claude Code:**
 
 ```bash
-claude mcp add e3d-pilot -- npx -y -p e3d-pilot e3d-mcp
+claude mcp add e3d-pilot -- npx -y --no-update-notifier -p e3d-pilot e3d-mcp
 ```
 
 **Cursor** (`~/.cursor/mcp.json`) and other clients that use the `mcpServers` shape:
 
 ```json
-{ "mcpServers": { "e3d-pilot": { "command": "npx", "args": ["-y", "-p", "e3d-pilot", "e3d-mcp"] } } }
+{ "mcpServers": { "e3d-pilot": { "command": "npx", "args": ["-y", "--no-update-notifier", "-p", "e3d-pilot", "e3d-mcp"] } } }
 ```
 
 Any MCP client that can launch a stdio server should work; the shapes above are each client's standard format.
@@ -250,7 +250,7 @@ Start from [`examples/sample-fleet-config-with-ops.json`](examples/sample-fleet-
 
 ## Requirements and installation
 
-Install Bash, Git, `jq`, and `curl`; the full pipeline's execute stage also needs [`e3d-code`](https://github.com/spacepacket1/e3d-code) (formerly `spec2code`; the debate and MCP tools do not). Install and authenticate whichever model CLIs and forge CLI your configuration uses (`claude`, `codex`, `devin`, a local OpenAI-compatible endpoint, and/or `grok` for `grok-build`). Add this repository's `bin` directory to `PATH`:
+Install Bash, Git, `jq`, and `curl`; the full pipeline's execute stage also needs [`e3d-code`](https://github.com/spacepacket1/e3d-code), the tool that writes code phase by phase from a spec (formerly `spec2code`; install it with `npm install -g e3d-code`, or it comes along automatically with `npm install -g e3d-pilot`). Debate and the read-only MCP tools do not need it. Install and authenticate whichever model CLIs and forge CLI your configuration uses (`claude`, `codex`, `devin`, a local OpenAI-compatible endpoint, and/or `grok` for `grok-build`). Add this repository's `bin` directory to `PATH`:
 
 ```bash
 # From npm (also installs e3d-code, the execute-stage dependency, when it can):
