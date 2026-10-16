@@ -164,6 +164,12 @@ assert_contains "$(cat "$REPO/$EVID")" "Codex prefers SQLite."
 assert_contains "$(cat "$REPO/.e3d-pilot/events.jsonl")" "e3d_debate verdict (split)"
 assert_contains "$(cat "$REPO/.e3d-pilot/events.jsonl")" "mcp:test-client"
 
+# input limits are enforced, not just declared
+out="$(mcp "$REPO" e3d_pilot_propose "$(jq -nc --arg r "$REPO" --arg t "$(head -c 300 /dev/zero | tr '\0' 'x')" '{repo:$r,title:$t,rationale:"r"}')")"
+assert_eq "$(iserr <<< "$out")" "true" "over-long title"; assert_contains "$(txt <<< "$out")" "200 characters"
+out="$(mcp "$REPO" e3d_pilot_propose "$(jq -nc --arg r "$REPO" '{repo:$r,title:"t",rationale:"r",category:"bad/category"}')")"
+assert_eq "$(iserr <<< "$out")" "true" "bad category"
+
 # --- gate 1: approval stays human ---
 out="$(mcp "$REPO" e3d_pilot_approve "$(jq -nc --arg r "$REPO" --arg i "$IDEA" '{repo:$r,idea_id:$i}')" "$ELICIT_YES")"
 assert_eq "$(sc <<< "$out" | jq -r .outcome)" "waiting_for_human" "approval is read-only by default, even if the client could be asked"
