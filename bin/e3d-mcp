@@ -27,6 +27,8 @@ import { createRepoGuard } from '../lib/mcp/repos.js';
 import { createJobs } from '../lib/mcp/jobs.js';
 import { createPipelineTools } from '../lib/mcp/pipeline-tools.js';
 import { createPipelineActions } from '../lib/mcp/pipeline-actions.js';
+import { createSampling } from '../lib/mcp/sampling.js';
+import { chooseVoices, independence, isSampling } from '../lib/mcp/voices.js';
 
 const SERVER_INFO = { name: 'e3d-pilot', version: '0.1.1' };
 const SUPPORTED_PROTOCOLS = ['2025-06-18', '2025-03-26', '2024-11-05'];
@@ -83,6 +85,8 @@ function renderDebate(d) {
     `_${d.providers.join(', ')} | ${d.mode} mode | ${d.rounds_ran} round${d.rounds_ran === 1 ? '' : 's'}_`,
     '', `**Answer:** ${d.final_answer}`, '',
   ];
+  for (const w of d.warnings ?? []) lines.push(`**WARNING:** ${w}`, '');
+  if (d.models?.length) lines.push(`_Models that answered: ${d.models.map((m) => `${m.provider} = ${m.model}`).join('; ')}_`, '');
   if (d.dissent.present === false) lines.push('**Dissent:** none', '');
   else lines.push(`**Dissent (report this to the user, do not drop it when summarizing):** ${d.dissent.summary}`, '');
   if (d.positions.length) {
@@ -93,7 +97,7 @@ function renderDebate(d) {
   return lines.join('\n');
 }
 
-async function toolDebate(args, progress) {
+async function toolDebate(args, progress, ctx) {
   const question = typeof args.question === 'string' ? args.question.trim() : '';
   if (!question) return text('error: `question` is required', true);
   if (question.length > LIMITS.questionChars) return text(`error: question exceeds ${LIMITS.questionChars} characters`, true);
@@ -110,16 +114,31 @@ async function toolDebate(args, progress) {
   const debateBin = process.env.E3D_MCP_DEBATE_BIN || join(ROOT, 'bin/e3d-debate');
   const stubbed = Boolean(process.env.E3D_MCP_DEBATE_BIN);
   const known = stubbed ? [] : await configuredProviders();
+  const samplingOn = sampling.available(ctx?.session);
   let providers = args.providers;
+  let synthesizer;
+  let selection = 'explicit';
+  let selectionNote = 'chosen by the caller';
   if (providers === undefined) {
-    providers = stubbed ? ['claude', 'codex'] : known.filter((p) => p.available && ['claude', 'codex'].includes(p.name)).map((p) => p.name);
+    if (stubbed) { providers = ['claude', 'codex']; selection = 'auto'; selectionNote = 'test stub'; }
+    else {
+      // Default: the client's own models (MCP sampling, e.g. Copilot) plus any model CLIs detected here.
+      const pick = chooseVoices({ known, samplingOn });
+      ({ providers, synthesizer, selection } = pick);
+      selectionNote = pick.note;
+    }
   }
   if (!Array.isArray(providers) || providers.some((p) => typeof p !== 'string' || !NAME_RE.test(p))) return text('error: providers must be an array of provider names', true);
   providers = [...new Set(providers)];
   if (providers.length < 2) return text('error: need at least 2 available providers to debate (call e3d_list_providers); only found: ' + (providers.join(', ') || 'none'), true);
   if (providers.length > LIMITS.providers) return text(`error: at most ${LIMITS.providers} providers per debate`, true);
-  const unavailable = stubbed ? [] : providers.filter((p) => !known.find((k) => k.name === p && k.available));
-  if (unavailable.length) return text(`error: provider(s) not available on this machine: ${unavailable.join(', ')}`, true);
+  const unavailable = stubbed ? [] : providers.filter((p) => (isSampling(p) ? !samplingOn : !known.find((k) => k.name === p && k.available)));
+  if (unavailable.length) {
+    const sampled = unavailable.filter(isSampling);
+    return text(`error: provider(s) not available here: ${unavailable.join(', ')}${sampled.length ? ' (mcp-sampling needs an MCP client that supports sampling, such as Copilot in VS Code)' : ''}`, true);
+  }
+  const claudeUp = stubbed || known.some((k) => k.name === 'claude' && k.available);
+  if (synthesizer === undefined) synthesizer = samplingOn && providers.includes('mcp-sampling') ? 'mcp-sampling' : (claudeUp ? 'claude' : providers[0]);
 
   if (activeDebates >= LIMITS.concurrent) return text(`error: ${LIMITS.concurrent} debates already running; retry shortly`, true);
   activeDebates++;
@@ -128,10 +147,14 @@ async function toolDebate(args, progress) {
     const qfile = join(dir, 'question.md');
     await writeFile(qfile, question);
     const cliArgs = ['--question-file', qfile, '--providers', providers.join(','), '--rounds', String(rounds),
-      '--max-words', String(maxWords), '--out-dir', join(dir, 'out')];
+      '--max-words', String(maxWords), '--out-dir', join(dir, 'out'), ...(synthesizer !== 'claude' ? ['--synthesizer', synthesizer] : [])];
     let step = 0;
+    const tag = `debate-${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 8)}`;
+    const usesSampling = providers.some(isSampling) || isSampling(synthesizer);
+    const samplingEnv = usesSampling ? await sampling.env(ctx.session, { tag, maxTokens: Math.min(Math.max(maxWords * 3, 300), 4000) }) : {};
     const r = await run(debateBin, cliArgs, {
       timeoutMs: LIMITS.timeoutMs,
+      env: { ...process.env, ...samplingEnv },
       onStderr: (s) => { for (const m of s.matchAll(/^=== (.+?) ===$/gm)) progress?.(++step, m[1]); },
     });
     if (r.timedOut) return text(`error: debate timed out after ${LIMITS.timeoutMs / 1000}s`, true);
@@ -140,9 +163,14 @@ async function toolDebate(args, progress) {
 
     const transcript = await readFile(join(dir, 'out', 'transcript.md'), 'utf8').catch(() => '');
     const { roundsRan, positions } = parsePositions(transcript);
+    const samplingModels = sampling.drain(tag).map((m) => ({ provider: m.voice === 'b' ? 'mcp-sampling-b' : 'mcp-sampling', model: m.model, hint: m.hint }));
+    const indep = usesSampling ? independence(providers, samplingModels) : { independent: true, warnings: [] };
     const result = {
       ...verdict,
       mode, providers, rounds_requested: rounds, rounds_ran: roundsRan || rounds,
+      selection, selection_note: selectionNote, synthesizer,
+      ...(samplingModels.length ? { models: samplingModels } : {}),
+      independent: indep.independent, warnings: indep.warnings,
       positions,
       ...(args.include_transcript ? { transcript: transcript.trim() } : {}),
     };
@@ -153,9 +181,17 @@ async function toolDebate(args, progress) {
   }
 }
 
-async function toolListProviders() {
+async function toolListProviders(_args, _progress, ctx) {
   const known = await configuredProviders();
-  return text(known.map(providerLine).join('\n') || 'no providers found');
+  const samplingOn = sampling.available(ctx?.session);
+  const lines = known.map(providerLine);
+  if (samplingOn) {
+    lines.push("mcp-sampling: available (this client's own models via MCP sampling, e.g. Copilot in VS Code)");
+    lines.push('mcp-sampling-b: available (a second model family from the same client, if it allows one)');
+  }
+  const pick = chooseVoices({ known, samplingOn });
+  lines.push('', `Default voices for e3d_debate: ${pick.providers.join(', ') || 'none'} (${pick.note})`);
+  return text(lines.join('\n') || 'no providers found');
 }
 
 async function requireRepo(path) {
@@ -201,7 +237,7 @@ const TOOLS = [
       properties: {
         question: { type: 'string', description: 'The decision or question, with enough context for models that cannot see your code.' },
         mode: { type: 'string', enum: ['quick', 'thorough'], description: 'quick (default): 1 round, short answers, no cross-critique. thorough: 2 rounds where models see and rebut each other.' },
-        providers: { type: 'array', items: { type: 'string' }, description: 'Provider names (see e3d_list_providers). Default: claude + codex.' },
+        providers: { type: 'array', items: { type: 'string' }, description: 'Provider names (see e3d_list_providers). Default: the client\'s own models via MCP sampling (e.g. Copilot) plus detected model CLIs; without sampling, claude + codex.' },
         rounds: { type: 'integer', minimum: 1, maximum: LIMITS.rounds, description: 'Override the mode\'s round count. Stops early on convergence.' },
         max_words: { type: 'integer', minimum: 20, maximum: LIMITS.maxWords, description: 'Override the mode\'s per-provider per-round answer cap.' },
         include_transcript: { type: 'boolean', description: 'Also return the full transcript (large). Default false.' },
@@ -224,6 +260,12 @@ const TOOLS = [
         providers: { type: 'array', items: { type: 'string' } },
         rounds_requested: { type: 'integer' },
         rounds_ran: { type: 'integer' },
+        selection: { type: 'string', enum: ['auto', 'pinned', 'explicit'], description: 'How the participating models were chosen.' },
+        selection_note: { type: 'string' },
+        synthesizer: { type: 'string' },
+        models: { type: 'array', items: { type: 'object', properties: { provider: { type: 'string' }, model: { type: 'string' }, hint: { type: ['string', 'null'] } } }, description: 'Which models actually answered through MCP sampling.' },
+        independent: { type: 'boolean', description: 'false when every voice resolved to the same model.' },
+        warnings: { type: 'array', items: { type: 'string' } },
         transcript: { type: 'string' },
       },
       required: ['final_answer', 'consensus', 'dissent', 'positions', 'mode', 'providers', 'rounds_ran'],
@@ -271,6 +313,7 @@ const rpc = createRpc(send);
 const guard = createRepoGuard();
 const jobs = createJobs();
 const pipeline = createPipelineTools({ guard, jobs });
+const sampling = createSampling({ rpc, log });
 const session = { clientInfo: null, capabilities: {}, rootsReady: null };
 const actions = createPipelineActions({ guard, jobs, base: pipeline });
 TOOLS.push(...pipeline.tools, ...actions.tools);
@@ -323,7 +366,7 @@ async function handle(msg) {
         send({ jsonrpc: '2.0', method: 'notifications/progress', params: { progressToken: token, progress: n, message } });
       try {
         await session.rootsReady;
-        return reply(await handler(params.arguments ?? {}, progress, { session, rpc }));
+        return reply(await handler(params.arguments ?? {}, progress, { session, rpc, sampling, samplingEnv: (tag) => sampling.env(session, { tag }) }));
       } catch (e) {
         return reply(text(`error: ${e.message}`, true));
       }
@@ -364,5 +407,5 @@ rl.on('line', (line) => {
   pending.add(p);
 });
 // Exit only once in-flight calls finish, so a client closing stdin after its last request still gets the reply.
-rl.on('close', () => Promise.allSettled([...pending]).then(() => process.exit(0)));
+rl.on('close', () => Promise.allSettled([...pending]).then(() => sampling.stop()).then(() => process.exit(0)));
 log(`ready (limits: ${JSON.stringify(LIMITS)})`);

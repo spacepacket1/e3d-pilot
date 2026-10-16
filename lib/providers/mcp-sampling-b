@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Second voice of the mcp-sampling provider: asks the client for a different model family. (A wrapper and not a
+# symlink because npm does not ship symlinks.)
+exec "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/mcp-sampling" --voice b "$@"

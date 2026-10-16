@@ -1,0 +1,49 @@
+#!/usr/bin/env node
+// Provider adapter that uses the model(s) of the MCP client driving e3d-mcp (e.g. GitHub Copilot in VS Code)
+// through MCP sampling. It only works inside a running e3d-mcp server, which hands it a private socket via
+// E3D_MCP_SAMPLING_SOCKET. `mcp-sampling` asks for the first model hint and `mcp-sampling-b` for the second,
+// so a debate can use two different model families from one client.
+import net from 'node:net';
+import { readFileSync } from 'node:fs';
+import { basename } from 'node:path';
+
+const args = process.argv.slice(2);
+let voice = basename(process.argv[1]).endsWith('-b') ? 'b' : 'a';
+const vi = args.indexOf('--voice');
+if (vi >= 0) { voice = args[vi + 1] === 'b' ? 'b' : 'a'; args.splice(vi, 2); }
+const sock = process.env.E3D_MCP_SAMPLING_SOCKET;
+
+function exchange(message, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const conn = net.createConnection(sock);
+    let buf = '';
+    const timer = setTimeout(() => { conn.destroy(); reject(new Error('timed out waiting for the client')); }, timeoutMs);
+    conn.setEncoding('utf8');
+    conn.on('connect', () => conn.write(`${JSON.stringify(message)}\n`));
+    conn.on('data', (d) => { buf += d; });
+    conn.on('end', () => { clearTimeout(timer); try { resolve(JSON.parse(buf)); } catch (e) { reject(e); } });
+    conn.on('error', (e) => { clearTimeout(timer); reject(e); });
+  });
+}
+
+if (process.env.E3D_PILOT_CHECK === '1') {
+  const unavailable = 'unavailable: only works inside an MCP client that supports sampling (for example Copilot in VS Code)';
+  if (!sock) { console.log(unavailable); process.exit(2); }
+  try {
+    await exchange({ ping: true }, 2000);
+    console.log("available (this client's own models via MCP sampling)");
+  } catch { console.log(unavailable); process.exit(2); }
+  process.exit(0);
+}
+
+const promptFile = args[0];
+if (!promptFile) { console.error('error: prompt file required'); process.exit(1); }
+if (!sock) { console.error('error: not running inside an MCP client that supports sampling'); process.exit(2); }
+try {
+  const reply = await exchange({
+    prompt: readFileSync(promptFile, 'utf8'), voice,
+    tag: process.env.E3D_MCP_SAMPLING_TAG ?? '', maxTokens: Number(process.env.E3D_MCP_SAMPLING_MAX_TOKENS) || 1500,
+  }, 330000);
+  if (!reply.ok) { console.error(`error: ${reply.error}`); process.exit(1); }
+  process.stdout.write(reply.text);
+} catch (e) { console.error(`error: ${e.message}`); process.exit(1); }

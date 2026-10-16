@@ -29,7 +29,7 @@
           "type": "string"
         },
         "providers": {
-          "description": "Provider names (see e3d_list_providers). Default: claude + codex.",
+          "description": "Provider names (see e3d_list_providers). Default: the client's own models via MCP sampling (e.g. Copilot) plus detected model CLIs; without sampling, claude + codex.",
           "items": {
             "type": "string"
           },
@@ -85,8 +85,33 @@
         "final_answer": {
           "type": "string"
         },
+        "independent": {
+          "description": "false when every voice resolved to the same model.",
+          "type": "boolean"
+        },
         "mode": {
           "type": "string"
+        },
+        "models": {
+          "description": "Which models actually answered through MCP sampling.",
+          "items": {
+            "properties": {
+              "hint": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "model": {
+                "type": "string"
+              },
+              "provider": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "type": "array"
         },
         "positions": {
           "items": {
@@ -118,8 +143,29 @@
         "rounds_requested": {
           "type": "integer"
         },
+        "selection": {
+          "description": "How the participating models were chosen.",
+          "enum": [
+            "auto",
+            "pinned",
+            "explicit"
+          ],
+          "type": "string"
+        },
+        "selection_note": {
+          "type": "string"
+        },
+        "synthesizer": {
+          "type": "string"
+        },
         "transcript": {
           "type": "string"
+        },
+        "warnings": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         }
       },
       "required": [
