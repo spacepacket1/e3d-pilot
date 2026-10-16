@@ -29,8 +29,10 @@ import { createPipelineTools } from '../lib/mcp/pipeline-tools.js';
 import { createPipelineActions } from '../lib/mcp/pipeline-actions.js';
 import { createSampling } from '../lib/mcp/sampling.js';
 import { chooseVoices, independence, isSampling } from '../lib/mcp/voices.js';
+import { startHttpServer } from '../lib/mcp/http.js';
 import { createUsage, usageFromTranscript, worstCase, usageTool, usageHandler } from '../lib/mcp/usage.js';
 
+const HTTP_MODE = process.argv.includes('--http');
 const SERVER_INFO = { name: 'e3d-pilot', version: '0.1.1' };
 const SUPPORTED_PROTOCOLS = ['2025-06-18', '2025-03-26', '2024-11-05'];
 
@@ -42,7 +44,8 @@ const LIMITS = {
   rounds: envInt('E3D_MCP_MAX_ROUNDS', 3),
   providers: envInt('E3D_MCP_MAX_PROVIDERS', 4),
   concurrent: envInt('E3D_MCP_MAX_CONCURRENT', 2),
-  timeoutMs: envInt('E3D_MCP_TIMEOUT_SEC', 900) * 1000,
+  // Hosted: stay under typical load-balancer idle timeouts unless the operator says otherwise.
+  timeoutMs: envInt('E3D_MCP_TIMEOUT_SEC', HTTP_MODE ? 120 : 900) * 1000,
   maxWords: 600,
   questionChars: 20000,
 };
@@ -325,16 +328,18 @@ const rpc = createRpc(send);
 const guard = createRepoGuard();
 const jobs = createJobs();
 const pipeline = createPipelineTools({ guard, jobs });
-const HTTP_MODE = process.argv.includes('--http');
 // stdio: unlimited unless E3D_MCP_DAILY_* are set; hosted (HTTP) mode ships with finite defaults.
 const usage = createUsage({ defaults: HTTP_MODE ? { calls: 100, tokens: 500000 } : { calls: 0, tokens: 0 } });
 const sampling = createSampling({ rpc, log });
-const session = { clientInfo: null, capabilities: {}, rootsReady: null };
+// One connection object per client: stdio has exactly one; HTTP makes one per session. Hosted (HTTP) connections
+// never advertise sampling, elicitation or roots, so the server never needs to call back into the client.
+const stdioConn = { send, session: { clientInfo: null, capabilities: {}, rootsReady: null }, principal: process.env.E3D_MCP_PRINCIPAL || 'local', rpc, hosted: false, allowed: null };
+const newHttpConn = (principal, allowed) => ({ send: () => {}, session: { clientInfo: null, capabilities: {}, rootsReady: null }, principal, rpc: null, hosted: true, allowed });
 const actions = createPipelineActions({ guard, jobs, base: pipeline });
 TOOLS.push(...pipeline.tools, ...actions.tools, usageTool);
 
 // The client's workspace folders (MCP roots) are the default set of repos the pipeline tools may touch.
-async function refreshRoots() {
+async function refreshRoots(session = stdioConn.session) {
   if (!session.capabilities.roots) return;
   try {
     const r = await rpc.request('roots/list', {}, 10000);
@@ -352,37 +357,41 @@ const HANDLERS = {
   e3d_usage: usageHandler(usage),
 };
 
-async function handle(msg) {
+async function handle(msg, conn = stdioConn) {
   const { id, method, params } = msg;
+  const { session } = conn;
   const isRequest = id !== undefined && id !== null;
-  const reply = (result) => isRequest && send({ jsonrpc: '2.0', id, result });
-  const fail = (code, message) => isRequest && send({ jsonrpc: '2.0', id, error: { code, message } });
+  const reply = (result) => isRequest && conn.send({ jsonrpc: '2.0', id, result });
+  const fail = (code, message) => isRequest && conn.send({ jsonrpc: '2.0', id, error: { code, message } });
 
   switch (method) {
     case 'initialize': {
       session.clientInfo = params?.clientInfo ?? null;
-      session.capabilities = params?.capabilities ?? {};
+      session.capabilities = conn.hosted ? {} : (params?.capabilities ?? {});
       const want = params?.protocolVersion;
       return reply({
         protocolVersion: SUPPORTED_PROTOCOLS.includes(want) ? want : SUPPORTED_PROTOCOLS[0],
         capabilities: { tools: { listChanged: false } },
         serverInfo: SERVER_INFO,
-        instructions: 'Use e3d_debate for contestable decisions where independent model perspectives and recorded dissent add value; always report its dissent. It costs credits; do not use it for simple lookups. The e3d_pilot_* tools run a human-gated pipeline: propose an idea, a human approves it (e3d_pilot_approve tells you how; never approve on your own), e3d_pilot_implement drafts and negotiates a spec and pauses, e3d_pilot_code_plan shows the plan, and only after the user agrees does e3d_pilot_execute write code and open a draft PR. Tools marked FREE spend nothing; tools marked SPENDS MODEL CREDITS do. Merging is never available here.',
+        instructions: conn.hosted
+          ? 'Use e3d_debate for contestable decisions where independent model perspectives and recorded dissent add value; always report its dissent, and never present a split verdict as settled. It uses a shared usage budget (see e3d_usage); do not use it for simple lookups.'
+          : 'Use e3d_debate for contestable decisions where independent model perspectives and recorded dissent add value; always report its dissent. It costs credits; do not use it for simple lookups. The e3d_pilot_* tools run a human-gated pipeline: propose an idea, a human approves it (e3d_pilot_approve tells you how; never approve on your own), e3d_pilot_implement drafts and negotiates a spec and pauses, e3d_pilot_code_plan shows the plan, and only after the user agrees does e3d_pilot_execute write code and open a draft PR. Tools marked FREE spend nothing; tools marked SPENDS MODEL CREDITS do. Merging is never available here.',
       });
     }
-    case 'notifications/initialized': session.rootsReady = refreshRoots(); return;
-    case 'notifications/roots/list_changed': session.rootsReady = refreshRoots(); return;
+    case 'notifications/initialized': if (!conn.hosted) session.rootsReady = refreshRoots(session); return;
+    case 'notifications/roots/list_changed': if (!conn.hosted) session.rootsReady = refreshRoots(session); return;
     case 'ping': return reply({});
-    case 'tools/list': return reply({ tools: TOOLS });
+    case 'tools/list': return reply({ tools: conn.allowed ? TOOLS.filter((t) => conn.allowed.has(t.name)) : TOOLS });
     case 'tools/call': {
       const handler = HANDLERS[params?.name];
-      if (!handler) return fail(-32602, `unknown tool: ${params?.name}`);
+      // A tool outside this connection's allowlist is reported exactly like one that does not exist.
+      if (!handler || (conn.allowed && !conn.allowed.has(params.name))) return fail(-32602, `unknown tool: ${params?.name}`);
       const token = params?._meta?.progressToken;
-      const progress = token === undefined ? undefined : (n, message) =>
-        send({ jsonrpc: '2.0', method: 'notifications/progress', params: { progressToken: token, progress: n, message } });
+      const progress = token === undefined || conn.hosted ? undefined : (n, message) =>
+        conn.send({ jsonrpc: '2.0', method: 'notifications/progress', params: { progressToken: token, progress: n, message } });
       try {
         await session.rootsReady;
-        return reply(await handler(params.arguments ?? {}, progress, { session, rpc, sampling, principal: process.env.E3D_MCP_PRINCIPAL || 'local', samplingEnv: (tag) => sampling.env(session, { tag }) }));
+        return reply(await handler(params.arguments ?? {}, progress, { session, rpc: conn.rpc, sampling, principal: conn.principal, samplingEnv: (tag) => sampling.env(session, { tag }) }));
       } catch (e) {
         return reply(text(`error: ${e.message}`, true));
       }
@@ -411,17 +420,34 @@ if (process.argv.includes('--print-config')) {
   process.exit(0);
 }
 
-const rl = createInterface({ input: process.stdin });
-const pending = new Set();
-rl.on('line', (line) => {
-  if (!line.trim()) return;
-  let msg;
-  try { msg = JSON.parse(line); }
-  catch { return send({ jsonrpc: '2.0', id: null, error: { code: -32700, message: 'parse error' } }); }
-  if (rpc.handleResponse(msg)) return; // an answer to a request this server made (roots/list, ...)
-  const p = handle(msg).catch((e) => log('handler error:', e.stack || e)).finally(() => pending.delete(p));
-  pending.add(p);
-});
-// Exit only once in-flight calls finish, so a client closing stdin after its last request still gets the reply.
-rl.on('close', () => Promise.allSettled([...pending]).then(() => sampling.stop()).then(() => process.exit(0)));
-log(`ready (limits: ${JSON.stringify(LIMITS)})`);
+// ---- HTTP (hosted) mode: `e3d-mcp --http [--port N] [--host H]` ----
+if (HTTP_MODE) {
+  const arg = (name, dflt) => { const i = process.argv.indexOf(name); return i > -1 && process.argv[i + 1] ? process.argv[i + 1] : dflt; };
+  const host = arg('--host', process.env.E3D_MCP_HOST || '127.0.0.1');
+  const port = Number.parseInt(arg('--port', process.env.E3D_MCP_PORT || process.env.PORT || '8787'), 10);
+  let server;
+  try {
+    server = await startHttpServer({ host, port, log, handle, newConn: newHttpConn, version: SERVER_INFO.version });
+  } catch (e) { process.stderr.write(`[e3d-mcp] ${redact(e.message)}\n`); process.exit(2); }
+  if (process.env.E3D_MCP_PORT_FILE) await writeFile(process.env.E3D_MCP_PORT_FILE, String(server.port));
+  let stopping = false;
+  const stop = async () => { if (stopping) return; stopping = true; log('shutting down'); setTimeout(() => process.exit(0), 10000).unref(); await server.close(); await sampling.stop(); process.exit(0); };
+  process.on('SIGTERM', stop);
+  process.on('SIGINT', stop);
+  log(`ready (hosted; limits: ${JSON.stringify(LIMITS)})`);
+} else {
+  const rl = createInterface({ input: process.stdin });
+  const pending = new Set();
+  rl.on('line', (line) => {
+    if (!line.trim()) return;
+    let msg;
+    try { msg = JSON.parse(line); }
+    catch { return send({ jsonrpc: '2.0', id: null, error: { code: -32700, message: 'parse error' } }); }
+    if (rpc.handleResponse(msg)) return; // an answer to a request this server made (roots/list, ...)
+    const p = handle(msg).catch((e) => log('handler error:', e.stack || e)).finally(() => pending.delete(p));
+    pending.add(p);
+  });
+  // Exit only once in-flight calls finish, so a client closing stdin after its last request still gets the reply.
+  rl.on('close', () => Promise.allSettled([...pending]).then(() => sampling.stop()).then(() => process.exit(0)));
+  log(`ready (limits: ${JSON.stringify(LIMITS)})`);
+}
