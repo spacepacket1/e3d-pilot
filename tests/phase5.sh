@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BIN="$ROOT/bin/e3d-pilot"
 SAMPLE_CONFIG="$ROOT/examples/sample-config.json"
-S2C_BIN="/home/ubuntu/spec2code/bin/spec2code"
+E3D_CODE_BIN="/home/ubuntu/e3d-code/bin/e3d-code"
 
 assert_contains() {
   local haystack="$1" needle="$2"
@@ -136,7 +136,7 @@ reason: candidate scoped to two small phases touching only the http client, its 
 EOF
 }
 
-draft_produces_spec_that_s2c_can_list() {
+draft_produces_spec_that_e3d_code_can_list() {
   local repo run_id bin_dir response out spec contents
   repo="$(make_repo_with_commit)"
   write_draft_config "$repo"
@@ -159,9 +159,9 @@ draft_produces_spec_that_s2c_can_list() {
   assert_contains "$contents" "pilot:touches=README.md"
   assert_not_contains "$contents" "runner:model=local"
 
-  if [[ -x "$S2C_BIN" ]]; then
+  if [[ -x "$E3D_CODE_BIN" ]]; then
     local list_out
-    list_out="$("$S2C_BIN" "$spec" --list)"
+    list_out="$("$E3D_CODE_BIN" "$spec" --list)"
     assert_contains "$list_out" "Phase 1"
     assert_contains "$list_out" "codex"
     assert_contains "$list_out" "Add Retry Wrapper"
@@ -413,7 +413,7 @@ EOF
 }
 
 main() {
-  draft_produces_spec_that_s2c_can_list
+  draft_produces_spec_that_e3d_code_can_list
   draft_rejects_protected_path_touch_before_writing
   draft_reports_too_large_without_writing_spec_and_stops_all
   draft_requires_a_selected_candidate

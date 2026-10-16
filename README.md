@@ -100,7 +100,7 @@ Notes:
 
 Autonomous coding agents solved the *execution* half of the problem: point a good model at a good spec, and it will faithfully implement it. What's still missing is everything **before** that — noticing what's worth building, making sure it isn't a rehash of a closed PR or last week's abandoned branch, and getting more than one model to actually agree the plan is safe and sound before anything touches a working tree. Skip that half and you get agents that happily reimplement existing features, argue with themselves in a PR nobody asked for, or quietly blow through a repo's real diff budget.
 
-e3d-pilot exists to be that missing half: a small, auditable layer that sits *above* s2c (spec2code) rather than duplicating it. s2c stays the dumb, reliable phase executor — "run this spec." e3d-pilot's job is deciding what the spec should even be, proving it's worth doing, and refusing to let it run unsupervised past the point where a human needs to look.
+e3d-pilot exists to be that missing half: a small, auditable layer that sits *above* e3d-code (formerly spec2code) rather than duplicating it. e3d-code stays the dumb, reliable phase executor — "run this spec." e3d-pilot's job is deciding what the spec should even be, proving it's worth doing, and refusing to let it run unsupervised past the point where a human needs to look.
 
 The other reason: good ideas rarely come from staring harder at the same backlog. e3d-pilot's discover stage explicitly borrows from domains outside a repo's own category — a game's progression loop, a marketplace's liquidity trick, a social feed's notification mechanics — and its ideate stage grades every candidate on attraction and retention (does this bring people in, does it bring them back) with revenue treated as a secondary tiebreaker, never the deciding factor. The goal is features people actually want, not just the next item on an internal TODO list.
 
@@ -147,9 +147,9 @@ flowchart LR
 1. **discover** — writes `findings.md`: Git history, branches, issues/PRs, existing docs and TODOs, plus a model-researched "External Context" section that includes an explicit cross-domain "Analogous Patterns" subsection (see [Ideation sourcing](#ideation-sourcing-and-scoring) below).
 2. **ideate** — writes ranked, deduplicated `candidates.md` and materializes every non-duplicate candidate as a `proposed` idea. `selected: none` is a valid, clean stop when everything proposed is already covered. If `candidate_scoring` is configured, an ensemble of read-only workers re-ranks non-duplicate candidates before materialization; the original model pick is stored as `model_selected`.
 3. **approval gate 1** — a human approves or rejects the exact idea. `proposed` never means rejected, and no source-mutating stage can run without current implementation approval.
-4. **draft** — turns the approved candidate into an s2c-shaped `spec-draft.md`, with machine-readable `pilot:touches` annotations per phase so later guards can check real paths instead of guessing from prose.
+4. **draft** — turns the approved candidate into an e3d-code-shaped `spec-draft.md`, with machine-readable `pilot:touches` annotations per phase so later guards can check real paths instead of guessing from prose.
 5. **negotiate** — every configured reviewer must approve the same unchanged draft in one pass; disagreement drives bounded revision rounds, ending in `spec-final.md` on success or a clean "needs human" stop.
-6. **execute** — hands `spec-final.md` to the configured execute backend inside an isolated worktree on its own branch, then enforces `protected_paths` and the real post-execution `max_diff_files`/`max_diff_lines` ceilings. The default backend is s2c (spec2code). `providers.execute: "grok-build"` is an experimental alternative that still uses the same worktree, ceilings, review, and draft-PR path.
+6. **execute** — hands `spec-final.md` to the configured execute backend inside an isolated worktree on its own branch, then enforces `protected_paths` and the real post-execution `max_diff_files`/`max_diff_lines` ceilings. The default backend is e3d-code (formerly spec2code). `providers.execute: "grok-build"` is an experimental alternative that still uses the same worktree, ceilings, review, and draft-PR path.
 7. **review** — runs (or auto-detects) verification commands and asks an independent review provider to inspect the actual diff.
 8. **publish** — only after verification passes: commits the run's audit artifacts to the branch and hands off to a publish backend (`github` or `local`) to open a draft PR or leave a local review branch.
 9. **approval gate 2** — a human runs `approve-merge` after reviewing the draft PR/local branch. For GitHub targets, e3d-pilot records the current PR head SHA and refuses to merge any later head without a new approval.
@@ -172,7 +172,7 @@ It is shadow-mode and advisory-only: a match never blocks ingest or changes the 
 
 After the ideate provider writes candidates, an optional `candidate_scoring` block can re-rank them with 3–5 independent read-only workers before ideas are materialized. The original model pick is stored as `model_selected`; `selected` becomes the ensemble winner among non-duplicate candidates. Scoring never executes, publishes, or approves — the two human gates still apply.
 
-Any `lib/providers` adapter can be the scoring provider. `grok-build` is one option, intended as a cheaper fan-out in front of frontier negotiate and s2c execute:
+Any `lib/providers` adapter can be the scoring provider. `grok-build` is one option, intended as a cheaper fan-out in front of frontier negotiate and e3d-code execute:
 
 ```json
 "candidate_scoring": {
@@ -206,7 +206,7 @@ Start from [`examples/sample-fleet-config-with-ops.json`](examples/sample-fleet-
 
 ## Requirements and installation
 
-Install Bash, Git, `jq`, `curl`, and `spec2code`; install and authenticate whichever model CLIs and forge CLI your configuration uses (`claude`, `codex`, `devin`, a local OpenAI-compatible endpoint, and/or `grok` for `grok-build`). Add this repository's `bin` directory to `PATH`:
+Install Bash, Git, `jq`, and `curl`; the full pipeline's execute stage also needs [`e3d-code`](https://github.com/spacepacket1/e3d-code) (formerly `spec2code`; the debate and MCP tools do not). Install and authenticate whichever model CLIs and forge CLI your configuration uses (`claude`, `codex`, `devin`, a local OpenAI-compatible endpoint, and/or `grok` for `grok-build`). Add this repository's `bin` directory to `PATH`:
 
 ```bash
 git clone https://github.com/spacepacket1/e3d-pilot.git
@@ -225,7 +225,7 @@ Create `.e3d-pilot/config.json` in the target repository. Start from [`examples/
 - `research_topics`: hints for discovery research.
 - `analogy_domains`: optional cross-domain seed list for discovery's analogy pass (see above); falls back to a built-in default when omitted.
 - `providers`: provider names for `discover`, `ideate`, `draft`, ordered
-  `negotiate` reviewers, independent `review`, and optional `execute` (`s2c` by
+  `negotiate` reviewers, independent `review`, and optional `execute` (`e3d-code` by
   default, or experimental `grok-build`). `discover`, `ideate`, `negotiate`,
   and `review` may be a string or an array of provider names; when an array is
   set, every listed model runs (discover/review concatenate their output;
@@ -408,7 +408,7 @@ See the [motivating Gemini/Qwen provider debate](docs/debates/2026-09-15-gemini-
 To use Grok only as a cheap candidate ranker, keep your existing
 ideate/negotiate providers and add `candidate_scoring` (see
 [Optional ensemble scoring](#optional-ensemble-scoring)). That fan-out never
-executes. Human approval, negotiate, and s2c execute stay in place.
+executes. Human approval, negotiate, and e3d-code execute stay in place.
 
 **devin** — shells out to the Devin CLI in non-interactive print mode. Defaults to `claude-sonnet-4-6-thinking-1m`; override with environment variables:
 
@@ -431,16 +431,16 @@ Every real call through the local adapter serializes through a machine-wide lock
 
 A negotiate reviewer that omits the optional `reason:` field gets a synthesized `"(no reason provided by reviewer)"` rather than failing the parse — small models that produce a valid `status:` line but drop the reason field are tolerated.
 
-The execute stage defaults to `spec2code`, which currently dispatches
+The execute stage defaults to `e3d-code`, which currently dispatches
 Codex and Claude. An experimental `providers.execute: "grok-build"` path runs
-Grok directly inside the same approval-gated isolated worktree. s2c remains the
+Grok directly inside the same approval-gated isolated worktree. e3d-code remains the
 recommended executor. See [Grok Build integration and benchmarks](docs/grok-build.md).
 
 ## Publishing
 
 `auto` selects `github` for a `github.com` origin and `local` otherwise. GitHub pushes only the run branch and calls `gh pr create --draft`; it never merges or pushes the base branch. Local commits the worktree branch without network access and writes `publish-summary.md`. The scripts in `lib/publish/` share the extension seam for a future GitLab backend.
 
-Only after verification passes, publish force-adds findings, candidates, negotiation log, final spec, and s2c manifest under the run's audit path so summary links resolve on the branch. Labels configured in `pr.labels` are applied to the GitHub PR at creation time.
+Only after verification passes, publish force-adds findings, candidates, negotiation log, final spec, and e3d-code manifest under the run's audit path so summary links resolve on the branch. Labels configured in `pr.labels` are applied to the GitHub PR at creation time.
 
 ## Notifications
 
@@ -640,7 +640,7 @@ Exports write `ideation.jsonl`, `preferences.jsonl`, `implementation.jsonl`, and
 
 ## Safety model
 
-Discovery, ideation, and optional `candidate_scoring` do not mutate source. Scoring is read-only and cannot execute a candidate. Draft, negotiate, execute, review, and publish require current implementation approval. Execution uses a separate worktree and per-run branch. Protected paths are checked both when drafting and immediately before the execute backend runs. Actual file/line ceilings stop before review. Failed verification blocks publish. Publication opens a draft PR or local review branch. s2c is the default execute backend; Grok Build cannot waive those outer gates even if `providers.execute` selects it.
+Discovery, ideation, and optional `candidate_scoring` do not mutate source. Scoring is read-only and cannot execute a candidate. Draft, negotiate, execute, review, and publish require current implementation approval. Execution uses a separate worktree and per-run branch. Protected paths are checked both when drafting and immediately before the execute backend runs. Actual file/line ceilings stop before review. Failed verification blocks publish. Publication opens a draft PR or local review branch. e3d-code is the default execute backend; Grok Build cannot waive those outer gates even if `providers.execute` selects it.
 
 Merge is a separate operation. `approve-merge` binds approval to the observed target set and exact PR head SHA. Merge refuses stale heads, changed base branches, draft PRs, closed PRs, missing approvals, and unsupported local merge backends. e3d-pilot never force-pushes or pushes directly to a protected base branch.
 

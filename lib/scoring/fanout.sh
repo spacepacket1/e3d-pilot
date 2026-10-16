@@ -297,7 +297,7 @@ scoring_run_fanout() {
     {schema_version:1, strategy:"read-only-fanout", provider:$provider,
      requested_workers:$requested, valid_workers:$valid,
      partial:($valid != $requested), workers:$workers, ranked:$ranked,
-     downstream:"existing negotiation then s2c execute; scoring never executes"}
+     downstream:"existing negotiation then e3d-code execute; scoring never executes"}
   ' "$normalized" > "$output_file"
   return "$overall_status"
 }

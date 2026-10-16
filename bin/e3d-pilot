@@ -891,7 +891,7 @@ write_candidates_markdown() {
         printf '.\n\n'
       fi
       jq -r '.ranked[] | "- `" + .id + "`: " + (.average_score|tostring)' "$scoring_file"
-      printf '\nScoring never executes a candidate. Downstream remains human approval, then negotiate, then s2c execute.\n\n'
+      printf '\nScoring never executes a candidate. Downstream remains human approval, then negotiate, then e3d-code execute.\n\n'
     fi
     printf '## Dedup Context\n\n'
     cat "$facts_file"
@@ -1100,9 +1100,9 @@ build_draft_prompt() {
   local facts_file="$1" prompt_file="$2" conventions_file="$3" protected_paths_list="$4" max_diff_files="$5" max_diff_lines="$6"
   {
     printf 'You are the draft stage of an autonomous repo-improvement pipeline.\n'
-    printf 'Turn the selected candidate below into a complete, s2c-shaped phased\n'
-    printf 'Markdown spec that spec2code (s2c) can run without any hand-editing.\n\n'
-    printf 'Follow these s2c spec conventions exactly:\n\n'
+    printf 'Turn the selected candidate below into a complete, e3d-code-shaped phased\n'
+    printf 'Markdown spec that e3d-code can run without any hand-editing.\n\n'
+    printf 'Follow these e3d-code spec conventions exactly:\n\n'
     cat "$conventions_file"
     printf '\nHard requirements for your output:\n'
     printf -- '- Start with a "# <Title>" heading, then "## Overview", "## Goals",\n'
@@ -1269,7 +1269,7 @@ draft_validate_spec() {
         [[ -n "$model_line" ]] || continue
         value="$(printf '%s\n' "$model_line" | sed -E 's/^<!--[[:space:]]*runner:model=([^ ]+)[[:space:]]*-->$/\1/')"
         if [[ "$value" == "local" || "$value" == local:* ]]; then
-          printf 'Phase %s: runner:model references unsupported provider "local" (s2c only dispatches codex/claude)\n' "$phase_number" >> "$violations_file"
+          printf 'Phase %s: runner:model references unsupported provider "local" (e3d-code only dispatches codex/claude)\n' "$phase_number" >> "$violations_file"
         fi
       done <<< "$model_lines"
     fi
@@ -1306,7 +1306,7 @@ draft_validate_spec() {
 # execute_spec_guard:
 # that guard re-checks protected_paths against the final spec exactly, while
 # the real max_diff_files/max_diff_lines ceiling is enforced by execute_stage
-# after s2c runs, against the actual git diff -- this is only a pre-execution
+# after e3d-code runs, against the actual git diff -- this is only a pre-execution
 # estimate to catch an obviously-too-big candidate before negotiate/execute.
 draft_check_scope_ceiling() {
   local spec_file="$1" config_file="$2" violations_file="$3" warnings_file="${4:-}"
@@ -1437,7 +1437,7 @@ ensure_worktree() {
   fi
 
   # Git worktrees intentionally omit ignored dependency directories. Reuse
-  # dependency installations already prepared in the primary clone so s2c's
+  # dependency installations already prepared in the primary clone so e3d-code's
   # phase-level verification can run without downloading packages on every
   # autonomous execution. Each ignored symlink never enters the branch diff.
   # Not just the repo root: a repo laid out as separate sub-packages (e.g.
@@ -1484,13 +1484,13 @@ prepare_execute_spec_in_worktree() {
   printf '%s' "$target_spec"
 }
 
-# Build caches, bytecode, and runner state are not product diff. s2c/Go
+# Build caches, bytecode, and runner state are not product diff. e3d-code/Go
 # often write GOCACHE under the worktree (go/.tmp/...) which would otherwise
 # blow the file/line ceilings by tens of thousands of files.
 count_git_diff_skip_path() {
   local path="$1"
   case "$path" in
-    .spec2code|.spec2code/*) return 0 ;;
+    .e3d-code|.e3d-code/*|.spec2code|.spec2code/*) return 0 ;;
     .e3d-pilot|.e3d-pilot/*) return 0 ;;
     node_modules|node_modules/*) return 0 ;;
     go/.tmp|go/.tmp/*) return 0 ;;
@@ -1527,12 +1527,13 @@ count_git_diff() {
   printf '%s\t%s\n' "$files_changed" "$lines_changed"
 }
 
-copy_s2c_state_artifacts() {
-  local worktree_dir="$1" run_dir="$2" s2c_state_dir
-  s2c_state_dir="$worktree_dir/.spec2code"
-  if [[ -d "$s2c_state_dir" ]]; then
-    rm -rf "$run_dir/s2c-state"
-    cp -R "$s2c_state_dir" "$run_dir/s2c-state"
+copy_e3d_code_state_artifacts() {
+  local worktree_dir="$1" run_dir="$2" e3d_code_state_dir
+  e3d_code_state_dir="$worktree_dir/.e3d-code"
+  [[ -d "$e3d_code_state_dir" ]] || e3d_code_state_dir="$worktree_dir/.spec2code"  # pre-rename state dir
+  if [[ -d "$e3d_code_state_dir" ]]; then
+    rm -rf "$run_dir/e3d-code-state"
+    cp -R "$e3d_code_state_dir" "$run_dir/e3d-code-state"
   fi
 }
 
@@ -1565,8 +1566,8 @@ copy_execute_local_data_paths() {
 
 execute_stage() {
   local repo="$1" run_id="$2" run_dir config_file spec_final_file violations_file worktree_dir branch
-  local max_diff_files max_diff_lines diff_counts diff_files diff_lines s2c_bin s2c_stdout s2c_stderr s2c_status
-  local worktree_spec_file s2c_command_file execute_backend provider_script execute_prompt execute_stdout execute_stderr execute_status availability_output availability_status
+  local max_diff_files max_diff_lines diff_counts diff_files diff_lines e3d_code_bin e3d_code_stdout e3d_code_stderr e3d_code_status
+  local worktree_spec_file e3d_code_command_file execute_backend provider_script execute_prompt execute_stdout execute_stderr execute_status availability_output availability_status
 
   ensure_git_repo "$repo"
   config_file="$(config_path_for_repo "$repo")"
@@ -1581,7 +1582,7 @@ execute_stage() {
   violations_file="$run_dir/execute-guard-violations.txt"
   if ! execute_spec_guard "$spec_final_file" "$config_file" "$violations_file"; then
     {
-      printf 'execute: rejected spec-final.md before s2c was invoked because it violates protected_paths\n'
+      printf 'execute: rejected spec-final.md before e3d-code was invoked because it violates protected_paths\n'
       while IFS= read -r line; do
         [[ -n "$line" ]] || continue
         printf '  - %s\n' "$line"
@@ -1591,7 +1592,7 @@ execute_stage() {
     return "$EXECUTE_EXIT_NEEDS_HUMAN"
   fi
 
-  execute_backend="$(jq -r '.providers.execute // "s2c"' "$config_file")"
+  execute_backend="$(jq -r '.providers.execute // "e3d-code"' "$config_file")"
   if [[ "$execute_backend" == "grok-build" ]]; then
     provider_script="$REPO_ROOT/lib/providers/grok-build"
     [[ -x "$provider_script" ]] || die "Grok Build provider script missing or not executable: $provider_script"
@@ -1610,35 +1611,35 @@ execute_stage() {
   max_diff_files="$(config_value "$config_file" '.max_diff_files')"
   max_diff_lines="$(config_value "$config_file" '.max_diff_lines')"
   case "$execute_backend" in
-    s2c)
-      s2c_bin="$(command -v spec2code || true)"
-      [[ -n "$s2c_bin" ]] || die "spec2code not found on PATH"
+    e3d-code|s2c)  # "s2c" is the pre-rename config value, still accepted
+      e3d_code_bin="$(command -v e3d-code || command -v spec2code || true)"
+      [[ -n "$e3d_code_bin" ]] || die "e3d-code not found on PATH (needed only for the execute stage; install: https://github.com/spacepacket1/e3d-code). Debate and MCP tools do not need it."
 
-      s2c_stdout="$run_dir/execute-s2c.stdout"
-      s2c_stderr="$run_dir/execute-s2c.stderr"
-      s2c_command_file="$run_dir/execute-s2c.command"
+      e3d_code_stdout="$run_dir/execute-e3d-code.stdout"
+      e3d_code_stderr="$run_dir/execute-e3d-code.stderr"
+      e3d_code_command_file="$run_dir/execute-e3d-code.command"
       printf 'cd %s && MAX_PHASES_PER_RUN=%s MAX_PROVIDER_TOKENS_PER_PHASE=%s CODEX_CONTEXT_WINDOW=%s CODEX_AUTO_COMPACT_TOKEN_LIMIT=%s %s %s all\n' \
-        "$worktree_dir" "${E3D_PILOT_S2C_MAX_PHASES:-8}" "${E3D_PILOT_S2C_MAX_TOKENS_PER_PHASE:-120000}" \
+        "$worktree_dir" "${E3D_PILOT_CODE_MAX_PHASES:-${E3D_PILOT_S2C_MAX_PHASES:-8}}" "${E3D_PILOT_CODE_MAX_TOKENS_PER_PHASE:-${E3D_PILOT_S2C_MAX_TOKENS_PER_PHASE:-120000}}" \
         "${E3D_PILOT_CODEX_CONTEXT_WINDOW:-128000}" "${E3D_PILOT_CODEX_AUTO_COMPACT_LIMIT:-96000}" \
-        "$s2c_bin" "$worktree_spec_file" > "$s2c_command_file"
+        "$e3d_code_bin" "$worktree_spec_file" > "$e3d_code_command_file"
 
       set +e
       ( cd "$worktree_dir" && \
-        MAX_PHASES_PER_RUN="${E3D_PILOT_S2C_MAX_PHASES:-8}" \
-        MAX_PROVIDER_TOKENS_PER_PHASE="${E3D_PILOT_S2C_MAX_TOKENS_PER_PHASE:-120000}" \
+        MAX_PHASES_PER_RUN="${E3D_PILOT_CODE_MAX_PHASES:-${E3D_PILOT_S2C_MAX_PHASES:-8}}" \
+        MAX_PROVIDER_TOKENS_PER_PHASE="${E3D_PILOT_CODE_MAX_TOKENS_PER_PHASE:-${E3D_PILOT_S2C_MAX_TOKENS_PER_PHASE:-120000}}" \
         CODEX_CONTEXT_WINDOW="${E3D_PILOT_CODEX_CONTEXT_WINDOW:-128000}" \
         CODEX_AUTO_COMPACT_TOKEN_LIMIT="${E3D_PILOT_CODEX_AUTO_COMPACT_LIMIT:-96000}" \
-        "$s2c_bin" "$worktree_spec_file" all ) >"$s2c_stdout" 2>"$s2c_stderr"
-      s2c_status=$?
+        "$e3d_code_bin" "$worktree_spec_file" all ) >"$e3d_code_stdout" 2>"$e3d_code_stderr"
+      e3d_code_status=$?
       set -e
 
-      copy_s2c_state_artifacts "$worktree_dir" "$run_dir"
+      copy_e3d_code_state_artifacts "$worktree_dir" "$run_dir"
 
-      if [[ $s2c_status -ne 0 ]]; then
-        if [[ -s "$s2c_stderr" ]]; then
-          die "execute s2c run failed: $(tr '\n' ' ' < "$s2c_stderr")"
+      if [[ $e3d_code_status -ne 0 ]]; then
+        if [[ -s "$e3d_code_stderr" ]]; then
+          die "execute e3d-code run failed: $(tr '\n' ' ' < "$e3d_code_stderr")"
         fi
-        die "execute s2c run failed with exit status $s2c_status"
+        die "execute e3d-code run failed with exit status $e3d_code_status"
       fi
       ;;
     grok-build)
@@ -1669,7 +1670,7 @@ execute_stage() {
       fi
       ;;
     *)
-      die "unsupported providers.execute backend: $execute_backend (expected s2c or grok-build)"
+      die "unsupported providers.execute backend: $execute_backend (expected e3d-code or grok-build; legacy alias: s2c)"
       ;;
   esac
 
@@ -1886,10 +1887,10 @@ build_review_prompt() {
 manifest_copy_name() {
   local manifest_source="$1"
   case "$(basename "$manifest_source")" in
-    manifest.jsonl) printf 's2c-manifest-rows.jsonl' ;;
-    manifest.json) printf 's2c-manifest-rows.json' ;;
-    manifest.tsv) printf 's2c-manifest-rows.tsv' ;;
-    *) printf 's2c-manifest-rows.txt' ;;
+    manifest.jsonl) printf 'e3d-code-manifest-rows.jsonl' ;;
+    manifest.json) printf 'e3d-code-manifest-rows.json' ;;
+    manifest.tsv) printf 'e3d-code-manifest-rows.tsv' ;;
+    *) printf 'e3d-code-manifest-rows.txt' ;;
   esac
 }
 
@@ -1959,7 +1960,7 @@ review_stage() {
   diff_text="$run_dir/review-diff.patch"
   # Plain `git diff` (no ref) only shows *uncommitted* worktree changes, which
   # breaks the moment anything on this run's branch is committed -- true for
-  # any multi-phase run, since s2c commits per phase. Diff from this branch's
+  # any multi-phase run, since e3d-code commits per phase. Diff from this branch's
   # actual merge-base with its configured base branch instead, so a reviewer
   # sees the whole run's change regardless of how many commits it took. `add
   # -N -A` first stages any still-uncommitted untracked files as intent-to-add
@@ -2074,21 +2075,23 @@ review_stage() {
 }
 
 prepare_publish_audit() {
-  local run_dir="$1" worktree="$2" run_id="$3" dest="$worktree/.e3d-pilot/runs/$run_id" name source manifest_source manifest_name
+  local run_dir="$1" worktree="$2" run_id="$3" dest="$worktree/.e3d-pilot/runs/$run_id" name source manifest_source manifest_name state_subdir
   mkdir -p "$dest"
   for name in findings.md candidates.md negotiation-log.md spec-final.md; do
     source="$run_dir/$name"; [[ -f "$source" ]] || die "publish requires audit artifact: $source"
     cp "$source" "$dest/$name"
   done
   manifest_source=""
-  if [[ -f "$run_dir/s2c-state/manifest.jsonl" ]]; then
-    manifest_source="$run_dir/s2c-state/manifest.jsonl"
-  elif [[ -f "$run_dir/s2c-state/manifest.json" ]]; then
-    manifest_source="$run_dir/s2c-state/manifest.json"
-  elif [[ -f "$run_dir/s2c-state/manifest.tsv" ]]; then
-    manifest_source="$run_dir/s2c-state/manifest.tsv"
+  state_subdir="e3d-code-state"
+  [[ -d "$run_dir/$state_subdir" ]] || state_subdir="s2c-state"  # runs created before the rename
+  if [[ -f "$run_dir/$state_subdir/manifest.jsonl" ]]; then
+    manifest_source="$run_dir/$state_subdir/manifest.jsonl"
+  elif [[ -f "$run_dir/$state_subdir/manifest.json" ]]; then
+    manifest_source="$run_dir/$state_subdir/manifest.json"
+  elif [[ -f "$run_dir/$state_subdir/manifest.tsv" ]]; then
+    manifest_source="$run_dir/$state_subdir/manifest.tsv"
   fi
-  [[ -n "$manifest_source" ]] || die "publish requires s2c manifest copy under $run_dir/s2c-state"
+  [[ -n "$manifest_source" ]] || die "publish requires e3d-code manifest copy under $run_dir/$state_subdir"
   manifest_name="$(manifest_copy_name "$manifest_source")"
   cp "$manifest_source" "$dest/$manifest_name"
   printf '%s\t%s\n' "$dest" "$manifest_name"
@@ -2195,8 +2198,8 @@ draft_stage() {
   local response_file="$run_dir/draft-response.md"
   local spec_file="$run_dir/spec-draft.md"
   local rejected_file="$run_dir/draft-rejected.md"
-  local conventions_file="${S2C_SPEC_CONVENTIONS_FILE:-$REPO_ROOT/lib/draft/s2c-spec-conventions.md}"
-  [[ -s "$conventions_file" ]] || die "missing s2c spec conventions file: $conventions_file"
+  local conventions_file="${E3D_CODE_SPEC_CONVENTIONS_FILE:-${S2C_SPEC_CONVENTIONS_FILE:-$REPO_ROOT/lib/draft/e3d-code-spec-conventions.md}}"
+  [[ -s "$conventions_file" ]] || die "missing e3d-code spec conventions file: $conventions_file"
 
   local protected_paths_list max_diff_files max_diff_lines
   protected_paths_list="$(jq -r '.protected_paths[] | "- " + .' "$config_file")"
@@ -2543,7 +2546,7 @@ validate_config_file() {
   json_type_check "$file" '.providers.negotiate | length >= 1' "config.providers.negotiate must be a non-empty array"
   json_type_check "$file" '.providers.negotiate | all(.[]; type == "string")' "config.providers.negotiate must be a non-empty array of strings"
   stage_providers_type_ok "$file" review "config.providers.review must be a string or a non-empty array of strings"
-  json_type_check "$file" 'if (.providers | has("execute")) then (.providers.execute == "s2c" or .providers.execute == "grok-build") else true end' "config.providers.execute must be s2c or grok-build when provided"
+  json_type_check "$file" 'if (.providers | has("execute")) then (.providers.execute == "e3d-code" or .providers.execute == "s2c" or .providers.execute == "grok-build") else true end' "config.providers.execute must be e3d-code (or legacy s2c) or grok-build when provided"
   json_type_check "$file" '.max_diff_files | type == "number"' "config.max_diff_files must be a number"
   json_type_check "$file" '.max_diff_files == (.max_diff_files | floor)' "config.max_diff_files must be an integer value"
   json_type_check "$file" '.max_diff_files >= 0' "config.max_diff_files must be a non-negative integer"

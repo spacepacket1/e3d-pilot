@@ -80,8 +80,8 @@
         },
         "execute": {
           "type": "string",
-          "enum": ["s2c", "grok-build"],
-          "default": "s2c"
+          "enum": ["e3d-code", "s2c", "grok-build"],
+          "default": "e3d-code"
         }
       }
     },

@@ -105,20 +105,20 @@ EOF
   chmod +x "$PROVIDER"
 }
 
-make_s2c_bin() {
+make_e3d_code_bin() {
   local bin_dir="$1"
   mkdir -p "$bin_dir"
-  cat > "$bin_dir/spec2code" <<'EOF'
+  cat > "$bin_dir/e3d-code" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 spec="${1:?spec required}"
 stage="${2:?stage required}"
 [[ "$stage" == "all" && -f "$spec" ]] || exit 1
-mkdir -p .spec2code
-printf '{"phase":1,"status":"ok"}\n' > .spec2code/manifest.json
-printf '\nimplemented by phase21 s2c\n' >> README.md
+mkdir -p .e3d-code
+printf '{"phase":1,"status":"ok"}\n' > .e3d-code/manifest.json
+printf '\nimplemented by phase21 e3d-code\n' >> README.md
 EOF
-  chmod +x "$bin_dir/spec2code"
+  chmod +x "$bin_dir/e3d-code"
 }
 
 make_gh_stub() {
@@ -187,10 +187,10 @@ run_id_from_failure_output() {
 }
 
 repair_run_resumes_publish_without_redoing_prior_stages() {
-  local repo idea s2c_bin_dir gh_bin_dir bare pr_url fail_marker trace out status run_id state before_count after_count
+  local repo idea e3d_code_bin_dir gh_bin_dir bare pr_url fail_marker trace out status run_id state before_count after_count
   repo="$(make_repo)"
-  s2c_bin_dir="$(mktemp -d)"
-  make_s2c_bin "$s2c_bin_dir"
+  e3d_code_bin_dir="$(mktemp -d)"
+  make_e3d_code_bin "$e3d_code_bin_dir"
   bare="$(mktemp -d)"
   git init -q --bare "$bare"
   git -C "$repo" remote add origin "$bare"
@@ -206,7 +206,7 @@ repair_run_resumes_publish_without_redoing_prior_stages() {
   local implement_trace
   implement_trace="$(mktemp)"
   set +e
-  out="$(PHASE21_TRACE_FILE="$implement_trace" PATH="$s2c_bin_dir:$gh_bin_dir:$PATH" "$BIN" ideas implement --repo "$repo" "$idea" 2>&1)"
+  out="$(PHASE21_TRACE_FILE="$implement_trace" PATH="$e3d_code_bin_dir:$gh_bin_dir:$PATH" "$BIN" ideas implement --repo "$repo" "$idea" 2>&1)"
   status=$?
   set -e
   [[ $status -ne 0 ]] || { echo "expected implement to fail while the label is missing" >&2; exit 1; }
@@ -220,7 +220,7 @@ repair_run_resumes_publish_without_redoing_prior_stages() {
   # execute, or review needs to change or redo.
   rm -f "$fail_marker"
 
-  out="$(PHASE21_TRACE_FILE="$implement_trace" PATH="$s2c_bin_dir:$gh_bin_dir:$PATH" "$BIN" ideas repair-run --repo "$repo" --run-id "$run_id" "$idea")"
+  out="$(PHASE21_TRACE_FILE="$implement_trace" PATH="$e3d_code_bin_dir:$gh_bin_dir:$PATH" "$BIN" ideas repair-run --repo "$repo" --run-id "$run_id" "$idea")"
   assert_contains "$out" "ideas: repaired $idea run=$run_id from=publish"
 
   after_count="$(wc -l < "$implement_trace" | tr -d '[:space:]')"
@@ -241,15 +241,15 @@ repair_run_resumes_publish_without_redoing_prior_stages() {
   [[ $status -ne 0 ]] || { echo "repair-run should refuse once the idea is already implemented" >&2; exit 1; }
   assert_contains "$out" "only applies to an idea currently in implementation_failed"
 
-  rm -rf "$s2c_bin_dir" "$gh_bin_dir" "$bare"
+  rm -rf "$e3d_code_bin_dir" "$gh_bin_dir" "$bare"
   rm -f "$fail_marker" "$trace" "$implement_trace"
 }
 
 repair_run_refuses_when_earlier_stage_artifact_is_missing() {
-  local repo idea s2c_bin_dir gh_bin_dir bare pr_url fail_marker trace out status run_id run_dir
+  local repo idea e3d_code_bin_dir gh_bin_dir bare pr_url fail_marker trace out status run_id run_dir
   repo="$(make_repo)"
-  s2c_bin_dir="$(mktemp -d)"
-  make_s2c_bin "$s2c_bin_dir"
+  e3d_code_bin_dir="$(mktemp -d)"
+  make_e3d_code_bin "$e3d_code_bin_dir"
   bare="$(mktemp -d)"
   git init -q --bare "$bare"
   git -C "$repo" remote add origin "$bare"
@@ -263,7 +263,7 @@ repair_run_refuses_when_earlier_stage_artifact_is_missing() {
   "$BIN" ideas approve --repo "$repo" "$idea" --actor approver@example.com >/dev/null
 
   set +e
-  out="$(PATH="$s2c_bin_dir:$gh_bin_dir:$PATH" "$BIN" ideas implement --repo "$repo" "$idea" 2>&1)"
+  out="$(PATH="$e3d_code_bin_dir:$gh_bin_dir:$PATH" "$BIN" ideas implement --repo "$repo" "$idea" 2>&1)"
   status=$?
   set -e
   [[ $status -ne 0 ]] || { echo "expected implement to fail while the label is missing" >&2; exit 1; }
@@ -283,7 +283,7 @@ repair_run_refuses_when_earlier_stage_artifact_is_missing() {
   assert_contains "$out" "no successful negotiate output on disk"
   assert_eq "$(jq -r '.status' "$repo/.e3d-pilot/ideas/$idea/idea.json")" "implementation_failed" "status unchanged after refused repair"
 
-  rm -rf "$s2c_bin_dir" "$gh_bin_dir" "$bare"
+  rm -rf "$e3d_code_bin_dir" "$gh_bin_dir" "$bare"
   rm -f "$fail_marker" "$trace"
 }
 

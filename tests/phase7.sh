@@ -58,7 +58,7 @@ Exercise execute-stage worktree behavior.
 
 ## Goals
 
-- Run s2c from an isolated worktree.
+- Run e3d-code from an isolated worktree.
 
 ## Non-Goals
 
@@ -87,10 +87,10 @@ Exercise execute-stage worktree behavior.
 EOF
 }
 
-make_fake_s2c_bin() {
+make_fake_e3d_code_bin() {
   local bin_dir="$1"
   mkdir -p "$bin_dir"
-  cat > "$bin_dir/spec2code" <<'EOF'
+  cat > "$bin_dir/e3d-code" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 
@@ -100,15 +100,15 @@ stage="${2:-}"
 [[ "$stage" == "all" ]] || { echo "expected stage=all" >&2; exit 1; }
 [[ -f "$spec_path" ]] || { echo "spec not found: $spec_path" >&2; exit 1; }
 
-if [[ -n "${FAKE_S2C_TRACE_FILE:-}" ]]; then
-  printf '%s\n' "$PWD|$spec_path|$stage" >> "$FAKE_S2C_TRACE_FILE"
+if [[ -n "${FAKE_E3D_CODE_TRACE_FILE:-}" ]]; then
+  printf '%s\n' "$PWD|$spec_path|$stage" >> "$FAKE_E3D_CODE_TRACE_FILE"
 fi
 
-mkdir -p .spec2code
-printf '{"result":"ok"}\n' > .spec2code/manifest.json
-printf 's2c summary\n' > .spec2code/summary.md
+mkdir -p .e3d-code
+printf '{"result":"ok"}\n' > .e3d-code/manifest.json
+printf 'e3d-code summary\n' > .e3d-code/summary.md
 
-case "${FAKE_S2C_MODE:-small-diff}" in
+case "${FAKE_E3D_CODE_MODE:-small-diff}" in
   small-diff)
     printf '\nexecute stage touched the worktree\n' >> README.md
     printf 'worktree-only file\n' > CHANGELOG.md
@@ -122,15 +122,15 @@ case "${FAKE_S2C_MODE:-small-diff}" in
     done
     ;;
   *)
-    echo "unknown FAKE_S2C_MODE: ${FAKE_S2C_MODE:-}" >&2
+    echo "unknown FAKE_E3D_CODE_MODE: ${FAKE_E3D_CODE_MODE:-}" >&2
     exit 1
     ;;
 esac
 EOF
-  chmod +x "$bin_dir/spec2code"
+  chmod +x "$bin_dir/e3d-code"
 }
 
-execute_uses_isolated_worktree_and_copies_s2c_artifacts() {
+execute_uses_isolated_worktree_and_copies_e3d_code_artifacts() {
   local repo run_id run_dir bin_dir out branch worktree worktree_record spec_copy trace_line trace_file primary_readme
   local trace_pwd trace_spec trace_stage
   local primary_head_before primary_branch_before primary_head_after primary_branch_after
@@ -147,12 +147,12 @@ execute_uses_isolated_worktree_and_copies_s2c_artifacts() {
 
   bin_dir="$(mktemp -d)"
   trace_file="$(mktemp)"
-  make_fake_s2c_bin "$bin_dir"
+  make_fake_e3d_code_bin "$bin_dir"
 
   primary_head_before="$(git -C "$repo" rev-parse HEAD)"
   primary_branch_before="$(git -C "$repo" symbolic-ref --short HEAD)"
 
-  out="$(PATH="$bin_dir:$PATH" FAKE_S2C_MODE="small-diff" FAKE_S2C_TRACE_FILE="$trace_file" "$BIN" run --repo "$repo" --stage execute --run-id "$run_id")"
+  out="$(PATH="$bin_dir:$PATH" FAKE_E3D_CODE_MODE="small-diff" FAKE_E3D_CODE_TRACE_FILE="$trace_file" "$BIN" run --repo "$repo" --stage execute --run-id "$run_id")"
 
   primary_head_after="$(git -C "$repo" rev-parse HEAD)"
   primary_branch_after="$(git -C "$repo" symbolic-ref --short HEAD)"
@@ -168,7 +168,7 @@ execute_uses_isolated_worktree_and_copies_s2c_artifacts() {
   assert_eq "$branch" "e3d-pilot/$run_id" "execute branch name"
   [[ -d "$worktree" ]] || { echo "expected execute worktree directory" >&2; exit 1; }
   [[ "$worktree" != "$repo" ]] || { echo "worktree should differ from primary repo checkout" >&2; exit 1; }
-  [[ -f "$worktree/CHANGELOG.md" ]] || { echo "expected s2c changes in worktree" >&2; exit 1; }
+  [[ -f "$worktree/CHANGELOG.md" ]] || { echo "expected e3d-code changes in worktree" >&2; exit 1; }
   [[ -L "$worktree/node_modules" ]] || { echo "expected execute worktree to reuse installed root dependencies" >&2; exit 1; }
   assert_eq "$(cd "$(readlink "$worktree/node_modules")" && pwd -P)" "$(cd "$repo/node_modules" && pwd -P)" "worktree dependency symlink target"
   [[ ! -f "$repo/CHANGELOG.md" ]] || { echo "primary checkout should remain untouched" >&2; exit 1; }
@@ -176,14 +176,14 @@ execute_uses_isolated_worktree_and_copies_s2c_artifacts() {
   assert_eq "$primary_head_after" "$primary_head_before" "primary checkout HEAD sha should be unchanged"
   assert_eq "$primary_branch_after" "$primary_branch_before" "primary checkout should remain on its original branch"
   [[ "$primary_branch_after" != "e3d-pilot/$run_id" ]] || { echo "primary checkout should never be switched onto the execute branch" >&2; exit 1; }
-  assert_eq "$(cd "$trace_pwd" && pwd -P)" "$worktree" "s2c working directory"
-  assert_eq "$(cd "$(dirname "$trace_spec")" && pwd -P)/$(basename "$trace_spec")" "$(cd "$(dirname "$spec_copy")" && pwd -P)/$(basename "$spec_copy")" "s2c spec path"
-  assert_eq "$trace_stage" "all" "s2c stage"
-  assert_contains "$(cat "$run_dir/execute-s2c.command")" "$spec_copy"
-  [[ -f "$run_dir/s2c-state/manifest.json" ]] || { echo "expected s2c manifest copy in run dir" >&2; exit 1; }
-  [[ -f "$run_dir/s2c-state/summary.md" ]] || { echo "expected s2c summary copy in run dir" >&2; exit 1; }
+  assert_eq "$(cd "$trace_pwd" && pwd -P)" "$worktree" "e3d-code working directory"
+  assert_eq "$(cd "$(dirname "$trace_spec")" && pwd -P)/$(basename "$trace_spec")" "$(cd "$(dirname "$spec_copy")" && pwd -P)/$(basename "$spec_copy")" "e3d-code spec path"
+  assert_eq "$trace_stage" "all" "e3d-code stage"
+  assert_contains "$(cat "$run_dir/execute-e3d-code.command")" "$spec_copy"
+  [[ -f "$run_dir/e3d-code-state/manifest.json" ]] || { echo "expected e3d-code manifest copy in run dir" >&2; exit 1; }
+  [[ -f "$run_dir/e3d-code-state/summary.md" ]] || { echo "expected e3d-code summary copy in run dir" >&2; exit 1; }
   [[ -n "$(git -C "$repo" branch --list "e3d-pilot/$run_id")" ]] || { echo "expected execute branch to exist" >&2; exit 1; }
-  assert_contains "$out" "execute: completed s2c run"
+  assert_contains "$out" "execute: completed e3d-code run"
 
   rm -rf "$bin_dir" "$trace_file"
 }
@@ -205,9 +205,9 @@ execute_reuses_nested_subpackage_node_modules() {
   write_phase7_spec_final "$repo" "$run_id" "README.md"
 
   bin_dir="$(mktemp -d)"
-  make_fake_s2c_bin "$bin_dir"
+  make_fake_e3d_code_bin "$bin_dir"
 
-  out="$(PATH="$bin_dir:$PATH" FAKE_S2C_MODE="small-diff" "$BIN" run --repo "$repo" --stage execute --run-id "$run_id")"
+  out="$(PATH="$bin_dir:$PATH" FAKE_E3D_CODE_MODE="small-diff" "$BIN" run --repo "$repo" --stage execute --run-id "$run_id")"
 
   worktree_record="$(cut -f2 "$run_dir/execute-worktree.txt")"
   worktree="$(cd "$worktree_record" && pwd -P)"
@@ -217,7 +217,7 @@ execute_reuses_nested_subpackage_node_modules() {
   [[ -L "$worktree/client/node_modules" ]] || { echo "expected execute worktree to reuse installed client/node_modules" >&2; exit 1; }
   assert_eq "$(cd "$(readlink "$worktree/server/node_modules")" && pwd -P)" "$(cd "$repo/server/node_modules" && pwd -P)" "worktree server/node_modules symlink target"
   assert_eq "$(cd "$(readlink "$worktree/client/node_modules")" && pwd -P)" "$(cd "$repo/client/node_modules" && pwd -P)" "worktree client/node_modules symlink target"
-  assert_contains "$out" "execute: completed s2c run"
+  assert_contains "$out" "execute: completed e3d-code run"
 
   # The actual bug this symlinking exists to avoid reintroducing: a tracked
   # .gitignore pattern ending in "/" (set above) only matches real
@@ -234,7 +234,7 @@ execute_reuses_nested_subpackage_node_modules() {
   rm -rf "$bin_dir"
 }
 
-execute_rejects_protected_path_before_invoking_s2c() {
+execute_rejects_protected_path_before_invoking_e3d_code() {
   local repo run_id bin_dir trace_file out status
   repo="$(make_repo_with_commit)"
   write_phase7_config "$repo" 10 50
@@ -243,17 +243,17 @@ execute_rejects_protected_path_before_invoking_s2c() {
 
   bin_dir="$(mktemp -d)"
   trace_file="$(mktemp)"
-  make_fake_s2c_bin "$bin_dir"
+  make_fake_e3d_code_bin "$bin_dir"
 
   set +e
-  out="$(PATH="$bin_dir:$PATH" FAKE_S2C_TRACE_FILE="$trace_file" "$BIN" run --repo "$repo" --stage execute --run-id "$run_id" 2>&1)"
+  out="$(PATH="$bin_dir:$PATH" FAKE_E3D_CODE_TRACE_FILE="$trace_file" "$BIN" run --repo "$repo" --stage execute --run-id "$run_id" 2>&1)"
   status=$?
   set -e
 
   assert_eq "$status" "4" "protected-path rejection should request human review"
-  assert_contains "$out" "rejected spec-final.md before s2c was invoked"
+  assert_contains "$out" "rejected spec-final.md before e3d-code was invoked"
   assert_contains "$out" "protected_paths entry \"deploy/**\""
-  [[ ! -s "$trace_file" ]] || { echo "s2c should not have been invoked" >&2; exit 1; }
+  [[ ! -s "$trace_file" ]] || { echo "e3d-code should not have been invoked" >&2; exit 1; }
 
   rm -rf "$bin_dir" "$trace_file"
 }
@@ -269,12 +269,12 @@ execute_does_not_link_unignored_dependencies() {
   write_phase7_spec_final "$repo" "$run_id" "README.md"
 
   bin_dir="$(mktemp -d)"
-  make_fake_s2c_bin "$bin_dir"
-  out="$(PATH="$bin_dir:$PATH" FAKE_S2C_MODE="small-diff" "$BIN" run --repo "$repo" --stage execute --run-id "$run_id")"
+  make_fake_e3d_code_bin "$bin_dir"
+  out="$(PATH="$bin_dir:$PATH" FAKE_E3D_CODE_MODE="small-diff" "$BIN" run --repo "$repo" --stage execute --run-id "$run_id")"
   worktree="$(cut -f2 "$run_dir/execute-worktree.txt")"
 
   [[ ! -e "$worktree/node_modules" ]] || { echo "unignored dependencies must not be linked into the execute diff" >&2; exit 1; }
-  assert_contains "$out" "execute: completed s2c run"
+  assert_contains "$out" "execute: completed e3d-code run"
 
   rm -rf "$bin_dir"
 }
@@ -288,10 +288,10 @@ execute_stops_when_diff_exceeds_ceiling() {
   write_phase7_spec_final "$repo" "$run_id" "README.md"
 
   bin_dir="$(mktemp -d)"
-  make_fake_s2c_bin "$bin_dir"
+  make_fake_e3d_code_bin "$bin_dir"
 
   set +e
-  out="$(PATH="$bin_dir:$PATH" FAKE_S2C_MODE="huge-diff" "$BIN" run --repo "$repo" --stage execute --run-id "$run_id" 2>&1)"
+  out="$(PATH="$bin_dir:$PATH" FAKE_E3D_CODE_MODE="huge-diff" "$BIN" run --repo "$repo" --stage execute --run-id "$run_id" 2>&1)"
   status=$?
   set -e
 
@@ -413,16 +413,16 @@ EOF
 }
 
 execute_oversized_diff_halts_stage_all_before_review_and_publish() {
-  local repo bin_dir s2c_bin_dir out status run_id run_dir
+  local repo bin_dir e3d_code_bin_dir out status run_id run_dir
   repo="$(make_repo_with_commit)"
   write_phase7_all_stage_config "$repo" 10 5
   bin_dir="$(mktemp -d)"
   make_fake_claude_bin_for_full_pipeline "$bin_dir"
-  s2c_bin_dir="$(mktemp -d)"
-  make_fake_s2c_bin "$s2c_bin_dir"
+  e3d_code_bin_dir="$(mktemp -d)"
+  make_fake_e3d_code_bin "$e3d_code_bin_dir"
 
   set +e
-  out="$(PATH="$bin_dir:$s2c_bin_dir:$PATH" DRAFT_LINES_PER_REQUIREMENT_BULLET=0 FAKE_S2C_MODE="huge-diff" "$BIN" run --repo "$repo" --stage all 2>&1)"
+  out="$(PATH="$bin_dir:$e3d_code_bin_dir:$PATH" DRAFT_LINES_PER_REQUIREMENT_BULLET=0 FAKE_E3D_CODE_MODE="huge-diff" "$BIN" run --repo "$repo" --stage all 2>&1)"
   status=$?
   set -e
 
@@ -437,14 +437,46 @@ execute_oversized_diff_halts_stage_all_before_review_and_publish() {
   [[ ! -f "$run_dir/publish-summary.md" ]] || { echo "publish stage should never have run" >&2; exit 1; }
   [[ ! -f "$run_dir/publish-backend.out" ]] || { echo "publish backend should never have been invoked" >&2; exit 1; }
 
-  rm -rf "$bin_dir" "$s2c_bin_dir"
+  rm -rf "$bin_dir" "$e3d_code_bin_dir"
+}
+
+execute_still_works_with_pre_rename_spec2code_binary_and_state_dir() {
+  local repo run_id run_dir bin_dir out
+  repo="$(make_repo_with_commit)"
+  write_phase7_config "$repo" 10 50
+  run_id="2026-10-16-repo-execute-legacy-spec2code"
+  run_dir="$repo/.e3d-pilot/runs/$run_id"
+  write_phase7_spec_final "$repo" "$run_id" "README.md"
+
+  # A machine that has not updated yet: only a `spec2code` binary on PATH, which writes `.spec2code/`.
+  bin_dir="$(mktemp -d)"
+  make_fake_e3d_code_bin "$bin_dir"
+  sed 's/\.e3d-code/.spec2code/g' "$bin_dir/e3d-code" > "$bin_dir/spec2code"
+  chmod +x "$bin_dir/spec2code"
+  rm "$bin_dir/e3d-code"
+
+  # Simulate a machine without e3d-code: drop any PATH entry that provides it.
+  local legacy_path="" dir
+  while IFS= read -r dir; do
+    [[ -x "$dir/e3d-code" ]] || legacy_path="${legacy_path:+$legacy_path:}$dir"
+  done < <(tr ':' '\n' <<<"$PATH")
+
+  out="$(PATH="$bin_dir:$legacy_path" FAKE_E3D_CODE_MODE="small-diff" "$BIN" run --repo "$repo" --stage execute --run-id "$run_id")"
+  assert_contains "$out" "execute: completed e3d-code run"
+  [[ -f "$run_dir/e3d-code-state/manifest.json" ]] || { echo "legacy .spec2code state should be copied to e3d-code-state" >&2; exit 1; }
+
+  # And the pre-rename config value still selects the same backend.
+  jq '.providers.execute = "s2c"' "$repo/.e3d-pilot/config.json" > "$repo/.e3d-pilot/config.json.tmp" && mv "$repo/.e3d-pilot/config.json.tmp" "$repo/.e3d-pilot/config.json"
+  "$BIN" config validate "$repo" >/dev/null || { echo "providers.execute=s2c must still validate" >&2; exit 1; }
+  rm -rf "$bin_dir"
 }
 
 main() {
-  execute_uses_isolated_worktree_and_copies_s2c_artifacts
+  execute_uses_isolated_worktree_and_copies_e3d_code_artifacts
+  execute_still_works_with_pre_rename_spec2code_binary_and_state_dir
   execute_reuses_nested_subpackage_node_modules
   execute_does_not_link_unignored_dependencies
-  execute_rejects_protected_path_before_invoking_s2c
+  execute_rejects_protected_path_before_invoking_e3d_code
   execute_stops_when_diff_exceeds_ceiling
   execute_respects_paused_file
   execute_oversized_diff_halts_stage_all_before_review_and_publish

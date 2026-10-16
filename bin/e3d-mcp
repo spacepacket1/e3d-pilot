@@ -273,6 +273,8 @@ async function doctor() {
   for (const p of providers) console.log(`  ${p.available ? 'ok  ' : '--  '} ${p.name}  ${p.detail}`);
   check(avail.length >= 2, `${avail.length} provider(s) available (a debate needs at least 2)`,
     'install and log in to two model CLIs, e.g. `claude` and `codex`; see README "Providers"');
+  const code = await run('bash', ['-c', 'command -v e3d-code || command -v spec2code'], { timeoutMs: 5000 });
+  console.log(`\n${code.code === 0 ? 'ok  ' : '--  '} e3d-code ${code.code === 0 ? `found (${code.out.trim()})` : 'not found -- only needed for the full pipeline execute stage, not for debate/MCP: https://github.com/spacepacket1/e3d-code'}`);
   console.log(ok ? '\nAll good. Run `e3d-mcp --print-config` for the Copilot/VS Code config.' : '\nFix the FAIL items above, then re-run.');
   process.exit(ok ? 0 : 1);
 }

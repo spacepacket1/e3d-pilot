@@ -131,10 +131,10 @@ EOF
   chmod +x "$PROVIDER"
 }
 
-make_s2c_stub() {
+make_e3d_code_stub() {
   local bin_dir="$1"
   mkdir -p "$bin_dir"
-  cat > "$bin_dir/spec2code" <<'EOF'
+  cat > "$bin_dir/e3d-code" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 if [[ "${1:-}" == "--list" ]]; then
@@ -143,11 +143,11 @@ fi
 spec="${1:?spec required}"
 stage="${2:?stage required}"
 [[ "$stage" == "all" && -f "$spec" ]] || exit 1
-mkdir -p .spec2code
-printf '{"phase":1,"status":"ok"}\n' > .spec2code/manifest.json
+mkdir -p .e3d-code
+printf '{"phase":1,"status":"ok"}\n' > .e3d-code/manifest.json
 printf '\nRevenue signal: gated workflow produced this draft PR.\n' >> README.md
 EOF
-  chmod +x "$bin_dir/spec2code"
+  chmod +x "$bin_dir/e3d-code"
 }
 
 make_gh_stub() {
@@ -273,7 +273,7 @@ approval_gated_e2e() {
   trace="$dir/gh-trace.txt"
   jq -ncS '{prs:[]}' > "$state"
   : > "$trace"
-  make_s2c_stub "$bin_dir"
+  make_e3d_code_stub "$bin_dir"
   make_gh_stub "$bin_dir"
 
   main_before="$(git -C "$repo" rev-parse main)"
@@ -377,9 +377,9 @@ EOF
 }
 
 spec_runner_parses_phase_tiers() {
-  if command -v spec2code >/dev/null 2>&1; then
+  if command -v e3d-code >/dev/null 2>&1; then
     local out
-    out="$(spec2code "$ROOT/docs/approval-gated-idea-lifecycle.md" --list)"
+    out="$(e3d-code "$ROOT/docs/approval-gated-idea-lifecycle.md" --list)"
     assert_contains "$out" "Phase 9"
   fi
 }

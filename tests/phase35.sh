@@ -109,15 +109,15 @@ EOF
   chmod +x "$PROVIDER"
 }
 
-# The stub s2c backend itself is the assertion: it fails loudly if the
+# The stub e3d-code backend itself is the assertion: it fails loudly if the
 # gitignored local-data path isn't present in its own cwd (the fresh execute
 # worktree) by the time it runs, and records what it actually saw so the
 # test can also assert on the negative case (an unconfigured/missing path
 # must never error, just be skipped).
-make_s2c_bin() {
+make_e3d_code_bin() {
   local bin_dir="$1" expect_marker="$2" trace_file="$3"
   mkdir -p "$bin_dir"
-  cat > "$bin_dir/spec2code" <<EOF
+  cat > "$bin_dir/e3d-code" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
 spec="\${1:?spec required}"
@@ -128,11 +128,11 @@ if [[ -f "$expect_marker" ]]; then
 else
   printf 'marker-missing\n' >> "$trace_file"
 fi
-mkdir -p .spec2code
-printf '{"phase":1,"status":"ok"}\n' > .spec2code/manifest.json
-printf '\nimplemented by phase35 s2c\n' >> README.md
+mkdir -p .e3d-code
+printf '{"phase":1,"status":"ok"}\n' > .e3d-code/manifest.json
+printf '\nimplemented by phase35 e3d-code\n' >> README.md
 EOF
-  chmod +x "$bin_dir/spec2code"
+  chmod +x "$bin_dir/e3d-code"
 }
 
 make_repo() {
@@ -185,7 +185,7 @@ configured_local_data_path_is_copied_into_worktree() {
   repo="$(make_repo '["local-secrets"]')"
   bin_dir="$(mktemp -d)"
   trace="$(mktemp)"
-  make_s2c_bin "$bin_dir" "\$PWD/local-secrets/marker.txt" "$trace"
+  make_e3d_code_bin "$bin_dir" "\$PWD/local-secrets/marker.txt" "$trace"
   idea="$(ingest_idea "$repo" run-1 "Local data carry-forward")"
   "$BIN" ideas approve --repo "$repo" "$idea" >/dev/null
   PATH="$bin_dir:$PATH" "$BIN" ideas implement --repo "$repo" "$idea" >/dev/null
@@ -200,7 +200,7 @@ unconfigured_or_missing_local_data_path_is_skipped_without_error() {
   repo="$(make_repo '["does-not-exist-in-this-repo"]')"
   bin_dir="$(mktemp -d)"
   trace="$(mktemp)"
-  make_s2c_bin "$bin_dir" "\$PWD/does-not-exist-in-this-repo/marker.txt" "$trace"
+  make_e3d_code_bin "$bin_dir" "\$PWD/does-not-exist-in-this-repo/marker.txt" "$trace"
   idea="$(ingest_idea "$repo" run-1 "Missing local data path")"
   "$BIN" ideas approve --repo "$repo" "$idea" >/dev/null
   PATH="$bin_dir:$PATH" "$BIN" ideas implement --repo "$repo" "$idea" >/dev/null
@@ -216,7 +216,7 @@ no_config_field_defaults_to_copying_nothing() {
   jq 'del(.execute_local_data_paths)' "$repo/.e3d-pilot/config.json" > "$repo/.e3d-pilot/config.json.tmp"
   mv "$repo/.e3d-pilot/config.json.tmp" "$repo/.e3d-pilot/config.json"
   bin_dir="$(mktemp -d)"
-  make_s2c_bin "$bin_dir" "\$PWD/local-secrets/marker.txt" "$(mktemp)"
+  make_e3d_code_bin "$bin_dir" "\$PWD/local-secrets/marker.txt" "$(mktemp)"
   idea="$(ingest_idea "$repo" run-1 "No local data config")"
   "$BIN" ideas approve --repo "$repo" "$idea" >/dev/null
   PATH="$bin_dir:$PATH" "$BIN" ideas implement --repo "$repo" "$idea" >/dev/null

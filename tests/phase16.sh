@@ -103,20 +103,20 @@ EOF
   chmod +x "$PROVIDER"
 }
 
-make_s2c_bin() {
+make_e3d_code_bin() {
   local bin_dir="$1"
   mkdir -p "$bin_dir"
-  cat > "$bin_dir/spec2code" <<'EOF'
+  cat > "$bin_dir/e3d-code" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 spec="${1:?spec required}"
 stage="${2:?stage required}"
 [[ "$stage" == "all" && -f "$spec" ]] || exit 1
-mkdir -p .spec2code
-printf '{"phase":1,"status":"ok"}\n' > .spec2code/manifest.json
-printf '\nimplemented by phase16 s2c\n' >> README.md
+mkdir -p .e3d-code
+printf '{"phase":1,"status":"ok"}\n' > .e3d-code/manifest.json
+printf '\nimplemented by phase16 e3d-code\n' >> README.md
 EOF
-  chmod +x "$bin_dir/spec2code"
+  chmod +x "$bin_dir/e3d-code"
 }
 
 make_repo() {
@@ -178,7 +178,7 @@ single_repo_approved_implementation_records_delivery() {
   local repo bin_dir idea out state
   repo="$(make_repo)"
   bin_dir="$(mktemp -d)"
-  make_s2c_bin "$bin_dir"
+  make_e3d_code_bin "$bin_dir"
   idea="$(ingest_idea "$repo" run-1 "Single approved delivery")"
   "$BIN" ideas approve --repo "$repo" "$idea" --actor approver@example.com >/dev/null
   out="$(PATH="$bin_dir:$PATH" "$BIN" ideas implement --repo "$repo" "$idea")"
@@ -245,7 +245,7 @@ fleet_two_repo_success_records_linked_runs() {
   fleet="$dir/fleet.json"
   jq -ncS --arg r1 "$repo1" --arg r2 "$repo2" '[$r1,$r2]' > "$fleet"
   bin_dir="$(mktemp -d)"
-  make_s2c_bin "$bin_dir"
+  make_e3d_code_bin "$bin_dir"
   idea="$(ingest_fleet_idea "$fleet" "Two repo fleet delivery")"
   "$BIN" fleet ideas "$fleet" approve "$idea" >/dev/null
   PATH="$bin_dir:$PATH" "$BIN" fleet ideas "$fleet" implement "$idea" >/dev/null
@@ -267,7 +267,7 @@ fleet_second_failure_records_success_failure_and_skip() {
   fleet="$dir/fleet.json"
   jq -ncS --arg r1 "$repo1" --arg r2 "$repo2" --arg r3 "$repo3" '[$r1,$r2,$r3]' > "$fleet"
   bin_dir="$(mktemp -d)"
-  make_s2c_bin "$bin_dir"
+  make_e3d_code_bin "$bin_dir"
   idea="$(ingest_fleet_idea "$fleet" "Failing fleet delivery")"
   "$BIN" fleet ideas "$fleet" approve "$idea" >/dev/null
   set +e
@@ -288,7 +288,7 @@ implement_approved_queue_returns_nonzero_after_recorded_failure() {
   local repo ok bad bin_dir status state
   repo="$(make_repo false)"
   bin_dir="$(mktemp -d)"
-  make_s2c_bin "$bin_dir"
+  make_e3d_code_bin "$bin_dir"
   ok="$(ingest_idea "$repo" run-a "Queue failure delivery")"
   "$BIN" ideas approve --repo "$repo" "$ok" >/dev/null
   set +e
