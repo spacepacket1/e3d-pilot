@@ -142,6 +142,8 @@ In Copilot agent mode (or any client), ask: *"Before you pick a storage layer, r
 
 ### Run the pipeline from your editor
 
+> **Status (0.2.0):** the pipeline tools and the sampling default are new. They are tested with scripted MCP clients and fake providers, not yet verified inside a real VS Code Copilot session. Approving from the editor is off unless you set `E3D_MCP_ALLOW_APPROVAL=1`, and the pipeline tools only touch repositories you allow.
+
 Besides debates, `e3d-mcp` can drive the human-gated pipeline, so an assistant can go from a decision to a draft PR without leaving the editor. The tools call the same CLI code paths a person would; they never reimplement a stage or weaken a gate.
 
 | Tool | Cost | What it does |
