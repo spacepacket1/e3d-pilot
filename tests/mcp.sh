@@ -118,6 +118,19 @@ grep -q "All good" <<< "$doc" && fail "--doctor must not claim 'All good' withou
 grep -qE "Requirements met\.|Fix the FAIL items" <<< "$doc" || fail "--doctor should end with a conditional hint"
 grep -q "tool that writes code phase by phase" <<< "$doc" || grep -q "e3d-code found" <<< "$doc" || fail "--doctor must explain or report e3d-code"
 
+# recent VS Code ships Copilot Chat built in: no extension listed must not be reported as a missing install
+FAKECODE="$(mktemp -d)"
+cat > "$FAKECODE/code" <<'CEOF'
+#!/bin/sh
+case "$1" in --version) printf '1.142.0\nabc123\narm64\n' ;; --list-extensions) : ;; esac
+CEOF
+chmod +x "$FAKECODE/code"
+doc2="$(PATH="$FAKECODE:$PATH" "$SERVER" --doctor 2>/dev/null || true)"
+grep -q "Install the GitHub Copilot extension" <<< "$doc2" && fail "--doctor must not tell users to install Copilot when it is built in"
+grep -q "built in" <<< "$doc2" || fail "--doctor should explain that Copilot Chat is built in to recent VS Code"
+grep -q "VS Code 1.142.0" <<< "$doc2" || fail "--doctor should report the VS Code version"
+rm -rf "$FAKECODE"
+
 red="$(node -e "import('$ROOT/lib/mcp/redact.js').then(m=>console.log(m.redact('k=sk-abcdefghijklmnopqrstuvwx and ANTHROPIC_API_KEY=hunter2 and {\"password\":\"p4ss\"} plain')))")"
 [[ "$red" == *"plain" ]] || fail "redact should keep ordinary text"
 [[ "$red" != *abcdefghijklmnop* && "$red" != *hunter2* && "$red" != *p4ss* ]] || fail "redact leaked a secret: $red"

@@ -47,9 +47,21 @@ assert.equal(v.selection, 'pinned');
 v = chooseVoices({ known: k('claude'), samplingOn: false, env: {} });
 assert.equal(v.providers.length, 1, 'one provider is reported as-is so the caller can say "need 2"');
 
-assert.equal(independence(['mcp-sampling', 'mcp-sampling-b'], [{ model: 'x' }, { model: 'x' }]).independent, false);
-assert.equal(independence(['mcp-sampling', 'mcp-sampling-b'], [{ model: 'x' }, { model: 'y' }]).independent, true);
-assert.equal(independence(['mcp-sampling', 'claude'], [{ model: 'x' }]).independent, true, 'a CLI voice counts as a separate model');
+const sm = (...ms) => ms.map(([provider, model]) => ({ provider, model }));
+assert.equal(independence(['mcp-sampling', 'mcp-sampling-b'], sm(['mcp-sampling', 'x'], ['mcp-sampling-b', 'x'])).independent, false);
+assert.equal(independence(['mcp-sampling', 'mcp-sampling-b'], sm(['mcp-sampling', 'x'], ['mcp-sampling-b', 'y'])).independent, true);
+assert.equal(independence(['mcp-sampling', 'claude'], sm(['mcp-sampling', 'x'])).independent, true, 'an unknown-family model plus a CLI voice are distinct');
+// vendor families: Copilot's Claude and the claude CLI are the same family
+let ind = independence(['mcp-sampling', 'claude'], sm(['mcp-sampling', 'claude-sonnet-5.5']));
+assert.equal(ind.independent, false, 'Copilot Claude + claude CLI is one family');
+assert.match(ind.warnings[0], /anthropic family/);
+ind = independence(['mcp-sampling', 'claude', 'codex'], sm(['mcp-sampling', 'claude-sonnet-5.5']));
+assert.equal(ind.independent, true);
+assert.match(ind.warnings.join(' '), /2 of 3 voices are anthropic models/, 'overlap is reported even when the debate is independent');
+assert.deepEqual(ind.families.sort(), ['anthropic', 'openai']);
+ind = independence(['mcp-sampling', 'mcp-sampling-b'], sm(['mcp-sampling', 'claude-sonnet-5.5'], ['mcp-sampling-b', 'gpt-5.1']));
+assert.equal(ind.independent, true); assert.equal(ind.warnings.length, 0);
+assert.equal(independence(['codex', 'openai-api'], []).independent, false, 'two OpenAI providers are one family');
 console.log('voices ok');
 JS
 
@@ -107,6 +119,8 @@ assert_eq "$(sc <<< "$out" | jq -r '.warnings | length')" "0"
 assert_eq "$(sc <<< "$out" | jq -r .selection)" "explicit"
 assert_eq "$(sc <<< "$out" | jq -r .synthesizer)" "mcp-sampling" "the client's model writes the verdict"
 assert_eq "$(sc <<< "$out" | jq -r '[.models[].model] | unique | join(",")')" "model-a,model-b" "which models actually answered is reported"
+assert_eq "$(sc <<< "$out" | jq -r '[.models[].calls] | add')" "3" "per-model call counts add up to the three sampling requests"
+assert_eq "$(sc <<< "$out" | jq -r '[.models[] | "\(.provider)|\(.model)"] | (length == (unique | length))')" "true" "one entry per provider and model, not one per call"
 n="$(jq '[.events[] | select(.request=="sampling/createMessage")] | length' <<< "$out")"
 assert_eq "$n" "3" "2 voices x 1 round + 1 synthesis"
 assert_eq "$(jq -r '[.events[] | select(.request=="sampling/createMessage") | .params.modelPreferences.hints[0].name] | unique | join(",")' <<< "$out")" "claude,gpt" "the two voices ask for different model families"

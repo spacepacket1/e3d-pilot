@@ -176,14 +176,21 @@ async function toolDebate(args, progress, ctx) {
     if (r.code !== 0 || !verdict) return text(`error: debate failed (exit ${r.code})\n${redact(r.err.slice(-1500))}`, true);
 
     const { roundsRan, positions } = parsePositions(transcript);
-    const samplingModels = sampling.drain(tag).map((m) => ({ provider: m.voice === 'b' ? 'mcp-sampling-b' : 'mcp-sampling', model: m.model, hint: m.hint }));
-    const indep = usesSampling ? independence(providers, samplingModels) : { independent: true, warnings: [] };
+    const samplingCalls = sampling.drain(tag).map((m) => ({ provider: m.voice === 'b' ? 'mcp-sampling-b' : 'mcp-sampling', model: m.model, hint: m.hint }));
+    // One entry per provider+model, with how many calls it answered (a voice that also wrote the verdict made two).
+    const samplingModels = [...samplingCalls.reduce((acc, m) => {
+      const k = `${m.provider}|${m.model}`;
+      acc.set(k, { ...m, calls: (acc.get(k)?.calls ?? 0) + 1 });
+      return acc;
+    }, new Map()).values()];
+    const indep = independence(providers, samplingModels);
     const result = {
       ...verdict,
       mode, providers, rounds_requested: rounds, rounds_ran: roundsRan || rounds,
       selection, selection_note: selectionNote, synthesizer,
       ...(samplingModels.length ? { models: samplingModels } : {}),
       independent: indep.independent, warnings: indep.warnings,
+      ...(indep.families.length ? { families: indep.families } : {}),
       usage: { model_calls: spent.calls, est_input_tokens: spent.inTokens, est_output_tokens: spent.outTokens, estimate: true },
       budget,
       positions,
@@ -278,7 +285,8 @@ const TOOLS = [
         selection: { type: 'string', enum: ['auto', 'pinned', 'explicit'], description: 'How the participating models were chosen.' },
         selection_note: { type: 'string' },
         synthesizer: { type: 'string' },
-        models: { type: 'array', items: { type: 'object', properties: { provider: { type: 'string' }, model: { type: 'string' }, hint: { type: ['string', 'null'] } } }, description: 'Which models actually answered through MCP sampling.' },
+        models: { type: 'array', items: { type: 'object', properties: { provider: { type: 'string' }, model: { type: 'string' }, hint: { type: ['string', 'null'] }, calls: { type: 'integer' } } }, description: 'Which models actually answered through MCP sampling, with how many calls each answered.' },
+        families: { type: 'array', items: { type: 'string' }, description: 'Vendor families among the voices.' },
         independent: { type: 'boolean', description: 'false when every voice resolved to the same model.' },
         warnings: { type: 'array', items: { type: 'string' } },
         transcript: { type: 'string' },

@@ -82,6 +82,13 @@
           ],
           "type": "object"
         },
+        "families": {
+          "description": "Vendor families among the voices.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "final_answer": {
           "type": "string"
         },
@@ -93,9 +100,12 @@
           "type": "string"
         },
         "models": {
-          "description": "Which models actually answered through MCP sampling.",
+          "description": "Which models actually answered through MCP sampling, with how many calls each answered.",
           "items": {
             "properties": {
+              "calls": {
+                "type": "integer"
+              },
               "hint": {
                 "type": [
                   "string",

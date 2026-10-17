@@ -57,6 +57,9 @@ out="$(call b e3d_usage '{}' "$CAP")"
 assert_eq "$(sc <<< "$out" | jq -r .calls_today)" "6" "the refusal recorded nothing"
 assert_eq "$(sc <<< "$out" | jq -r .calls_limit)" "7"
 assert_contains "$(jq -r '.results[0].content[0].text' <<< "$out")" "of 7 calls"
+resets="$(sc <<< "$out" | jq -r .resets_at)"
+[[ "$resets" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T00:00:00\.000Z$ ]] || fail "budget must say when it resets (UTC midnight), got [$resets]"
+[[ "$resets" > "$(date -u +%Y-%m-%dT%H:%M:%S)" ]] || fail "resets_at must be in the future"
 
 # a token cap uses the worst-case estimate
 out="$(call c e3d_debate "$Q" '{"E3D_MCP_DAILY_EST_TOKENS":"100"}')"

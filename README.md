@@ -193,6 +193,17 @@ When the client supports MCP *sampling* (VS Code does, per its docs), `e3d_debat
 
 Sampling can only answer text-in, text-out prompts, so it works for debates and for the `negotiate` and `review` stages if you name `mcp-sampling` in a repo's `providers`. `discover`, `ideate`, `draft` and `execute` must read or edit the repository and still need a model CLI. `e3d_pilot_config_check` warns about this. A job that uses a sampling provider fails if the editor or server stops mid-run.
 
+**If something doesn't work in VS Code** (observed in a real run on VS Code 1.142 with the built-in Copilot Chat):
+
+- The "Start" code lens may show only "e3d-pilot Error". The reason is in VS Code's agent-host log: newer builds will not start an MCP server until a chat session exists ("Cannot start an MCP server before the session runtime has been created. Send a message first."). Open Chat, send any message, then start or restart the server.
+- VS Code may show a one-time "migration" message that empties `.vscode/mcp.json` and writes a `.mcp.json` in a different format (`mcpServers`, `type: local`, `tools: ["*"]`). If your server vanished, check which file VS Code is reading, or restore `.vscode/mcp.json` from `e3d-mcp --print-config`. Local stdio servers may also require the "Local" chat session type.
+- The permission prompt to let the server use your models appears on the first **debate**, not on `e3d_list_providers` (which calls no model).
+- `e3d-mcp --doctor` may say no separate Copilot extension is listed. Recent VS Code builds include Copilot Chat built in, so that is expected.
+- The daily budget resets at **00:00 UTC** (5 PM Pacific during daylight time), so its "day" can differ from your local date. `e3d_usage` shows the exact `resets_at`.
+- While an implementation is paused, the idea's ledger status is still `implementing`; the job reports `waiting_for_human` with `paused_before`. After `e3d_pilot_cancel_paused` or `e3d_pilot_execute`, that job is marked `cancelled` or `resumed`.
+- Ledger entries made through MCP are attributed to `mcp:<client>` (or `E3D_MCP_ACTOR`), never to the git identity of whoever owns the checkout. A declined approval is recorded as a note on the idea.
+- A debate result now reports vendor families: Copilot's Claude plus the `claude` CLI count as one family, and overlap is called out in `warnings`.
+
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `E3D_MCP_REPOS` | workspace roots | `:`-separated repos the pipeline tools may use. |

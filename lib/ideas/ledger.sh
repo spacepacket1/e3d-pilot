@@ -146,6 +146,12 @@ ideas_resolve_actor() {
     printf '%s' "$explicit"
     return 0
   fi
+  # Callers that act on someone's behalf (the MCP server) name the actor here, so the git identity of
+  # whoever happens to own the checkout is not written into a ledger that gets committed.
+  if [[ -n "${E3D_PILOT_ACTOR:-}" ]]; then
+    printf '%s' "$E3D_PILOT_ACTOR"
+    return 0
+  fi
   if [[ -n "$context_dir" && -d "$context_dir" ]]; then
     email="$(git -C "$context_dir" config user.email 2>/dev/null || true)"
   fi
