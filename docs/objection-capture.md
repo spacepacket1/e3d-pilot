@@ -1,0 +1,39 @@
+# Objection capture: structured data from reviews
+
+The adversarial-reviewer RFC (debate 2026-10-17-qwen-adversarial-reviewer-rfc) found that the logs record what models
+said and what was decided, but rarely whether an objection was right. These three pieces start recording that.
+
+## 1. One record per reviewer turn
+
+The negotiate stage appends one JSON line per reviewer turn to `.e3d-pilot/runs/<run-id>/negotiation-objections.jsonl`
+(copied into the PR with the other run artifacts):
+
+`run_id, invocation, round, reviewer_index, provider, status, reason, spec_before_sha, spec_after_sha, changed, lines_added, lines_removed, recorded_at`
+
+A `revise` turn applies its replacement spec immediately, so later reviewers in the round review the revised draft:
+there is no separate adopted/rejected choice to record. `spec_before_sha` of reviewer k equals `spec_after_sha` of
+reviewer k-1. Whether a change survives to `spec-final.md` is derived offline (the backfill tool does it). The stage also
+adds one `negotiate_objections` finding to the run's linked idea. Recording never fails the stage.
+
+## 2. A defect that got past review
+
+```bash
+e3d-pilot ideas defect --repo <path> --found-by <live-run|ci|human|review|production|other> \
+  [--stage-missed <draft|negotiate|execute|review|publish|unknown>] [--severity <critical|high|medium|low|unknown>] \
+  [--evidence <path-or-url>] <idea-id> "<what slipped through>"
+```
+
+Records a structured `post_review_defect:` finding on the idea. These are the most valuable examples for a reviewer
+model: the committee approved something and a later check disproved it.
+
+## 3. Backfill from history
+
+```bash
+bin/e3d-objections-backfill --repo <path> [--dry-run] [--force]
+```
+
+Rebuilds the same records from existing `negotiation-log.md` files (deterministic, no model, never edits a log), adding
+`backfilled: true` and `survives_in_final` (the share of the lines a turn added that remain in the final spec). Runs
+that already have a file are skipped unless `--force`.
+
+None of this labels an objection as valid. That needs a human or independently validated adjudication.

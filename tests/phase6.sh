@@ -256,6 +256,14 @@ negotiate_two_reviewers_converge_round_one() {
   assert_contains "$(cat "$log")" "Converged in round 1."
   assert_eq "$(cat "$trace")" $'phase6-approve-a|initial\nphase6-approve-b|initial' "two-reviewer trace order"
 
+  # every reviewer turn is recorded in a structured file (adversarial-reviewer dataset)
+  local objections="$repo/.e3d-pilot/runs/$run_id/negotiation-objections.jsonl"
+  [[ -f "$objections" ]] || { echo "expected negotiation-objections.jsonl" >&2; exit 1; }
+  assert_eq "$(wc -l < "$objections" | tr -d '[:space:]')" "2" "one objection record per reviewer turn"
+  assert_eq "$(jq -s 'map(.status) | join(",")' -r "$objections")" "approved,approved" "statuses recorded"
+  assert_eq "$(jq -s 'map(.changed) | any' "$objections")" "false" "approvals change nothing"
+  assert_eq "$(jq -s 'map(.provider) | join(",")' -r "$objections")" "phase6-approve-a,phase6-approve-b" "providers recorded in order"
+
   rm -f "$trace"
 }
 
@@ -328,6 +336,13 @@ negotiate_three_reviewers_apply_replacements_in_order() {
   log="$repo/.e3d-pilot/runs/$run_id/negotiation-log.md"
   [[ -f "$spec_final" ]] || { echo "expected spec-final.md to be written" >&2; exit 1; }
   [[ -f "$log" ]] || { echo "expected negotiation-log.md to be written" >&2; exit 1; }
+
+  local objections="$repo/.e3d-pilot/runs/$run_id/negotiation-objections.jsonl"
+  [[ -f "$objections" ]] || { echo "expected negotiation-objections.jsonl" >&2; exit 1; }
+  assert_eq "$(jq -s 'map(.reviewer_index) | join(",")' -r "$objections" | head -c 5)" "1,2,3" "reviewer indexes recorded"
+  assert_eq "$(jq -s '[.[] | select(.status == "revise")] | length' "$objections")" "2" "two revise turns recorded"
+  assert_eq "$(jq -s '[.[] | select(.status == "revise" and .changed and .lines_added > 0)] | length' "$objections")" "2" "each revise turn changed the draft"
+  assert_eq "$(jq -s '.[1].spec_before_sha == .[0].spec_after_sha' "$objections")" "true" "the second reviewer saw the first reviewer's replacement"
 
   contents="$(cat "$spec_final")"
   assert_contains "$contents" "phase6-replacement-b"
