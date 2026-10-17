@@ -306,12 +306,26 @@ resume_refuses_when_the_base_moved_since_approval() {
   rm -rf "$code_bin" "$gh_bin" "$bare"
 }
 
+actor_env_overrides_the_git_identity() {
+  local repo idea code_bin gh_bin bare pr_url code_trace provider_trace last
+  setup_world
+  last() { jq -r 'select(.idea_id=="'"$idea"'") | .actor' "$repo/.e3d-pilot/events.jsonl" | tail -1; }
+  "$BIN" ideas note --repo "$repo" "$idea" "no actor given" >/dev/null
+  assert_eq "$(last)" "test@example.com" "default: the git identity, as before"
+  E3D_PILOT_ACTOR="mcp:some-client" "$BIN" ideas note --repo "$repo" "$idea" "env actor" >/dev/null
+  assert_eq "$(last)" "mcp:some-client" "E3D_PILOT_ACTOR replaces the git identity"
+  E3D_PILOT_ACTOR="mcp:some-client" "$BIN" ideas note --repo "$repo" "$idea" "explicit" --actor "human@example.com" >/dev/null
+  assert_eq "$(last)" "human@example.com" "an explicit --actor still wins"
+  rm -rf "$code_bin" "$gh_bin" "$bare"
+}
+
 main() {
   install_provider
   pause_stops_before_execute_and_runs_nothing_after
   resume_runs_only_the_remaining_stages_and_completes
   cancel_paused_records_failure_and_allows_a_fresh_retry
   stop_before_validation
+  actor_env_overrides_the_git_identity
   resume_refuses_when_the_base_moved_since_approval
   echo "phase37: ok"
 }

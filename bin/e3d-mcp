@@ -15,6 +15,7 @@
 // E3D_MCP_MAX_CONCURRENT, E3D_MCP_TIMEOUT_SEC). Nothing here writes to a repo.
 
 import { mkdtemp, writeFile, readFile, rm, stat } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -28,9 +29,15 @@ import { createJobs } from '../lib/mcp/jobs.js';
 import { createPipelineTools } from '../lib/mcp/pipeline-tools.js';
 import { createPipelineActions } from '../lib/mcp/pipeline-actions.js';
 import { createSampling } from '../lib/mcp/sampling.js';
+import { listPrompts, getPrompt } from '../lib/mcp/prompts.js';
 import { chooseVoices, independence, isSampling } from '../lib/mcp/voices.js';
+import { startHttpServer } from '../lib/mcp/http.js';
+import { createUsage, usageFromTranscript, worstCase, usageTool, usageHandler } from '../lib/mcp/usage.js';
 
-const SERVER_INFO = { name: 'e3d-pilot', version: '0.2.0' };
+const HTTP_MODE = process.argv.includes('--http');
+// The version comes from package.json, so a development build (0.2.0-dev.N) reports itself correctly.
+const PKG_VERSION = (() => { try { return JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).version; } catch { return '0.0.0-unknown'; } })();
+const SERVER_INFO = { name: 'e3d-pilot', version: PKG_VERSION };
 const SUPPORTED_PROTOCOLS = ['2025-06-18', '2025-03-26', '2024-11-05'];
 
 const envInt = (name, dflt) => {
@@ -41,9 +48,13 @@ const LIMITS = {
   rounds: envInt('E3D_MCP_MAX_ROUNDS', 3),
   providers: envInt('E3D_MCP_MAX_PROVIDERS', 4),
   concurrent: envInt('E3D_MCP_MAX_CONCURRENT', 2),
-  timeoutMs: envInt('E3D_MCP_TIMEOUT_SEC', 900) * 1000,
+  // Hosted: stay under typical load-balancer idle timeouts unless the operator says otherwise.
+  timeoutMs: envInt('E3D_MCP_TIMEOUT_SEC', HTTP_MODE ? 120 : 900) * 1000,
   maxWords: 600,
   questionChars: 20000,
+  // Editors give up on a tool call after about 3 minutes. When the client's own models answer (MCP sampling), stop first,
+  // so the debate is cancelled and reported instead of running on unseen and charging calls nobody sees.
+  samplingTimeoutMs: envInt('E3D_MCP_SAMPLING_TIMEOUT_SEC', 150) * 1000,
 };
 let activeDebates = 0;
 
@@ -80,7 +91,10 @@ function parsePositions(transcript) {
 
 function renderDebate(d) {
   const label = d.consensus === 'full' ? 'FULL CONSENSUS' : d.consensus === 'majority' ? 'MAJORITY (some dissent)' : d.consensus === 'split' ? 'SPLIT' : 'CONSENSUS UNKNOWN';
+  const warn = (d.warnings ?? []);
   const lines = [
+    `REPORT THIS TO THE USER (do not drop any of it when summarizing): consensus is ${label}; dissent: ${d.dissent.present === false ? 'none' : d.dissent.summary}${warn.length ? `; warnings: ${warn.join(' | ')}` : ''}.`,
+    '',
     `# Debate verdict: ${label}`,
     `_${d.providers.join(', ')} | ${d.mode} mode | ${d.rounds_ran} round${d.rounds_ran === 1 ? '' : 's'}_`,
     '', `**Answer:** ${d.final_answer}`, '',
@@ -140,10 +154,18 @@ async function toolDebate(args, progress, ctx) {
   const claudeUp = stubbed || known.some((k) => k.name === 'claude' && k.available);
   if (synthesizer === undefined) synthesizer = samplingOn && providers.includes('mcp-sampling') ? 'mcp-sampling' : (claudeUp ? 'claude' : providers[0]);
 
-  if (activeDebates >= LIMITS.concurrent) return text(`error: ${LIMITS.concurrent} debates already running; retry shortly`, true);
+  // Refuse BEFORE spending if the worst case for this request would break today's cap.
+  const principal = ctx?.principal ?? 'local';
+  const worst = worstCase({ providers: providers.length, rounds, maxWords, questionChars: question.length });
+  // Reserve the worst case first (atomically, so concurrent debates cannot overshoot the cap), then settle to actual use.
+  const rsv = await usage.reserve(principal, worst, 'debate');
+  if (!rsv.ok) return text(`error: daily budget: ${rsv.reason}`, true);
+  let settled = false;
+  if (activeDebates >= LIMITS.concurrent) { await usage.release(principal, worst, 'debate').catch(() => {}); return text(`error: ${LIMITS.concurrent} debates already running; retry shortly`, true); }
   activeDebates++;
-  const dir = await mkdtemp(join(tmpdir(), 'e3d-mcp-'));
+  let dir = null;
   try {
+    dir = await mkdtemp(join(tmpdir(), 'e3d-mcp-'));
     const qfile = join(dir, 'question.md');
     await writeFile(qfile, question);
     const cliArgs = ['--question-file', qfile, '--providers', providers.join(','), '--rounds', String(rounds),
@@ -152,32 +174,48 @@ async function toolDebate(args, progress, ctx) {
     const tag = `debate-${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 8)}`;
     const usesSampling = providers.some(isSampling) || isSampling(synthesizer);
     const samplingEnv = usesSampling ? await sampling.env(ctx.session, { tag, maxTokens: Math.min(Math.max(maxWords * 3, 300), 4000) }) : {};
+    const timeoutMs = usesSampling ? Math.min(LIMITS.timeoutMs, LIMITS.samplingTimeoutMs) : LIMITS.timeoutMs;
     const r = await run(debateBin, cliArgs, {
-      timeoutMs: LIMITS.timeoutMs,
+      timeoutMs,
       env: { ...process.env, ...samplingEnv },
       onStderr: (s) => { for (const m of s.matchAll(/^=== (.+?) ===$/gm)) progress?.(++step, m[1]); },
     });
-    if (r.timedOut) return text(`error: debate timed out after ${LIMITS.timeoutMs / 1000}s`, true);
+    // Calls that actually ran are counted from the transcript, whether or not the debate succeeded.
+    const transcript = await readFile(join(dir, 'out', 'transcript.md'), 'utf8').catch(() => '');
+    // The synthesis call counts when the transcript shows it ran ("## Synthesis" heading), or when the debate was not stopped by the timeout (a failed debate is charged conservatively).
+    const spent = usageFromTranscript(transcript, question, { synthesized: /\n## Synthesis/.test(transcript) || !r.timedOut });
+    const budget = await usage.settle(principal, { calls: worst.calls, tokens: worst.tokens }, spent);
+    settled = true;
+    if (r.timedOut) return text(`error: debate timed out after ${timeoutMs / 1000}s and was stopped. ${spent.calls} model call(s) had already answered and are counted against today's budget (${budget.remaining_calls ?? 'no limit'} calls left). Try mode "quick", fewer providers, or a shorter question.`, true);
     const verdict = parseVerdict(r.out);
     if (r.code !== 0 || !verdict) return text(`error: debate failed (exit ${r.code})\n${redact(r.err.slice(-1500))}`, true);
 
-    const transcript = await readFile(join(dir, 'out', 'transcript.md'), 'utf8').catch(() => '');
     const { roundsRan, positions } = parsePositions(transcript);
-    const samplingModels = sampling.drain(tag).map((m) => ({ provider: m.voice === 'b' ? 'mcp-sampling-b' : 'mcp-sampling', model: m.model, hint: m.hint }));
-    const indep = usesSampling ? independence(providers, samplingModels) : { independent: true, warnings: [] };
+    const samplingCalls = sampling.drain(tag).map((m) => ({ provider: m.voice === 'b' ? 'mcp-sampling-b' : 'mcp-sampling', model: m.model, hint: m.hint }));
+    // One entry per provider+model, with how many calls it answered (a voice that also wrote the verdict made two).
+    const samplingModels = [...samplingCalls.reduce((acc, m) => {
+      const k = `${m.provider}|${m.model}`;
+      acc.set(k, { ...m, calls: (acc.get(k)?.calls ?? 0) + 1 });
+      return acc;
+    }, new Map()).values()];
+    const indep = independence(providers, samplingModels);
     const result = {
       ...verdict,
       mode, providers, rounds_requested: rounds, rounds_ran: roundsRan || rounds,
       selection, selection_note: selectionNote, synthesizer,
       ...(samplingModels.length ? { models: samplingModels } : {}),
       independent: indep.independent, warnings: indep.warnings,
+      ...(indep.families.length ? { families: indep.families } : {}),
+      usage: { model_calls: spent.calls, est_input_tokens: spent.inTokens, est_output_tokens: spent.outTokens, estimate: true },
+      budget,
       positions,
       ...(args.include_transcript ? { transcript: transcript.trim() } : {}),
     };
     return { content: [{ type: 'text', text: renderDebate(result) }], structuredContent: result };
   } finally {
     activeDebates--;
-    rm(dir, { recursive: true, force: true }).catch(() => {});
+    if (!settled) await usage.release(principal, worst, 'debate').catch(() => {});
+    if (dir) rm(dir, { recursive: true, force: true }).catch(() => {});
   }
 }
 
@@ -231,7 +269,7 @@ async function toolIdeasList(args) {
 const TOOLS = [
   {
     name: 'e3d_debate',
-    description: 'Get a multi-model second opinion on a decision or design question. Independent AI models answer, and a synthesizer returns a final answer, a consensus level (full/majority/split), and any dissent, plus each model\'s final position. ALWAYS report the dissent and consensus level to the user -- the disagreement is the point; never present a split verdict as settled. Write a self-contained question: the models cannot see your code. mode "quick" (default): one round, usually well under a minute. mode "thorough": models also critique each other, a few minutes. Use for architectural choices, tradeoffs, and contestable judgment calls -- not for lookups or questions with an obvious answer. Spends the user\'s model credits.',
+    description: 'Use when the user asks for a second opinion, wants to compare options, or has to decide between alternatives (for example "JSON or SQLite?", "should we...", architecture or library tradeoffs). Get a multi-model second opinion on a decision or design question. Independent AI models answer, and a synthesizer returns a final answer, a consensus level (full/majority/split), and any dissent, plus each model\'s final position. ALWAYS report the dissent and consensus level to the user -- the disagreement is the point; never present a split verdict as settled. Write a self-contained question: the models cannot see your code. mode "quick" (default): one round, usually well under a minute. mode "thorough": models also critique each other, a few minutes. Use for architectural choices, tradeoffs, and contestable judgment calls -- not for lookups or questions with an obvious answer. Spends the user\'s model credits.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -263,7 +301,8 @@ const TOOLS = [
         selection: { type: 'string', enum: ['auto', 'pinned', 'explicit'], description: 'How the participating models were chosen.' },
         selection_note: { type: 'string' },
         synthesizer: { type: 'string' },
-        models: { type: 'array', items: { type: 'object', properties: { provider: { type: 'string' }, model: { type: 'string' }, hint: { type: ['string', 'null'] } } }, description: 'Which models actually answered through MCP sampling.' },
+        models: { type: 'array', items: { type: 'object', properties: { provider: { type: 'string' }, model: { type: 'string' }, hint: { type: ['string', 'null'] }, calls: { type: 'integer' } } }, description: 'Which models actually answered through MCP sampling, with how many calls each answered.' },
+        families: { type: 'array', items: { type: 'string' }, description: 'Vendor families among the voices.' },
         independent: { type: 'boolean', description: 'false when every voice resolved to the same model.' },
         warnings: { type: 'array', items: { type: 'string' } },
         transcript: { type: 'string' },
@@ -313,13 +352,18 @@ const rpc = createRpc(send);
 const guard = createRepoGuard();
 const jobs = createJobs();
 const pipeline = createPipelineTools({ guard, jobs });
+// stdio: unlimited unless E3D_MCP_DAILY_* are set; hosted (HTTP) mode ships with finite defaults.
+const usage = createUsage({ defaults: HTTP_MODE ? { calls: 100, tokens: 500000 } : { calls: 0, tokens: 0 } });
 const sampling = createSampling({ rpc, log });
-const session = { clientInfo: null, capabilities: {}, rootsReady: null };
-const actions = createPipelineActions({ guard, jobs, base: pipeline });
-TOOLS.push(...pipeline.tools, ...actions.tools);
+// One connection object per client: stdio has exactly one; HTTP makes one per session. Hosted (HTTP) connections
+// never advertise sampling, elicitation or roots, so the server never needs to call back into the client.
+const stdioConn = { send, session: { clientInfo: null, capabilities: {}, rootsReady: null }, principal: process.env.E3D_MCP_PRINCIPAL || 'local', rpc, hosted: false, allowed: null };
+const newHttpConn = (principal, allowed) => ({ send: () => {}, session: { clientInfo: null, capabilities: {}, rootsReady: null }, principal, rpc: null, hosted: true, allowed });
+const actions = createPipelineActions({ guard, jobs, base: pipeline, usage });
+TOOLS.push(...pipeline.tools, ...actions.tools, usageTool);
 
 // The client's workspace folders (MCP roots) are the default set of repos the pipeline tools may touch.
-async function refreshRoots() {
+async function refreshRoots(session = stdioConn.session) {
   if (!session.capabilities.roots) return;
   try {
     const r = await rpc.request('roots/list', {}, 10000);
@@ -334,39 +378,50 @@ const HANDLERS = {
   e3d_ideas_list: toolIdeasList,
   ...pipeline.handlers,
   ...actions.handlers,
+  e3d_usage: usageHandler(usage),
 };
 
-async function handle(msg) {
+async function handle(msg, conn = stdioConn) {
   const { id, method, params } = msg;
+  const { session } = conn;
   const isRequest = id !== undefined && id !== null;
-  const reply = (result) => isRequest && send({ jsonrpc: '2.0', id, result });
-  const fail = (code, message) => isRequest && send({ jsonrpc: '2.0', id, error: { code, message } });
+  const reply = (result) => isRequest && conn.send({ jsonrpc: '2.0', id, result });
+  const fail = (code, message) => isRequest && conn.send({ jsonrpc: '2.0', id, error: { code, message } });
 
   switch (method) {
     case 'initialize': {
       session.clientInfo = params?.clientInfo ?? null;
-      session.capabilities = params?.capabilities ?? {};
+      session.capabilities = conn.hosted ? {} : (params?.capabilities ?? {});
       const want = params?.protocolVersion;
       return reply({
         protocolVersion: SUPPORTED_PROTOCOLS.includes(want) ? want : SUPPORTED_PROTOCOLS[0],
-        capabilities: { tools: { listChanged: false } },
+        capabilities: { tools: { listChanged: false }, prompts: { listChanged: false } },
         serverInfo: SERVER_INFO,
-        instructions: 'Use e3d_debate for contestable decisions where independent model perspectives and recorded dissent add value; always report its dissent. It costs credits; do not use it for simple lookups. The e3d_pilot_* tools run a human-gated pipeline: propose an idea, a human approves it (e3d_pilot_approve tells you how; never approve on your own), e3d_pilot_implement drafts and negotiates a spec and pauses, e3d_pilot_code_plan shows the plan, and only after the user agrees does e3d_pilot_execute write code and open a draft PR. Tools marked FREE spend nothing; tools marked SPENDS MODEL CREDITS do. Merging is never available here.',
+        instructions: conn.hosted
+          ? 'Use e3d_debate for contestable decisions where independent model perspectives and recorded dissent add value; always report its dissent, and never present a split verdict as settled. It uses a shared usage budget (see e3d_usage); do not use it for simple lookups.'
+          : 'Use e3d_debate for contestable decisions where independent model perspectives and recorded dissent add value; always report its dissent. It costs credits; do not use it for simple lookups. The e3d_pilot_* tools run a human-gated pipeline: propose an idea, a human approves it (e3d_pilot_approve tells you how; never approve on your own), e3d_pilot_implement drafts and negotiates a spec and pauses, e3d_pilot_code_plan shows the plan, and only after the user agrees does e3d_pilot_execute write code and open a draft PR. Tools marked FREE spend nothing; tools marked SPENDS MODEL CREDITS do. Merging is never available here.',
       });
     }
-    case 'notifications/initialized': session.rootsReady = refreshRoots(); return;
-    case 'notifications/roots/list_changed': session.rootsReady = refreshRoots(); return;
+    case 'notifications/initialized': if (!conn.hosted) session.rootsReady = refreshRoots(session); return;
+    case 'notifications/roots/list_changed': if (!conn.hosted) session.rootsReady = refreshRoots(session); return;
     case 'ping': return reply({});
-    case 'tools/list': return reply({ tools: TOOLS });
+    case 'prompts/list': return reply({ prompts: listPrompts(conn.allowed) });
+    case 'prompts/get': {
+      const got = getPrompt(params?.name, params?.arguments, conn.allowed);
+      if (got?.error) return fail(-32602, got.error);
+      return got ? reply(got) : fail(-32602, `unknown prompt: ${params?.name}`);
+    }
+    case 'tools/list': return reply({ tools: conn.allowed ? TOOLS.filter((t) => conn.allowed.has(t.name)) : TOOLS });
     case 'tools/call': {
       const handler = HANDLERS[params?.name];
-      if (!handler) return fail(-32602, `unknown tool: ${params?.name}`);
+      // A tool outside this connection's allowlist is reported exactly like one that does not exist.
+      if (!handler || (conn.allowed && !conn.allowed.has(params.name))) return fail(-32602, `unknown tool: ${params?.name}`);
       const token = params?._meta?.progressToken;
-      const progress = token === undefined ? undefined : (n, message) =>
-        send({ jsonrpc: '2.0', method: 'notifications/progress', params: { progressToken: token, progress: n, message } });
+      const progress = token === undefined || conn.hosted ? undefined : (n, message) =>
+        conn.send({ jsonrpc: '2.0', method: 'notifications/progress', params: { progressToken: token, progress: n, message } });
       try {
         await session.rootsReady;
-        return reply(await handler(params.arguments ?? {}, progress, { session, rpc, sampling, samplingEnv: (tag) => sampling.env(session, { tag }) }));
+        return reply(await handler(params.arguments ?? {}, progress, { session, rpc: conn.rpc, sampling, principal: conn.principal, samplingEnv: (tag) => sampling.env(session, { tag }) }));
       } catch (e) {
         return reply(text(`error: ${e.message}`, true));
       }
@@ -395,17 +450,34 @@ if (process.argv.includes('--print-config')) {
   process.exit(0);
 }
 
-const rl = createInterface({ input: process.stdin });
-const pending = new Set();
-rl.on('line', (line) => {
-  if (!line.trim()) return;
-  let msg;
-  try { msg = JSON.parse(line); }
-  catch { return send({ jsonrpc: '2.0', id: null, error: { code: -32700, message: 'parse error' } }); }
-  if (rpc.handleResponse(msg)) return; // an answer to a request this server made (roots/list, ...)
-  const p = handle(msg).catch((e) => log('handler error:', e.stack || e)).finally(() => pending.delete(p));
-  pending.add(p);
-});
-// Exit only once in-flight calls finish, so a client closing stdin after its last request still gets the reply.
-rl.on('close', () => Promise.allSettled([...pending]).then(() => sampling.stop()).then(() => process.exit(0)));
-log(`ready (limits: ${JSON.stringify(LIMITS)})`);
+// ---- HTTP (hosted) mode: `e3d-mcp --http [--port N] [--host H]` ----
+if (HTTP_MODE) {
+  const arg = (name, dflt) => { const i = process.argv.indexOf(name); return i > -1 && process.argv[i + 1] ? process.argv[i + 1] : dflt; };
+  const host = arg('--host', process.env.E3D_MCP_HOST || '127.0.0.1');
+  const port = Number.parseInt(arg('--port', process.env.E3D_MCP_PORT || process.env.PORT || '8787'), 10);
+  let server;
+  try {
+    server = await startHttpServer({ host, port, log, handle, newConn: newHttpConn, version: SERVER_INFO.version });
+  } catch (e) { process.stderr.write(`[e3d-mcp] ${redact(e.message)}\n`); process.exit(2); }
+  if (process.env.E3D_MCP_PORT_FILE) await writeFile(process.env.E3D_MCP_PORT_FILE, String(server.port));
+  let stopping = false;
+  const stop = async () => { if (stopping) return; stopping = true; log('shutting down'); setTimeout(() => process.exit(0), 10000).unref(); await server.close(); await sampling.stop(); process.exit(0); };
+  process.on('SIGTERM', stop);
+  process.on('SIGINT', stop);
+  log(`ready (hosted; limits: ${JSON.stringify(LIMITS)})`);
+} else {
+  const rl = createInterface({ input: process.stdin });
+  const pending = new Set();
+  rl.on('line', (line) => {
+    if (!line.trim()) return;
+    let msg;
+    try { msg = JSON.parse(line); }
+    catch { return send({ jsonrpc: '2.0', id: null, error: { code: -32700, message: 'parse error' } }); }
+    if (rpc.handleResponse(msg)) return; // an answer to a request this server made (roots/list, ...)
+    const p = handle(msg).catch((e) => log('handler error:', e.stack || e)).finally(() => pending.delete(p));
+    pending.add(p);
+  });
+  // Exit only once in-flight calls finish, so a client closing stdin after its last request still gets the reply.
+  rl.on('close', () => Promise.allSettled([...pending]).then(() => sampling.stop()).then(() => process.exit(0)));
+  log(`ready (limits: ${JSON.stringify(LIMITS)})`);
+}

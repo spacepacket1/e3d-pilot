@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Anthropic Messages API provider (curl + jq; no SDK, no `claude` CLI needed), for servers and containers.
+#   ANTHROPIC_API_KEY        or ANTHROPIC_API_KEY_FILE (a file holding the key, or an `export ANTHROPIC_API_KEY=...` line)
+#   ANTHROPIC_API_MODEL      default claude-sonnet-5-5
+#   ANTHROPIC_API_MAX_TOKENS default 4096
+#   ANTHROPIC_API_BASE_URL   default https://api.anthropic.com
+# The key is sent from a 0600 header file, never on the command line, and is never printed.
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=./common.sh
+source "$SCRIPT_DIR/common.sh"
+
+ANTHROPIC_API_MODEL="${ANTHROPIC_API_MODEL:-claude-sonnet-5-5}"
+ANTHROPIC_API_BASE_URL="${ANTHROPIC_API_BASE_URL:-https://api.anthropic.com}"
+PROVIDER_TOKEN_LIMIT="${E3D_PILOT_PROVIDER_TOKEN_LIMIT:-200000}"
+
+anthropic_key() {
+  if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then printf '%s' "$ANTHROPIC_API_KEY"
+  else provider_key_from_file "${ANTHROPIC_API_KEY_FILE:-}" ANTHROPIC_API_KEY
+  fi
+}
+
+if [[ "${E3D_PILOT_CHECK:-0}" == "1" ]]; then
+  if ! provider_binary_available curl || ! provider_binary_available jq; then
+    printf 'unavailable: curl and jq are required\n'
+    exit "$PROVIDER_EXIT_UNAVAILABLE"
+  fi
+  if [[ -z "$(anthropic_key)" ]]; then
+    printf 'unavailable: set ANTHROPIC_API_KEY (or ANTHROPIC_API_KEY_FILE)\n'
+    exit "$PROVIDER_EXIT_UNAVAILABLE"
+  fi
+  # Reachability only: no key is sent and nothing is billed.
+  if curl -s -o /dev/null -m "${ANTHROPIC_API_CHECK_TIMEOUT:-3}" "${ANTHROPIC_API_BASE_URL%/}"; then
+    printf 'available (%s)\n' "$ANTHROPIC_API_MODEL"
+    exit "$PROVIDER_EXIT_OK"
+  fi
+  printf 'unavailable: API not reachable (%s)\n' "${ANTHROPIC_API_BASE_URL%/}"
+  exit "$PROVIDER_EXIT_UNAVAILABLE"
+fi
+
+if [[ -z "$(anthropic_key)" ]]; then
+  echo "error: anthropic-api is not configured (ANTHROPIC_API_KEY or ANTHROPIC_API_KEY_FILE)" >&2
+  exit "$PROVIDER_EXIT_UNAVAILABLE"
+fi
+
+PROMPT_FILE="${1:-}"
+provider_require_prompt_file "$PROMPT_FILE"
+
+URL="${ANTHROPIC_API_BASE_URL%/}/v1/messages"
+
+if [[ "${E3D_PILOT_DRY_RUN:-0}" == "1" ]]; then
+  printf 'curl -sS -X POST %q -H %q -H %q -H %q -d @- (model=%s) < %q\n' "$URL" 'x-api-key: [redacted]' 'anthropic-version: 2023-06-01' 'content-type: application/json' "$ANTHROPIC_API_MODEL" "$PROMPT_FILE"
+  exit "$PROVIDER_EXIT_OK"
+fi
+
+work="$(mktemp -d "${TMPDIR:-/tmp}/e3d-pilot-anthropic.XXXXXX")"
+trap 'rm -rf "$work"' EXIT
+chmod 700 "$work"
+( umask 077; printf 'x-api-key: %s\nanthropic-version: 2023-06-01\ncontent-type: application/json\n' "$(anthropic_key)" > "$work/headers" )
+
+jq -n --rawfile content "$PROMPT_FILE" --arg model "$ANTHROPIC_API_MODEL" --arg max "${ANTHROPIC_API_MAX_TOKENS:-4096}" \
+  '{model: $model, max_tokens: ($max | tonumber), messages: [{role: "user", content: $content}]}' > "$work/payload.json"
+
+set +e
+http_code="$(curl -sS -m "${ANTHROPIC_API_TIMEOUT:-180}" -o "$work/response.json" -w '%{http_code}' \
+  -H "@$work/headers" -d "@$work/payload.json" "$URL" 2> "$work/curl.err")"
+status=$?
+set -e
+
+if [[ $status -ne 0 ]]; then
+  printf 'error: anthropic-api request failed (curl exit %s): %s\n' "$status" "$(head -c 300 "$work/curl.err" | tr '\n' ' ')" >&2
+  exit "$PROVIDER_EXIT_FAILURE"
+fi
+if [[ "$http_code" != 2* ]]; then
+  msg="$(jq -r '.error.message // empty' "$work/response.json" 2>/dev/null | head -c 300)"
+  printf 'error: anthropic-api HTTP %s%s\n' "$http_code" "${msg:+: $msg}" >&2
+  exit "$PROVIDER_EXIT_FAILURE"
+fi
+
+content="$(jq -r '[.content[]? | select(.type == "text") | .text] | join("")' "$work/response.json")"
+if [[ -z "$content" ]]; then
+  echo "error: anthropic-api returned no text content" >&2
+  exit "$PROVIDER_EXIT_FAILURE"
+fi
+tokens="$(jq '((.usage.input_tokens // 0) + (.usage.output_tokens // 0))' "$work/response.json")"
+printf 'e3d_provider_usage=%s\n' "$(jq -c --arg m "$ANTHROPIC_API_MODEL" '{provider:"anthropic-api",model:(.model // $m),tokens:((.usage.input_tokens // 0) + (.usage.output_tokens // 0)),usage:(.usage // null)}' "$work/response.json")" >&2
+printf '%s\n' "$content"
+
+if [[ "$PROVIDER_TOKEN_LIMIT" =~ ^[0-9]+$ ]] && (( PROVIDER_TOKEN_LIMIT > 0 && tokens > PROVIDER_TOKEN_LIMIT )); then
+  printf 'error: anthropic-api provider token ceiling exceeded (%s > %s)\n' "$tokens" "$PROVIDER_TOKEN_LIMIT" >&2
+  exit "$PROVIDER_EXIT_FAILURE"
+fi

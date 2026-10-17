@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Amazon Bedrock provider using the AWS CLI's Converse API (no SDK, no SigV4 code of our own).
+#   BEDROCK_MODEL_ID   e.g. anthropic.claude-3-5-sonnet-20241022-v2:0 or an inference-profile id
+#   AWS_REGION         (or AWS_DEFAULT_REGION)
+#   AWS_BIN            override the aws binary (default: aws)
+#   BEDROCK_MAX_TOKENS default 4096
+# Credentials come from the normal AWS chain (env, profile, SSO, instance/task role). Availability only
+# checks that the CLI, a model id and a region are present; credential problems surface on the real call.
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=./common.sh
+source "$SCRIPT_DIR/common.sh"
+
+AWS_BIN="${AWS_BIN:-aws}"
+BEDROCK_MAX_TOKENS="${BEDROCK_MAX_TOKENS:-4096}"
+PROVIDER_TOKEN_LIMIT="${E3D_PILOT_PROVIDER_TOKEN_LIMIT:-200000}"
+REGION="${AWS_REGION:-${AWS_DEFAULT_REGION:-}}"
+
+if [[ "${E3D_PILOT_CHECK:-0}" == "1" ]]; then
+  if ! provider_binary_available "$AWS_BIN"; then
+    printf 'unavailable: aws CLI not found (%s); set AWS_BIN to override\n' "$AWS_BIN"
+    exit "$PROVIDER_EXIT_UNAVAILABLE"
+  fi
+  if ! provider_binary_available jq; then
+    printf 'unavailable: jq is required\n'
+    exit "$PROVIDER_EXIT_UNAVAILABLE"
+  fi
+  if [[ -z "${BEDROCK_MODEL_ID:-}" ]]; then
+    printf 'unavailable: BEDROCK_MODEL_ID is not set\n'
+    exit "$PROVIDER_EXIT_UNAVAILABLE"
+  fi
+  if [[ -z "$REGION" ]]; then
+    printf 'unavailable: AWS_REGION is not set\n'
+    exit "$PROVIDER_EXIT_UNAVAILABLE"
+  fi
+  printf 'available (%s in %s)\n' "$BEDROCK_MODEL_ID" "$REGION"
+  exit "$PROVIDER_EXIT_OK"
+fi
+
+if [[ -z "${BEDROCK_MODEL_ID:-}" || -z "$REGION" ]]; then
+  echo "error: bedrock is not configured (BEDROCK_MODEL_ID and AWS_REGION)" >&2
+  exit "$PROVIDER_EXIT_UNAVAILABLE"
+fi
+
+PROMPT_FILE="${1:-}"
+provider_require_prompt_file "$PROMPT_FILE"
+
+if [[ "${E3D_PILOT_DRY_RUN:-0}" == "1" ]]; then
+  printf '%q bedrock-runtime converse --region %q --cli-input-json file://<payload> (model=%s) < %q\n' "$AWS_BIN" "$REGION" "$BEDROCK_MODEL_ID" "$PROMPT_FILE"
+  exit "$PROVIDER_EXIT_OK"
+fi
+
+if ! provider_binary_available "$AWS_BIN"; then
+  echo "error: aws CLI not found: $AWS_BIN" >&2
+  exit "$PROVIDER_EXIT_FAILURE"
+fi
+
+work="$(mktemp -d "${TMPDIR:-/tmp}/e3d-pilot-bedrock.XXXXXX")"
+trap 'rm -rf "$work"' EXIT
+chmod 700 "$work"
+# The whole request goes through a file, so large prompts never hit argv limits or show in `ps`.
+jq -n --arg model "$BEDROCK_MODEL_ID" --rawfile content "$PROMPT_FILE" --argjson max "$BEDROCK_MAX_TOKENS" \
+  '{modelId: $model, messages: [{role: "user", content: [{text: $content}]}], inferenceConfig: {maxTokens: $max}}' > "$work/payload.json"
+
+set +e
+"$AWS_BIN" bedrock-runtime converse --region "$REGION" --cli-input-json "file://$work/payload.json" --output json > "$work/response.json" 2> "$work/aws.err"
+status=$?
+set -e
+if [[ $status -ne 0 ]]; then
+  printf 'error: bedrock converse failed (aws exit %s): %s\n' "$status" "$(head -c 400 "$work/aws.err" | tr '\n' ' ')" >&2
+  exit "$PROVIDER_EXIT_FAILURE"
+fi
+
+content="$(jq -r '[.output.message.content[]? | .text? // empty] | join("")' "$work/response.json" 2>/dev/null || true)"
+if [[ -z "$content" ]]; then
+  echo "error: bedrock returned no text content" >&2
+  exit "$PROVIDER_EXIT_FAILURE"
+fi
+tokens="$(jq '.usage.totalTokens // ((.usage.inputTokens // 0) + (.usage.outputTokens // 0))' "$work/response.json")"
+printf 'e3d_provider_usage=%s\n' "$(jq -c --arg m "$BEDROCK_MODEL_ID" '{provider:"bedrock",model:$m,tokens:(.usage.totalTokens // null),usage:(.usage // null)}' "$work/response.json")" >&2
+printf '%s\n' "$content"
+
+if [[ "$PROVIDER_TOKEN_LIMIT" =~ ^[0-9]+$ ]] && (( PROVIDER_TOKEN_LIMIT > 0 && tokens > PROVIDER_TOKEN_LIMIT )); then
+  printf 'error: bedrock provider token ceiling exceeded (%s > %s)\n' "$tokens" "$PROVIDER_TOKEN_LIMIT" >&2
+  exit "$PROVIDER_EXIT_FAILURE"
+fi

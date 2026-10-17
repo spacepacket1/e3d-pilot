@@ -4,6 +4,7 @@ set -euo pipefail
 # Tests for the Copilot-first default: MCP sampling bridge, voice selection, independence warnings.
 # The "editor" is a scripted test client answering sampling/createMessage; no real model is ever called.
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export E3D_MCP_STATE_DIR="$(mktemp -d)"  # keep usage accounting out of ~/.e3d-pilot during tests
 SERVER="$ROOT/bin/e3d-mcp"
 CLIENT="$ROOT/tests/fixtures/mcp-test-client.mjs"
 SAMPLE_CONFIG="$ROOT/examples/sample-config.json"
@@ -46,9 +47,21 @@ assert.equal(v.selection, 'pinned');
 v = chooseVoices({ known: k('claude'), samplingOn: false, env: {} });
 assert.equal(v.providers.length, 1, 'one provider is reported as-is so the caller can say "need 2"');
 
-assert.equal(independence(['mcp-sampling', 'mcp-sampling-b'], [{ model: 'x' }, { model: 'x' }]).independent, false);
-assert.equal(independence(['mcp-sampling', 'mcp-sampling-b'], [{ model: 'x' }, { model: 'y' }]).independent, true);
-assert.equal(independence(['mcp-sampling', 'claude'], [{ model: 'x' }]).independent, true, 'a CLI voice counts as a separate model');
+const sm = (...ms) => ms.map(([provider, model]) => ({ provider, model }));
+assert.equal(independence(['mcp-sampling', 'mcp-sampling-b'], sm(['mcp-sampling', 'x'], ['mcp-sampling-b', 'x'])).independent, false);
+assert.equal(independence(['mcp-sampling', 'mcp-sampling-b'], sm(['mcp-sampling', 'x'], ['mcp-sampling-b', 'y'])).independent, true);
+assert.equal(independence(['mcp-sampling', 'claude'], sm(['mcp-sampling', 'x'])).independent, true, 'an unknown-family model plus a CLI voice are distinct');
+// vendor families: Copilot's Claude and the claude CLI are the same family
+let ind = independence(['mcp-sampling', 'claude'], sm(['mcp-sampling', 'claude-sonnet-5.5']));
+assert.equal(ind.independent, false, 'Copilot Claude + claude CLI is one family');
+assert.match(ind.warnings[0], /anthropic family/);
+ind = independence(['mcp-sampling', 'claude', 'codex'], sm(['mcp-sampling', 'claude-sonnet-5.5']));
+assert.equal(ind.independent, true);
+assert.match(ind.warnings.join(' '), /2 of 3 voices are anthropic models/, 'overlap is reported even when the debate is independent');
+assert.deepEqual(ind.families.sort(), ['anthropic', 'openai']);
+ind = independence(['mcp-sampling', 'mcp-sampling-b'], sm(['mcp-sampling', 'claude-sonnet-5.5'], ['mcp-sampling-b', 'gpt-5.1']));
+assert.equal(ind.independent, true); assert.equal(ind.warnings.length, 0);
+assert.equal(independence(['codex', 'openai-api'], []).independent, false, 'two OpenAI providers are one family');
 console.log('voices ok');
 JS
 
@@ -106,6 +119,8 @@ assert_eq "$(sc <<< "$out" | jq -r '.warnings | length')" "0"
 assert_eq "$(sc <<< "$out" | jq -r .selection)" "explicit"
 assert_eq "$(sc <<< "$out" | jq -r .synthesizer)" "mcp-sampling" "the client's model writes the verdict"
 assert_eq "$(sc <<< "$out" | jq -r '[.models[].model] | unique | join(",")')" "model-a,model-b" "which models actually answered is reported"
+assert_eq "$(sc <<< "$out" | jq -r '[.models[].calls] | add')" "3" "per-model call counts add up to the three sampling requests"
+assert_eq "$(sc <<< "$out" | jq -r '[.models[] | "\(.provider)|\(.model)"] | (length == (unique | length))')" "true" "one entry per provider and model, not one per call"
 n="$(jq '[.events[] | select(.request=="sampling/createMessage")] | length' <<< "$out")"
 assert_eq "$n" "3" "2 voices x 1 round + 1 synthesis"
 assert_eq "$(jq -r '[.events[] | select(.request=="sampling/createMessage") | .params.modelPreferences.hints[0].name] | unique | join(",")' <<< "$out")" "claude,gpt" "the two voices ask for different model families"
@@ -130,6 +145,21 @@ assert_eq "$(jq -r '.results[0].isError // false' <<< "$out")" "true" "denied sa
 out="$(call e3d_debate '{"question":"q","providers":["mcp-sampling","mcp-sampling-b"]}' '{}')"
 assert_eq "$(jq -r '.results[0].isError // false' <<< "$out")" "true"
 assert_contains "$(txt <<< "$out")" "supports sampling"
+
+# when the editor's own models answer, the server stops BEFORE the editor gives up (about 3 minutes), says so, and states
+# how many calls were counted -- instead of running on unseen and charging calls nobody sees
+SLOW="$TMP/slow-debate"
+cat > "$SLOW" <<'SEOF'
+#!/usr/bin/env bash
+out=""; while [[ $# -gt 0 ]]; do case "$1" in --out-dir) out="$2"; shift 2 ;; *) shift ;; esac; done
+mkdir -p "$out"; printf '# Debate\n\n## Round 1 -- mcp-sampling\n\nanswer one\n' > "$out/transcript.md"
+sleep 20
+SEOF
+chmod +x "$SLOW"
+out="$(E3D_MCP_DEBATE_BIN="$SLOW" E3D_MCP_SAMPLING_TIMEOUT_SEC=1 call e3d_debate '{"question":"q","providers":["mcp-sampling","mcp-sampling-b"]}' "$(jq -nc --arg t "$BLOCK" '{capabilities:{sampling:{}}, sampling:{model:"m", text:$t}}')")"
+assert_eq "$(jq -r '.results[0].isError // false' <<< "$out")" "true"
+assert_contains "$(txt <<< "$out")" "timed out after 1s and was stopped"
+assert_contains "$(txt <<< "$out")" "1 model call(s) had already answered and are counted"
 
 # ---- config_check warns about sampling-backed stages that cannot work ----
 REPO="$TMP/repo"; mkdir -p "$REPO"; git init -q "$REPO"; git -C "$REPO" config user.email t@e.com; git -C "$REPO" config user.name T

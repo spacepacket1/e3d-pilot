@@ -193,6 +193,25 @@ When the client supports MCP *sampling* (VS Code does, per its docs), `e3d_debat
 
 Sampling can only answer text-in, text-out prompts, so it works for debates and for the `negotiate` and `review` stages if you name `mcp-sampling` in a repo's `providers`. `discover`, `ideate`, `draft` and `execute` must read or edit the repository and still need a model CLI. `e3d_pilot_config_check` warns about this. A job that uses a sampling provider fails if the editor or server stops mid-run.
 
+**If something doesn't work in VS Code** (observed in a real run on VS Code 1.142 with the built-in Copilot Chat):
+
+- The "Start" code lens may show only "e3d-pilot Error". The reason is in VS Code's agent-host log: newer builds will not start an MCP server until a chat session exists ("Cannot start an MCP server before the session runtime has been created. Send a message first."). Open Chat, send any message, then start or restart the server.
+- VS Code may show a one-time "migration" message that empties `.vscode/mcp.json` and writes a `.mcp.json` in a different format (`mcpServers`, `type: local`, `tools: ["*"]`). If your server vanished, check which file VS Code is reading, or restore `.vscode/mcp.json` from `e3d-mcp --print-config`. Local stdio servers may also require the "Local" chat session type.
+- The permission prompt to let the server use your models appears on the first **debate**, not on `e3d_list_providers` (which calls no model).
+- `e3d-mcp --doctor` may say no separate Copilot extension is listed. Recent VS Code builds include Copilot Chat built in, so that is expected.
+- The daily budget resets at **00:00 UTC** (5 PM Pacific during daylight time), so its "day" can differ from your local date. `e3d_usage` shows the exact `resets_at`.
+- While an implementation is paused, the idea's ledger status is still `implementing`; the job reports `waiting_for_human` with `paused_before`. After `e3d_pilot_cancel_paused` or `e3d_pilot_execute`, that job is marked `cancelled` or `resumed`.
+- Ledger entries made through MCP, including the first `idea_proposed` event, are attributed to `mcp:<client>` (or `E3D_MCP_ACTOR`), never to the git identity of whoever owns the checkout. `<client>` is the name the editor announces: VS Code announces itself as `Visual Studio Code`, but Copilot's agent host announces `copilot-cli`, so the actor reads `mcp:copilot-cli` there. Set `E3D_MCP_ACTOR` if you want a fixed name. A declined approval is recorded as a note on the idea.
+- **Declining at VS Code's own tool-call confirmation never reaches the server**, so nothing can be recorded. Only the "Approve this idea?" form the server shows is recorded (as a note). VS Code may log `response=accept` for that form even when you decline, so the idea's ledger notes are the reliable place to see the difference.
+- **Debates reserve their worst case before running and settle to what they actually used**, atomically (a lock file serializes several server processes sharing one counter), so simultaneous requests cannot all pass the same cap.
+- **Spend is counted for pipeline jobs too.** `e3d_pilot_start`, `e3d_pilot_implement` and `e3d_pilot_execute` reserve an estimated number of model calls and tokens against the daily budget before they start (a discover/ideate start about 2 calls per configured provider, implement one call per drafter plus two per negotiation reviewer, execute 3 calls and about 200,000 tokens per phase; tune with `E3D_MCP_EST_TOKENS_PER_PHASE`). A reservation that would break a cap refuses the job and records nothing; a job that cannot start gives its reservation back. These are estimates, not measurements.
+- **The usage counter is machine-wide**, not per repository: one file per principal (`local` over stdio) under `~/.e3d-pilot/usage/`, shared by every repo the server touches. `e3d_usage` shows the file path. Delete it to reset the day.
+- When the editor's own models answer (MCP sampling), a debate stops after 150 seconds (`E3D_MCP_SAMPLING_TIMEOUT_SEC`) so the server reports the timeout before the editor gives up at about 3 minutes. Only calls that actually answered are counted; a debate stopped before its verdict is not charged for a synthesis call it never made.
+- A failed implementation names its real cause in the job's `failure_detail` (for example `draft-rejected.md: status: too-large ...`), and the stored job record carries a `warnings` list. After a cancel, the status says the log is history.
+- `e3d-mcp` also offers MCP prompts (`/e3d-debate`, `/e3d-propose`, `/e3d-budget` in editors that show them), and the server reports the version in `package.json` (a development build reports `0.2.0-dev.N`).
+- Agents reach the tools more reliably when the repository tells them when to use them. Copy [docs/mcp-agent-instructions.md](docs/mcp-agent-instructions.md) into `.github/copilot-instructions.md` or `AGENTS.md`.
+- A debate result now reports vendor families: Copilot's Claude plus the `claude` CLI count as one family, and overlap is called out in `warnings`.
+
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `E3D_MCP_REPOS` | workspace roots | `:`-separated repos the pipeline tools may use. |
@@ -201,10 +220,20 @@ Sampling can only answer text-in, text-out prompts, so it works for debates and 
 | `E3D_MCP_MAX_JOBS` / `E3D_MCP_JOB_TIMEOUT_SEC` | 2 / 3600 | Concurrent jobs, per-job timeout. |
 | `E3D_MCP_MAX_PHASES` / `E3D_MCP_PLAN_TTL_SEC` | 8 / 1800 | Phase cap for execute, plan lifetime. |
 | `E3D_MCP_MAX_ARTIFACT_BYTES` | 100000 | Largest artifact read. |
+| `E3D_MCP_SAMPLING_TIMEOUT_SEC` | 150 | Stop a debate that uses the editor's models after this long. |
+| `E3D_MCP_EST_TOKENS_PER_PHASE` | 200000 | Tokens reserved per code-writing phase when `e3d_pilot_execute` starts. |
 | `E3D_MCP_PROVIDERS` / `E3D_MCP_AUTO_VOICES` | auto / 3 (2 without sampling) | Pin or cap the default debate voices. |
 | `E3D_MCP_SAMPLING_HINTS` | `claude,gpt` | Model-name hints for the two sampling voices. |
 
 Add them to the server's `env` in `mcp.json`, e.g. `"env": { "E3D_MCP_REPOS": "/Users/me/work/app" }`.
+
+### Hosted / remote use
+
+`e3d-mcp --http [--host H] [--port N]` serves the same server over MCP's streamable HTTP transport, and `deploy/Dockerfile` packages it as a container, so clients that cannot run local tools (such as the Copilot coding agent) can still request debates. **Nothing is deployed:** no cloud account has been used, and the AWS and Azure notes in [deploy/README.md](deploy/README.md) are untested.
+
+- **Who pays:** the operator's model credentials (Azure OpenAI, Bedrock, or a local endpoint, via the `azure-openai`, `bedrock`, `anthropic-api` and `openai-api` providers), not the caller's. Each bearer token (`E3D_MCP_AUTH_TOKENS="name:token"`) is a budget principal with a daily call and estimated-token cap, checked before a debate starts. These caps are per token, not global, and live in files on one instance.
+- **What is off over HTTP, and why:** the `e3d_pilot_*` pipeline tools, provenance and idea listing (they act on repositories on the server's disk) are hidden by default; sampling, elicitation and roots are disabled (they need server-to-client requests), so approvals stay read-only. A non-loopback bind refuses to start without tokens, and TLS is expected from a reverse proxy.
+- **Usage reporting also works locally:** `e3d_debate` results now include `usage` (model calls and estimated tokens) and `budget`, `e3d_usage` shows today's totals, and `E3D_MCP_DAILY_CALLS` / `E3D_MCP_DAILY_EST_TOKENS` set optional caps in stdio mode too (unlimited by default there).
 
 ## Why we built this
 
@@ -480,8 +509,10 @@ Existing open e3d-pilot PRs should be adopted only through an explicit adoption 
 
 ## Providers and negotiation
 
-Built-in adapters are `claude`, `codex`, `local`, `devin`, `grok-build`, and
-the opt-in `gemini` trial adapter; check them with `e3d-pilot providers list`.
+Built-in adapters are `claude`, `codex`, `local`, `devin`, `grok-build`, the
+opt-in `gemini` trial adapter, two cloud adapters, `bedrock` and
+`azure-openai`, and two direct API adapters, `anthropic-api` and `openai-api`
+(no CLI needed, for servers and containers); check them with `e3d-pilot providers list`.
 `grok-build` is selected the same way as the others: name it in `providers.*`.
 It is available when the `grok` binary is on `PATH` (override with
 `GROK_BUILD_BIN`).
@@ -544,6 +575,36 @@ export DEVIN_BIN=devin                          # binary path (default: devin)
 export DEVIN_MODEL=claude-sonnet-4-6-thinking-1m  # model override
 export DEVIN_PERMISSION_MODE=auto               # permission mode (default: auto)
 ```
+
+**bedrock** — Amazon Bedrock through the AWS CLI's Converse API (no SDK). Needs `aws` on `PATH`, a model id and a region; credentials come from the normal AWS chain (env, profile, SSO, instance or task role):
+
+```bash
+export BEDROCK_MODEL_ID=anthropic.claude-3-5-sonnet-20241022-v2:0   # or an inference-profile id
+export AWS_REGION=us-east-1
+```
+
+`providers list` only checks that the CLI, model id and region are set; a missing permission shows up as a clear error on the first real call. The request goes through a payload file, so large prompts work and never appear in `ps`. Optional: `BEDROCK_MAX_TOKENS` (4096), `AWS_BIN`.
+
+**azure-openai** — an Azure OpenAI deployment over HTTPS (curl + jq):
+
+```bash
+export AZURE_OPENAI_ENDPOINT=https://my-resource.openai.azure.com
+export AZURE_OPENAI_DEPLOYMENT=my-deployment          # the deployment name, not the model name
+export AZURE_OPENAI_API_KEY=...                       # or AZURE_OPENAI_API_KEY_FILE=/path/to/file-with-only-the-key
+```
+
+The key is sent from a mode-0600 header file, never on the command line, and is never printed or probed by `providers list`. Optional: `AZURE_OPENAI_API_VERSION` (2024-10-21), `AZURE_OPENAI_MAX_TOKENS`, `AZURE_OPENAI_TIMEOUT` (120 seconds). Both adapters report token usage and honor `E3D_PILOT_PROVIDER_TOKEN_LIMIT`. Neither has been run against the real service in this repo's tests (they use a fake `aws` and a fake local HTTP server).
+
+**anthropic-api** and **openai-api** — the Anthropic Messages API and OpenAI chat completions over HTTPS (curl + jq), with no `claude` or `codex` CLI. They are what a server or container uses with your own API keys, and two distinct providers are enough for a debate (`--providers anthropic-api,openai-api`).
+
+```bash
+export ANTHROPIC_API_KEY=...        # or ANTHROPIC_API_KEY_FILE=/path/to/file (the key alone, or an `export ANTHROPIC_API_KEY=...` line)
+export ANTHROPIC_API_MODEL=claude-sonnet-5-5    # optional; this is the default
+export OPENAI_API_KEY=...           # or OPENAI_API_KEY_FILE=...
+export OPENAI_API_MODEL=...         # required: there is deliberately no default, because model names change
+```
+
+Keys are sent from a mode-0600 header file, never on the command line, and are never printed or sent by `providers list` (it only checks that the key is set and the API is reachable). Optional: `ANTHROPIC_API_MAX_TOKENS` (4096), `OPENAI_API_MAX_TOKENS`, `ANTHROPIC_API_BASE_URL` / `OPENAI_API_BASE_URL` (any compatible endpoint), and the usual `E3D_PILOT_PROVIDER_TOKEN_LIMIT` ceiling. These calls are billed to the key's owner.
 
 **local** — calls an OpenAI-compatible endpoint. Useful for a self-hosted model (e.g. Qwen via Ollama) as a third negotiate reviewer:
 

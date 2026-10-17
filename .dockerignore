@@ -1,0 +1,18 @@
+# Build context for deploy/Dockerfile: keep it small and keep local state/secrets out of the image.
+.git
+.github
+.e3d-pilot
+.e3d-code
+.spec2code
+.claude
+.agents
+.vscode
+node_modules
+docs
+tests
+examples
+ops
+*.log
+*.docx
+*.pdf
+skills-lock.json

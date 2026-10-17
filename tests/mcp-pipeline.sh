@@ -4,6 +4,7 @@ set -euo pipefail
 # Tests for the pipeline-over-MCP tools (bin/e3d-mcp). Uses fake providers and a fake e3d-code only,
 # so it spends no credits and needs no network.
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export E3D_MCP_STATE_DIR="$(mktemp -d)"  # keep usage accounting out of ~/.e3d-pilot during tests
 SERVER="$ROOT/bin/e3d-mcp"
 CLIENT="$ROOT/tests/fixtures/mcp-test-client.mjs"
 SAMPLE_CONFIG="$ROOT/examples/sample-config.json"
@@ -137,6 +138,32 @@ printf 'ideas: paused idea-abc run=impl-1 before=execute\n' > "$JOBS/job-paused.
 s="$(status_of_job job-paused)"
 assert_eq "$(jq -r .state <<< "$s")" "waiting_for_human" "paused"
 assert_eq "$(jq -r .paused_before <<< "$s")" "execute"
+
+# the draft's scope warnings are kept on the job record as a LIST (not only printed in the status text)
+RUNW="$REPO_A/.e3d-pilot/runs/impl-warn"; mkdir -p "$RUNW"
+printf 'Drafted spec has an estimated ~200 changed lines, exceeding max_diff_lines=100; advisory only\n' > "$RUNW/draft-scope-warnings.txt"
+craft_job job-warn running 999999 "$NOW" 3600000 impl-warn
+printf 'ideas: paused idea-abc run=impl-warn before=execute\n' > "$JOBS/job-warn.log"; printf 0 > "$JOBS/job-warn.exit"
+s="$(status_of_job job-warn)"
+assert_eq "$(jq -r '.warnings | length' <<< "$s")" "1" "status warnings is a list"
+assert_contains "$(jq -r '.warnings[0]' <<< "$s")" "max_diff_lines=100"
+assert_contains "$(jq -c '.warnings' "$JOBS/job-warn.json")" "max_diff_lines=100" "the stored job record carries the warnings list"
+# a failed implementation names its real cause, not just "exited 1"
+RUNF="$REPO_A/.e3d-pilot/runs/impl-fail"; mkdir -p "$RUNF"
+printf '# Draft rejected\n\nstatus: too-large\nThe repo has only README.md, so the scope cannot be estimated\n' > "$RUNF/draft-rejected.md"
+craft_job job-fail running 999999 "$NOW" 3600000 impl-fail
+printf 'ideas: implementation failed for idea-x run=impl-fail\n' > "$JOBS/job-fail.log"; printf 1 > "$JOBS/job-fail.exit"
+s="$(status_of_job job-fail)"
+assert_eq "$(jq -r .state <<< "$s")" "failed"
+assert_contains "$(jq -r .failure_detail <<< "$s")" "too-large" "the real cause is in failure_detail"
+assert_contains "$(jq -r .reason <<< "$s")" "Cause: draft-rejected.md" "and in the reason"
+# after a cancel the log still ends with the old "paused" line: the status says it is history
+craft_job job-cancelled cancelled 999999 "$NOW"
+printf 'ideas: paused idea-abc run=impl-1 before=execute\n' > "$JOBS/job-cancelled.log"
+tmp_job="$(jq '.reason="cancelled: QA test" | .finished_at=$n' --arg n "$NOW" "$JOBS/job-cancelled.json")"; printf '%s' "$tmp_job" > "$JOBS/job-cancelled.json"
+out="$(call_tool "$ENV_A" e3d_pilot_job_status "$(jq -nc --arg r "$REPO_A" '{repo:$r, job_id:"job-cancelled"}')")"
+assert_contains "$(text_of <<< "$out")" "history, not current state" "a cancelled job's old log line must not read as current"
+assert_eq "$(jq -r '.results[0].structuredContent.log_is_stale' <<< "$out")" "true"
 # CLI exit codes 3/4 -> waiting_for_human, 5 -> failed, 6 -> blocked, 1 -> failed with the last log line
 for pair in "3:waiting_for_human" "4:waiting_for_human" "5:failed" "6:blocked" "1:failed"; do
   code="${pair%%:*}"; want="${pair##*:}"
