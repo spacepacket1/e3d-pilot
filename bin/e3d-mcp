@@ -15,6 +15,7 @@
 // E3D_MCP_MAX_CONCURRENT, E3D_MCP_TIMEOUT_SEC). Nothing here writes to a repo.
 
 import { mkdtemp, writeFile, readFile, rm, stat } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -28,12 +29,15 @@ import { createJobs } from '../lib/mcp/jobs.js';
 import { createPipelineTools } from '../lib/mcp/pipeline-tools.js';
 import { createPipelineActions } from '../lib/mcp/pipeline-actions.js';
 import { createSampling } from '../lib/mcp/sampling.js';
+import { listPrompts, getPrompt } from '../lib/mcp/prompts.js';
 import { chooseVoices, independence, isSampling } from '../lib/mcp/voices.js';
 import { startHttpServer } from '../lib/mcp/http.js';
 import { createUsage, usageFromTranscript, worstCase, usageTool, usageHandler } from '../lib/mcp/usage.js';
 
 const HTTP_MODE = process.argv.includes('--http');
-const SERVER_INFO = { name: 'e3d-pilot', version: '0.2.0' };
+// The version comes from package.json, so a development build (0.2.0-dev.N) reports itself correctly.
+const PKG_VERSION = (() => { try { return JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).version; } catch { return '0.0.0-unknown'; } })();
+const SERVER_INFO = { name: 'e3d-pilot', version: PKG_VERSION };
 const SUPPORTED_PROTOCOLS = ['2025-06-18', '2025-03-26', '2024-11-05'];
 
 const envInt = (name, dflt) => {
@@ -48,6 +52,9 @@ const LIMITS = {
   timeoutMs: envInt('E3D_MCP_TIMEOUT_SEC', HTTP_MODE ? 120 : 900) * 1000,
   maxWords: 600,
   questionChars: 20000,
+  // Editors give up on a tool call after about 3 minutes. When the client's own models answer (MCP sampling), stop first,
+  // so the debate is cancelled and reported instead of running on unseen and charging calls nobody sees.
+  samplingTimeoutMs: envInt('E3D_MCP_SAMPLING_TIMEOUT_SEC', 150) * 1000,
 };
 let activeDebates = 0;
 
@@ -84,7 +91,10 @@ function parsePositions(transcript) {
 
 function renderDebate(d) {
   const label = d.consensus === 'full' ? 'FULL CONSENSUS' : d.consensus === 'majority' ? 'MAJORITY (some dissent)' : d.consensus === 'split' ? 'SPLIT' : 'CONSENSUS UNKNOWN';
+  const warn = (d.warnings ?? []);
   const lines = [
+    `REPORT THIS TO THE USER (do not drop any of it when summarizing): consensus is ${label}; dissent: ${d.dissent.present === false ? 'none' : d.dissent.summary}${warn.length ? `; warnings: ${warn.join(' | ')}` : ''}.`,
+    '',
     `# Debate verdict: ${label}`,
     `_${d.providers.join(', ')} | ${d.mode} mode | ${d.rounds_ran} round${d.rounds_ran === 1 ? '' : 's'}_`,
     '', `**Answer:** ${d.final_answer}`, '',
@@ -147,13 +157,15 @@ async function toolDebate(args, progress, ctx) {
   // Refuse BEFORE spending if the worst case for this request would break today's cap.
   const principal = ctx?.principal ?? 'local';
   const worst = worstCase({ providers: providers.length, rounds, maxWords, questionChars: question.length });
-  const allowed = await usage.check(principal, worst);
-  if (!allowed.ok) return text(`error: daily budget: ${allowed.reason}`, true);
-
-  if (activeDebates >= LIMITS.concurrent) return text(`error: ${LIMITS.concurrent} debates already running; retry shortly`, true);
+  // Reserve the worst case first (atomically, so concurrent debates cannot overshoot the cap), then settle to actual use.
+  const rsv = await usage.reserve(principal, worst, 'debate');
+  if (!rsv.ok) return text(`error: daily budget: ${rsv.reason}`, true);
+  let settled = false;
+  if (activeDebates >= LIMITS.concurrent) { await usage.release(principal, worst, 'debate').catch(() => {}); return text(`error: ${LIMITS.concurrent} debates already running; retry shortly`, true); }
   activeDebates++;
-  const dir = await mkdtemp(join(tmpdir(), 'e3d-mcp-'));
+  let dir = null;
   try {
+    dir = await mkdtemp(join(tmpdir(), 'e3d-mcp-'));
     const qfile = join(dir, 'question.md');
     await writeFile(qfile, question);
     const cliArgs = ['--question-file', qfile, '--providers', providers.join(','), '--rounds', String(rounds),
@@ -162,16 +174,19 @@ async function toolDebate(args, progress, ctx) {
     const tag = `debate-${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 8)}`;
     const usesSampling = providers.some(isSampling) || isSampling(synthesizer);
     const samplingEnv = usesSampling ? await sampling.env(ctx.session, { tag, maxTokens: Math.min(Math.max(maxWords * 3, 300), 4000) }) : {};
+    const timeoutMs = usesSampling ? Math.min(LIMITS.timeoutMs, LIMITS.samplingTimeoutMs) : LIMITS.timeoutMs;
     const r = await run(debateBin, cliArgs, {
-      timeoutMs: LIMITS.timeoutMs,
+      timeoutMs,
       env: { ...process.env, ...samplingEnv },
       onStderr: (s) => { for (const m of s.matchAll(/^=== (.+?) ===$/gm)) progress?.(++step, m[1]); },
     });
     // Calls that actually ran are counted from the transcript, whether or not the debate succeeded.
     const transcript = await readFile(join(dir, 'out', 'transcript.md'), 'utf8').catch(() => '');
-    const spent = usageFromTranscript(transcript, question);
-    const budget = spent.calls > 0 ? await usage.record(principal, spent) : await usage.snapshot(principal);
-    if (r.timedOut) return text(`error: debate timed out after ${LIMITS.timeoutMs / 1000}s`, true);
+    // The synthesis call counts when the transcript shows it ran ("## Synthesis" heading), or when the debate was not stopped by the timeout (a failed debate is charged conservatively).
+    const spent = usageFromTranscript(transcript, question, { synthesized: /\n## Synthesis/.test(transcript) || !r.timedOut });
+    const budget = await usage.settle(principal, { calls: worst.calls, tokens: worst.tokens }, spent);
+    settled = true;
+    if (r.timedOut) return text(`error: debate timed out after ${timeoutMs / 1000}s and was stopped. ${spent.calls} model call(s) had already answered and are counted against today's budget (${budget.remaining_calls ?? 'no limit'} calls left). Try mode "quick", fewer providers, or a shorter question.`, true);
     const verdict = parseVerdict(r.out);
     if (r.code !== 0 || !verdict) return text(`error: debate failed (exit ${r.code})\n${redact(r.err.slice(-1500))}`, true);
 
@@ -199,7 +214,8 @@ async function toolDebate(args, progress, ctx) {
     return { content: [{ type: 'text', text: renderDebate(result) }], structuredContent: result };
   } finally {
     activeDebates--;
-    rm(dir, { recursive: true, force: true }).catch(() => {});
+    if (!settled) await usage.release(principal, worst, 'debate').catch(() => {});
+    if (dir) rm(dir, { recursive: true, force: true }).catch(() => {});
   }
 }
 
@@ -253,7 +269,7 @@ async function toolIdeasList(args) {
 const TOOLS = [
   {
     name: 'e3d_debate',
-    description: 'Get a multi-model second opinion on a decision or design question. Independent AI models answer, and a synthesizer returns a final answer, a consensus level (full/majority/split), and any dissent, plus each model\'s final position. ALWAYS report the dissent and consensus level to the user -- the disagreement is the point; never present a split verdict as settled. Write a self-contained question: the models cannot see your code. mode "quick" (default): one round, usually well under a minute. mode "thorough": models also critique each other, a few minutes. Use for architectural choices, tradeoffs, and contestable judgment calls -- not for lookups or questions with an obvious answer. Spends the user\'s model credits.',
+    description: 'Use when the user asks for a second opinion, wants to compare options, or has to decide between alternatives (for example "JSON or SQLite?", "should we...", architecture or library tradeoffs). Get a multi-model second opinion on a decision or design question. Independent AI models answer, and a synthesizer returns a final answer, a consensus level (full/majority/split), and any dissent, plus each model\'s final position. ALWAYS report the dissent and consensus level to the user -- the disagreement is the point; never present a split verdict as settled. Write a self-contained question: the models cannot see your code. mode "quick" (default): one round, usually well under a minute. mode "thorough": models also critique each other, a few minutes. Use for architectural choices, tradeoffs, and contestable judgment calls -- not for lookups or questions with an obvious answer. Spends the user\'s model credits.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -343,7 +359,7 @@ const sampling = createSampling({ rpc, log });
 // never advertise sampling, elicitation or roots, so the server never needs to call back into the client.
 const stdioConn = { send, session: { clientInfo: null, capabilities: {}, rootsReady: null }, principal: process.env.E3D_MCP_PRINCIPAL || 'local', rpc, hosted: false, allowed: null };
 const newHttpConn = (principal, allowed) => ({ send: () => {}, session: { clientInfo: null, capabilities: {}, rootsReady: null }, principal, rpc: null, hosted: true, allowed });
-const actions = createPipelineActions({ guard, jobs, base: pipeline });
+const actions = createPipelineActions({ guard, jobs, base: pipeline, usage });
 TOOLS.push(...pipeline.tools, ...actions.tools, usageTool);
 
 // The client's workspace folders (MCP roots) are the default set of repos the pipeline tools may touch.
@@ -379,7 +395,7 @@ async function handle(msg, conn = stdioConn) {
       const want = params?.protocolVersion;
       return reply({
         protocolVersion: SUPPORTED_PROTOCOLS.includes(want) ? want : SUPPORTED_PROTOCOLS[0],
-        capabilities: { tools: { listChanged: false } },
+        capabilities: { tools: { listChanged: false }, prompts: { listChanged: false } },
         serverInfo: SERVER_INFO,
         instructions: conn.hosted
           ? 'Use e3d_debate for contestable decisions where independent model perspectives and recorded dissent add value; always report its dissent, and never present a split verdict as settled. It uses a shared usage budget (see e3d_usage); do not use it for simple lookups.'
@@ -389,6 +405,12 @@ async function handle(msg, conn = stdioConn) {
     case 'notifications/initialized': if (!conn.hosted) session.rootsReady = refreshRoots(session); return;
     case 'notifications/roots/list_changed': if (!conn.hosted) session.rootsReady = refreshRoots(session); return;
     case 'ping': return reply({});
+    case 'prompts/list': return reply({ prompts: listPrompts(conn.allowed) });
+    case 'prompts/get': {
+      const got = getPrompt(params?.name, params?.arguments, conn.allowed);
+      if (got?.error) return fail(-32602, got.error);
+      return got ? reply(got) : fail(-32602, `unknown prompt: ${params?.name}`);
+    }
     case 'tools/list': return reply({ tools: conn.allowed ? TOOLS.filter((t) => conn.allowed.has(t.name)) : TOOLS });
     case 'tools/call': {
       const handler = HANDLERS[params?.name];

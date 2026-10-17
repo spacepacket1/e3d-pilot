@@ -135,4 +135,27 @@ red="$(node -e "import('$ROOT/lib/mcp/redact.js').then(m=>console.log(m.redact('
 [[ "$red" == *"plain" ]] || fail "redact should keep ordinary text"
 [[ "$red" != *abcdefghijklmnop* && "$red" != *hunter2* && "$red" != *p4ss* ]] || fail "redact leaked a secret: $red"
 
+# the server reports the version in package.json (a development build is 0.2.0-dev.N, not a hard-coded 0.2.0)
+PKGV="$(jq -r .version "$ROOT/package.json")"
+[[ "$(field 1 .result.serverInfo.version)" == "$PKGV" ]] || fail "serverInfo.version must come from package.json ($PKGV), got $(field 1 .result.serverInfo.version)"
+
+# prompts: slash-command style entry points, so a person does not need to know a tool's name
+[[ "$(field 1 .result.capabilities.prompts.listChanged)" == "false" ]] || fail "initialize must advertise the prompts capability"
+pr="$(printf '%s\n' \
+  '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}' \
+  '{"jsonrpc":"2.0","id":2,"method":"prompts/list"}' \
+  '{"jsonrpc":"2.0","id":3,"method":"prompts/get","params":{"name":"e3d-debate","arguments":{"question":"JSON or SQLite?"}}}' \
+  '{"jsonrpc":"2.0","id":4,"method":"prompts/get","params":{"name":"nope"}}' \
+  '{"jsonrpc":"2.0","id":5,"method":"prompts/get","params":{"name":"e3d-budget"}}' \
+  '{"jsonrpc":"2.0","id":6,"method":"prompts/get","params":{"name":"e3d-debate","arguments":{"other":"x"}}}' \
+  | "$SERVER" 2>/dev/null)"
+pf() { jq -r --argjson id "$1" "select(.id==\$id) | $2" <<< "$pr"; }
+[[ "$(pf 2 '.result.prompts|map(.name)|sort|join(",")')" == "e3d-budget,e3d-debate,e3d-propose" ]] || fail "prompts/list names: $(pf 2 '.result.prompts|map(.name)|join(",")')"
+[[ "$(pf 2 '.result.prompts[]|select(.name=="e3d-debate")|.arguments[0].required')" == "true" ]] || fail "e3d-debate needs a question"
+[[ "$(pf 3 '.result.messages[0].content.text')" == *"e3d_debate tool"*"JSON or SQLite?"* ]] || fail "prompts/get e3d-debate must ask for the e3d_debate tool with the question"
+[[ "$(pf 3 '.result.messages[0].content.text')" == *"dissent"* ]] || fail "the debate prompt must tell the agent to keep dissent"
+[[ "$(pf 4 '.error.code')" == "-32602" ]] || fail "an unknown prompt is an invalid-params error"
+[[ "$(pf 5 '.result.messages[0].content.text')" == *"e3d_usage"* ]] || fail "the budget prompt uses e3d_usage"
+[[ "$(pf 6 '.error.code')" == "-32602" && "$(pf 6 '.error.message')" == *"question"* ]] || fail "a missing required prompt argument is an error naming it: $(pf 6 '.error.message')"
+
 echo "mcp.sh: ok"

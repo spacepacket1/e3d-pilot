@@ -801,10 +801,11 @@ ideas_ingest_candidate() {
     --arg workspace_path "$canonical" \
     --arg source_run_id "$source_run_id" \
     --arg source_candidate "$candidate_id" \
+    --arg actor "${E3D_PILOT_ACTOR:-system}" \
     --slurpfile candidate "$candidate_tmp" \
     '{
       schema_version:$schema,event_id:$event_id,idea_id:$idea_id,event:"idea_proposed",
-      timestamp:$timestamp,actor:"system",workspace_kind:$workspace_kind,workspace_path:$workspace_path,
+      timestamp:$timestamp,actor:$actor,workspace_kind:$workspace_kind,workspace_path:$workspace_path,
       source_run_id:$source_run_id,source_candidate:$source_candidate,candidate:$candidate[0]
   }' > "$event_tmp"
   ideas_append_event "$events_file" "$event_tmp" || { rm -f "$candidate_tmp" "$event_tmp"; ideas_release_lock "$kind" "$canonical"; return 1; }

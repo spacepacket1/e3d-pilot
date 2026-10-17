@@ -201,7 +201,15 @@ Sampling can only answer text-in, text-out prompts, so it works for debates and 
 - `e3d-mcp --doctor` may say no separate Copilot extension is listed. Recent VS Code builds include Copilot Chat built in, so that is expected.
 - The daily budget resets at **00:00 UTC** (5 PM Pacific during daylight time), so its "day" can differ from your local date. `e3d_usage` shows the exact `resets_at`.
 - While an implementation is paused, the idea's ledger status is still `implementing`; the job reports `waiting_for_human` with `paused_before`. After `e3d_pilot_cancel_paused` or `e3d_pilot_execute`, that job is marked `cancelled` or `resumed`.
-- Ledger entries made through MCP are attributed to `mcp:<client>` (or `E3D_MCP_ACTOR`), never to the git identity of whoever owns the checkout. A declined approval is recorded as a note on the idea.
+- Ledger entries made through MCP, including the first `idea_proposed` event, are attributed to `mcp:<client>` (or `E3D_MCP_ACTOR`), never to the git identity of whoever owns the checkout. `<client>` is the name the editor announces: VS Code announces itself as `Visual Studio Code`, but Copilot's agent host announces `copilot-cli`, so the actor reads `mcp:copilot-cli` there. Set `E3D_MCP_ACTOR` if you want a fixed name. A declined approval is recorded as a note on the idea.
+- **Declining at VS Code's own tool-call confirmation never reaches the server**, so nothing can be recorded. Only the "Approve this idea?" form the server shows is recorded (as a note). VS Code may log `response=accept` for that form even when you decline, so the idea's ledger notes are the reliable place to see the difference.
+- **Debates reserve their worst case before running and settle to what they actually used**, atomically (a lock file serializes several server processes sharing one counter), so simultaneous requests cannot all pass the same cap.
+- **Spend is counted for pipeline jobs too.** `e3d_pilot_start`, `e3d_pilot_implement` and `e3d_pilot_execute` reserve an estimated number of model calls and tokens against the daily budget before they start (a discover/ideate start about 2 calls per configured provider, implement one call per drafter plus two per negotiation reviewer, execute 3 calls and about 200,000 tokens per phase; tune with `E3D_MCP_EST_TOKENS_PER_PHASE`). A reservation that would break a cap refuses the job and records nothing; a job that cannot start gives its reservation back. These are estimates, not measurements.
+- **The usage counter is machine-wide**, not per repository: one file per principal (`local` over stdio) under `~/.e3d-pilot/usage/`, shared by every repo the server touches. `e3d_usage` shows the file path. Delete it to reset the day.
+- When the editor's own models answer (MCP sampling), a debate stops after 150 seconds (`E3D_MCP_SAMPLING_TIMEOUT_SEC`) so the server reports the timeout before the editor gives up at about 3 minutes. Only calls that actually answered are counted; a debate stopped before its verdict is not charged for a synthesis call it never made.
+- A failed implementation names its real cause in the job's `failure_detail` (for example `draft-rejected.md: status: too-large ...`), and the stored job record carries a `warnings` list. After a cancel, the status says the log is history.
+- `e3d-mcp` also offers MCP prompts (`/e3d-debate`, `/e3d-propose`, `/e3d-budget` in editors that show them), and the server reports the version in `package.json` (a development build reports `0.2.0-dev.N`).
+- Agents reach the tools more reliably when the repository tells them when to use them. Copy [docs/mcp-agent-instructions.md](docs/mcp-agent-instructions.md) into `.github/copilot-instructions.md` or `AGENTS.md`.
 - A debate result now reports vendor families: Copilot's Claude plus the `claude` CLI count as one family, and overlap is called out in `warnings`.
 
 | Variable | Default | Meaning |
@@ -212,6 +220,8 @@ Sampling can only answer text-in, text-out prompts, so it works for debates and 
 | `E3D_MCP_MAX_JOBS` / `E3D_MCP_JOB_TIMEOUT_SEC` | 2 / 3600 | Concurrent jobs, per-job timeout. |
 | `E3D_MCP_MAX_PHASES` / `E3D_MCP_PLAN_TTL_SEC` | 8 / 1800 | Phase cap for execute, plan lifetime. |
 | `E3D_MCP_MAX_ARTIFACT_BYTES` | 100000 | Largest artifact read. |
+| `E3D_MCP_SAMPLING_TIMEOUT_SEC` | 150 | Stop a debate that uses the editor's models after this long. |
+| `E3D_MCP_EST_TOKENS_PER_PHASE` | 200000 | Tokens reserved per code-writing phase when `e3d_pilot_execute` starts. |
 | `E3D_MCP_PROVIDERS` / `E3D_MCP_AUTO_VOICES` | auto / 3 (2 without sampling) | Pin or cap the default debate voices. |
 | `E3D_MCP_SAMPLING_HINTS` | `claude,gpt` | Model-name hints for the two sampling voices. |
 

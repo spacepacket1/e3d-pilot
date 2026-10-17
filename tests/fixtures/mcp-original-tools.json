@@ -6,7 +6,7 @@
       "readOnlyHint": true,
       "title": "Multi-model debate"
     },
-    "description": "Get a multi-model second opinion on a decision or design question. Independent AI models answer, and a synthesizer returns a final answer, a consensus level (full/majority/split), and any dissent, plus each model's final position. ALWAYS report the dissent and consensus level to the user -- the disagreement is the point; never present a split verdict as settled. Write a self-contained question: the models cannot see your code. mode \"quick\" (default): one round, usually well under a minute. mode \"thorough\": models also critique each other, a few minutes. Use for architectural choices, tradeoffs, and contestable judgment calls -- not for lookups or questions with an obvious answer. Spends the user's model credits.",
+    "description": "Use when the user asks for a second opinion, wants to compare options, or has to decide between alternatives (for example \"JSON or SQLite?\", \"should we...\", architecture or library tradeoffs). Get a multi-model second opinion on a decision or design question. Independent AI models answer, and a synthesizer returns a final answer, a consensus level (full/majority/split), and any dissent, plus each model's final position. ALWAYS report the dissent and consensus level to the user -- the disagreement is the point; never present a split verdict as settled. Write a self-contained question: the models cannot see your code. mode \"quick\" (default): one round, usually well under a minute. mode \"thorough\": models also critique each other, a few minutes. Use for architectural choices, tradeoffs, and contestable judgment calls -- not for lookups or questions with an obvious answer. Spends the user's model credits.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
@@ -194,6 +194,32 @@
     "annotations": {
       "openWorldHint": false,
       "readOnlyHint": true,
+      "title": "List ideas"
+    },
+    "description": "List the ideas tracked by e3d-pilot in a repo, optionally filtered by status, to find an idea id for e3d_provenance_trace. Read-only.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "repo": {
+          "description": "Absolute path to a repo managed by e3d-pilot.",
+          "type": "string"
+        },
+        "status": {
+          "description": "Optional status filter, e.g. approved, implemented.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "repo"
+      ],
+      "type": "object"
+    },
+    "name": "e3d_ideas_list"
+  },
+  {
+    "annotations": {
+      "openWorldHint": false,
+      "readOnlyHint": true,
       "title": "List debate providers"
     },
     "description": "List the model providers configured on this machine and whether each is available to join a debate.",
@@ -230,31 +256,5 @@
       "type": "object"
     },
     "name": "e3d_provenance_trace"
-  },
-  {
-    "annotations": {
-      "openWorldHint": false,
-      "readOnlyHint": true,
-      "title": "List ideas"
-    },
-    "description": "List the ideas tracked by e3d-pilot in a repo, optionally filtered by status, to find an idea id for e3d_provenance_trace. Read-only.",
-    "inputSchema": {
-      "additionalProperties": false,
-      "properties": {
-        "repo": {
-          "description": "Absolute path to a repo managed by e3d-pilot.",
-          "type": "string"
-        },
-        "status": {
-          "description": "Optional status filter, e.g. approved, implemented.",
-          "type": "string"
-        }
-      },
-      "required": [
-        "repo"
-      ],
-      "type": "object"
-    },
-    "name": "e3d_ideas_list"
   }
 ]

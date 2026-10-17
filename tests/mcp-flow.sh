@@ -164,6 +164,7 @@ EVID="$(sc <<< "$out" | jq -r .evidence_ref)"
 assert_contains "$(cat "$REPO/$EVID")" "Codex prefers SQLite."
 assert_contains "$(cat "$REPO/.e3d-pilot/events.jsonl")" "e3d_debate verdict (split)"
 assert_contains "$(cat "$REPO/.e3d-pilot/events.jsonl")" "mcp:test-client"
+assert_eq "$(jq -r 'select(.event=="idea_proposed" and .idea_id=="'"$IDEA"'") | .actor' "$REPO/.e3d-pilot/events.jsonl")" "mcp:test-client" "the proposer is recorded, not \"system\""
 
 # input limits are enforced, not just declared
 out="$(mcp "$REPO" e3d_pilot_propose "$(jq -nc --arg r "$REPO" --arg t "$(head -c 300 /dev/zero | tr '\0' 'x')" '{repo:$r,title:$t,rationale:"r"}')")"
@@ -360,5 +361,50 @@ assert_eq "$(jq -r .state <<< "$st")" "failed" "the timeout stops the job"; asse
 sleep 1
 pgrep -f mcpflow-sleepy >/dev/null && fail "the timed-out job's processes should be gone"
 MCP_ENV='{}'
+
+# ================= budget: jobs that spend credits are reserved against the daily cap =================
+REPO="$(mk_repo budget)"
+BUD="$TMP/budget-state"
+IDEA="$(propose "$REPO" "Budgeted")"; cli_approve "$REPO" "$IDEA"
+usage_calls() { MCP_ENV="$(jq -nc --arg d "$BUD" '{E3D_MCP_STATE_DIR:$d, E3D_MCP_DAILY_CALLS:"4"}')" mcp "$REPO" e3d_usage '{}' | sc | jq -r .calls_today; }
+# implement costs 1 draft + 2 negotiation rounds x 1 reviewer = 3 calls: a cap of 2 refuses it BEFORE any job starts
+MCP_ENV="$(jq -nc --arg d "$BUD" '{E3D_MCP_STATE_DIR:$d, E3D_MCP_DAILY_CALLS:"2"}')"
+out="$(mcp "$REPO" e3d_pilot_implement "$(jq -nc --arg r "$REPO" --arg i "$IDEA" '{repo:$r,idea_id:$i}')")"
+assert_eq "$(iserr <<< "$out")" "true" "implement must be refused when its reservation would break the cap"
+assert_contains "$(txt <<< "$out")" "daily budget"
+assert_eq "$(idea_status "$REPO" "$IDEA")" "approved_for_implementation" "a refused implement changes nothing"
+[[ ! -d "$REPO/.e3d-pilot/mcp-jobs" ]] || [[ -z "$(ls "$REPO/.e3d-pilot/mcp-jobs" 2>/dev/null)" ]] || fail "a refused implement must not start a job"
+MCP_ENV='{}'
+assert_eq "$(usage_calls)" "0" "a refusal reserves nothing"
+# with room, it starts and the reservation is recorded and reported
+MCP_ENV="$(jq -nc --arg d "$BUD" '{E3D_MCP_STATE_DIR:$d, E3D_MCP_DAILY_CALLS:"4"}')"
+out="$(mcp "$REPO" e3d_pilot_implement "$(jq -nc --arg r "$REPO" --arg i "$IDEA" '{repo:$r,idea_id:$i}')")"
+assert_eq "$(iserr <<< "$out")" "false" "implement with room: $(txt <<< "$out")"
+assert_eq "$(sc <<< "$out" | jq -r .reserved.calls)" "3" "the reservation is reported"
+assert_eq "$(sc <<< "$out" | jq -r .reserved.estimate)" "true" "and labelled an estimate"
+assert_contains "$(txt <<< "$out")" "Reserved against today's budget"
+JOB="$(sc <<< "$out" | jq -r .job_id)"
+final="$(wait_job "$REPO" "$JOB")"
+assert_eq "$(jq -r .state <<< "$final")" "waiting_for_human"
+assert_eq "$(usage_calls)" "3" "e3d_usage counts the job"
+# 1 call is left: a discover/ideate start (2 calls) is refused, and nothing new starts
+out="$(mcp "$REPO" e3d_pilot_start "$(jq -nc --arg r "$REPO" '{repo:$r,stage:"discover"}')")"
+assert_eq "$(iserr <<< "$out")" "true" "start must be refused: only 1 call left"
+assert_contains "$(txt <<< "$out")" "only 1 of today's 4"
+assert_eq "$(usage_calls)" "3" "the refused start reserved nothing"
+# a job that cannot start gives its reservation back: the discover job below runs a sleepy fake provider, so a second
+# start in the same repo is refused by the job lock AFTER its reservation was taken
+MCP_ENV="$(jq -nc --arg d "$BUD" '{E3D_MCP_STATE_DIR:$d, E3D_MCP_DAILY_CALLS:"40", SLEEPY_SECS:"60"}')"
+out="$(mcp "$REPO" e3d_pilot_start "$(jq -nc --arg r "$REPO" '{repo:$r,stage:"discover"}')")"
+assert_eq "$(iserr <<< "$out")" "false" "start with room: $(txt <<< "$out")"
+assert_eq "$(sc <<< "$out" | jq -r .reserved.calls)" "2" "a discover/ideate start reserves 2 calls"
+before="$(MCP_ENV="$(jq -nc --arg d "$BUD" '{E3D_MCP_STATE_DIR:$d, E3D_MCP_DAILY_CALLS:"40"}')" mcp "$REPO" e3d_usage '{}' | sc | jq -r .calls_today)"
+out="$(mcp "$REPO" e3d_pilot_start "$(jq -nc --arg r "$REPO" '{repo:$r,stage:"discover"}')")"
+assert_eq "$(iserr <<< "$out")" "true" "a second job in the same repo is refused"; assert_contains "$(txt <<< "$out")" "already running"
+after="$(MCP_ENV="$(jq -nc --arg d "$BUD" '{E3D_MCP_STATE_DIR:$d, E3D_MCP_DAILY_CALLS:"40"}')" mcp "$REPO" e3d_usage '{}' | sc | jq -r .calls_today)"
+assert_eq "$after" "$before" "the reservation of a job that could not start is released"
+MCP_ENV='{}'
+out="$(mcp "$REPO" e3d_pilot_cancel_paused "$(jq -nc --arg r "$REPO" --arg i "$IDEA" '{repo:$r,idea_id:$i,reason:"budget test"}')")"
+assert_eq "$(iserr <<< "$out")" "false" "cleanup cancel: $(txt <<< "$out")"
 
 echo "mcp-flow.sh: ok"
