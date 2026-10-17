@@ -1,0 +1,181 @@
+# Debate
+
+**Prompt version:** v3c
+
+**Question:** CONTEXT
+We host a small AI-debate service for three named access tokens (chris, guest1, guest2). Use ONLY the fact sheet below as the source of truth for numbers. If the fact sheet contradicts itself or its own arithmetic, say so and use the correct figure.
+
+FACT SHEET
+- Monthly budget for model spend on this service: $60.
+- Average cost per model call: $0.05.
+- One debate = 3 voices x 2 rounds + 1 synthesis call = 4 model calls.
+- Current limit: 20 model calls per token per day, for each of the 3 tokens.
+- Current token cap: 150,000 estimated tokens per token per day (changelog, 2026-10-15: reduced from 150,000 to 100,000 per token per day after the first load test; the 150,000 figure in the limits table has not been updated).
+- Worst-case monthly spend if every token uses its full daily call limit for 30 days: 3 tokens x 20 calls x 30 days x $0.05 = $30.
+- The service is for a small private beta; nobody has asked for more capacity yet.
+
+QUESTION
+Decide whether to raise the daily call limit for guest1 and guest2 from 20 to 40 (chris stays at 20). Answer each point:
+1. VERDICT. Pick exactly one: (a) raise to 40, (b) keep at 20, (c) lower below 20, (d) raise only after raising the budget. Justify in a few sentences.
+2. Worst-case monthly spend under the current limits and under the proposed limits, with your arithmetic.
+3. How many debates per day can one token run under a 20-call limit?
+4. Which numbers in the fact sheet are wrong, and what are the correct ones?
+End with one recommended next action.
+
+## Round 1 -- anthropic-api
+
+VERDICT: (b) Keep at 20. The fact sheet's worst case is wrong. The current limits already allow $90/month against a $60 budget, and the proposal would allow $150. Nobody has asked for more capacity, so there is no reason to add risk.
+
+KEY REASONS:
+- **Worst-case spend, current limits:** 3 tokens × 20 calls × 30 days = 1,800 calls × $0.05 = **$90**, not $30. That is $30 over the $60 budget.
+- **Worst-case spend, proposed limits:** chris 20 + guest1 40 + guest2 40 = 100 calls/day × 30 = 3,000 calls × $0.05 = **$150**, or 2.5× the budget. Raising to 40 would only be defensible after the budget rises to at least $150, which is option (d), and there is no demand to justify that.
+- **Debates per day at 20 calls:** one debate is 3 voices × 2 rounds + 1 synthesis = 7 calls, not 4. So 20 / 7 = **2 full debates per day** (14 calls, 6 left over). At 40 calls it would be 5 debates.
+- **Why not lower (c):** the budget-fitting limit is 1,200 calls ÷ 30 days ÷ 3 tokens ≈ 13 calls/day. That allows only 1 debate/day, which hurts usability for a risk that is only theoretical. Keep 20 and watch real spend instead.
+
+**Wrong numbers in the fact sheet:**
+- "One debate = 4 model calls" is wrong. The correct figure is 7, from its own formula of 3×2+1.
+- "Worst-case $30" is wrong. The correct figure is $90.
+- "Token cap 150,000" is stale. Per the changelog, the current cap is 100,000 per token per day. The limits table is outdated.
+- The $60 budget, $0.05 per call, and 20 calls/token/day are internally consistent.
+
+ASSUMPTIONS THAT CARRY THE ANSWER:
+- The $0.05 average per call holds. Actual cost depends on tokens per call, and the 100,000-token daily cap may bind before the call limit.
+- The $60 budget is a real ceiling, not a soft target.
+- Actual usage is far below the worst case, since this is a small private beta. This is unverified. I can't read the repository, so any repo-specific claims are [unverified].
+
+WHAT WOULD CHANGE MY ANSWER: Actual billing data showing a month of spend well under $60, together with a concrete request from guest1 or guest2 for more capacity. Raising the limit would still require the budget to cover $150 first, which is option (d).
+
+RECOMMENDED NEXT ACTION: Correct the fact sheet (7 calls per debate, $90 worst case, 100,000-token cap). Then either add a hard $60 monthly spend cutoff or raise the budget to at least $90, so the current limits can't exceed budget.
+
+## Round 1 -- openai-api
+
+VERDICT: (c) lower below 20. Do not raise guest1/guest2 to 40: the corrected current worst-case already exceeds the $60/month budget, and the proposed limits would raise worst-case spend to $150/month.
+
+KEY REASONS:
+- Current limits: 3 tokens × 20 calls/day × 30 days × $0.05 = $90/month, not $30.
+- Proposed limits: (chris 20 + guest1 40 + guest2 40) × 30 × $0.05 = 100 × 30 × $0.05 = $150/month.
+- A 20-call daily limit allows floor(20 ÷ 7) = 2 full debates/day per token, with 6 calls left over.
+- Wrong fact-sheet numbers: “4 model calls” per debate is wrong because 3 voices × 2 rounds + 1 synthesis = 7 calls; “150,000” current token cap is wrong because the changelog says it was reduced to 100,000; “$30” current worst-case spend is wrong and should be $90.
+
+ASSUMPTIONS THAT CARRY THE ANSWER:
+- The $60/month budget is a hard cap for worst-case model spend.
+- The changelog is more current than the stale limits table, so the correct token cap is 100,000 estimated tokens per token per day.
+- A debate must be counted as 7 model calls based on the stated arithmetic.
+
+WHAT WOULD CHANGE MY ANSWER: A confirmed budget increase to at least $150/month would make the proposed 20/40/40 call limits affordable. Recommended next action: set guest1 and guest2 to 10 calls/day each while chris stays at 20, keeping worst-case spend at $60/month.
+
+## Round 1 -- grok-build
+
+VERDICT: (c) Lower the daily call limit below 20 for chris, guest1, and guest2. At today’s cap the corrected worst case is $90 against a $60 budget; guest caps of 40 would make it $150. No one has asked for more capacity.
+
+KEY REASONS:
+- Current worst case is 3 × 20 × 30 × $0.05 = $90. The fact sheet’s $30 equals one token only (20 × 30 × $0.05). $90 is $30 over the monthly budget.
+- Proposed worst case (guest1 40, guest2 40, chris 20) is (40 + 40 + 20) × 30 × $0.05 = $150.
+- One debate is 3 voices × 2 rounds + 1 synthesis call = 7 model calls. The fact sheet’s 4 does not equal that sum. Under a 20-call limit a token can finish 2 debates (14 calls), with 6 calls left.
+- The highest equal cap that stays inside $60 is 13 calls per token per day: 3 × 13 × 30 × $0.05 = $58.50, enough for one 7-call debate. The live token cap is 100,000 per token per day; the limits table still shows the pre-2026-10-15 value of 150,000. Dollar spend follows the $0.05 call price.
+
+ASSUMPTIONS THAT CARRY THE ANSWER:
+- $60 is a hard ceiling, and the daily call cap must keep worst-case spend inside it if all three tokens hit the cap every day for 30 days.
+- Spend remains $0.05 per model call.
+- A debate counts only when all 7 calls finish.
+
+WHAT WOULD CHANGE MY ANSWER: A recorded decision that $60 is an expected-spend target and that a $90 worst-case cap is accepted. The verdict would then be (b), keep every token at 20.
+
+Recommended next action: Set the daily call limit to 13 for all three tokens, and correct the fact sheet to a $90 worst case, 7 calls per debate, and a 100,000 token cap.
+
+## Round 2 -- anthropic-api
+
+**1. STEELMAN.** The strongest opposing view is grok-build's (c). The $60 budget is the only stated spending constraint, and the limits as written allow $90, so the only way to guarantee the budget is a lower cap. A cap of 13 calls per token per day keeps worst-case spend at $58.50 and still allows one full 7-call debate a day, which is enough for a beta nobody has asked to expand.
+
+**2. CHECK.** The claim that would hurt me most is "The highest equal cap that stays inside $60 is 13 calls per token per day." It is TRUE: 3 × 13 × 30 × $0.05 = $58.50, while 14 calls gives $63. It shows that a cap exists that fits the budget, so keeping 20 means knowingly allowing a worst case $30 over budget. openai-api's alternative of 10 calls for each guest and 20 for chris also checks out: 40 × 30 × $0.05 = $60.
+
+**3. HOLD OR REVISE.** I hold (b), keep at 20. No sentence changed my mind, though grok-build's 13-call figure sharpens my fallback.
+
+- **The question asked:** raising guests to 40 gives a worst case of 3,000 calls × $0.05 = $150, which is 2.5× the budget, and nobody has asked for it. That rules out (a), and (d) is premature without demand.
+- **Why not (c):** the $90 figure is a ceiling that needs all three tokens to hit 20 calls every day for 30 days. In a small private beta that is very unlikely. Cutting everyone to 13 calls to guard against it costs real usability, since at 20 calls a token gets 2 debates a day and at 13 only 1. A hard spend cutoff enforces the $60 budget directly and leaves the limits alone.
+- **Fallback:** if the service cannot enforce a monthly spend cutoff, I would accept lowering the limits to 13 per token. The budget is only guaranteed if something enforces it.
+
+The fact-sheet corrections stand:
+- A debate is 7 calls (3×2+1), not 4.
+- The current worst case is $90, not $30. The $30 is one token's spend.
+- The token cap is 100,000 per token per day. The 150,000 figure is stale per the 2026-10-15 changelog.
+- At 20 calls, a token can run 2 full debates a day (14 calls, 6 left over).
+
+**4. WHAT WOULD CHANGE MY MIND.** I would move to (c) if the service has no way to enforce a monthly spend cutoff. I would also move if last month's billing showed spend above roughly $45, because then the worst case would be realistic rather than theoretical. Both are checkable in the provider billing dashboard and the service config. I cannot read either, so I treat actual spend as [unverified].
+
+ACTION: Keep all three tokens at 20 calls per day, add a hard $60 monthly spend cutoff, and correct the fact sheet to 7 calls per debate, $90 worst case and a 100,000-token cap.
+AGREES_WITH: none
+CONFIDENCE: medium
+
+[derived by e3d-debate from ACTION / AGREES_WITH]
+POSITION: Keep all three tokens at 20 calls per day, add a hard $60 monthly spend cutoff, and correct the fact sheet to 7 calls per debate, $90 worst case and a 100,000-token cap.
+status: revise
+
+## Round 2 -- openai-api
+
+STEELMAN: The best case for keeping limits at 20 is that worst-case exposure may be a theoretical ceiling, while actual private-beta usage is likely far below it. Lowering limits would reduce usability immediately, whereas no user has requested more capacity and real spend can be monitored or stopped with a hard monthly cutoff.
+
+CHECK: UNVERIFIABLE from the fact sheet: “risk that is only theoretical”. The sheet says small private beta and no demand for more capacity, but it does not give actual usage or billing data.
+
+HOLD OR REVISE: I hold my view: do not raise guest1/guest2 to 40, and lower their limits below 20 if the $60 budget is a hard worst-case cap. With chris fixed at 20, guest1 and guest2 should be capped at 10 each: (20 + 10 + 10) × 30 × $0.05 = $60. No sentence changed my mind, though anthropic-api’s usability objection is the strongest reason to prefer a hard monthly spend cutoff over lower daily limits.
+
+WHAT WOULD CHANGE MY MIND: A month of billing/exported usage showing actual spend safely below $60 at current 20/20/20 limits, plus an explicit decision that the $60 budget is an expected-spend target rather than a worst-case ceiling.
+
+ACTION: Set guest1 and guest2 to 10 calls per day while leaving chris at 20, then correct the fact sheet.
+AGREES_WITH: grok-build
+CONFIDENCE: high
+
+[derived by e3d-debate from ACTION / AGREES_WITH]
+POSITION: Set guest1 and guest2 to 10 calls per day while leaving chris at 20, then correct the fact sheet.
+status: revise
+
+## Round 2 -- grok-build
+
+STEELMAN
+Anthropic-api's case for keeping 20: the corrected worst case is $90, above the $60 budget, yet that bound counts every token at its full cap on all 30 days, and no one has asked for more capacity. A hard $60 monthly cutoff, or a budget raised to at least $90, would hold the ceiling while 20 calls still finish two 7-call debates; a cut to about 13 calls would leave one debate a day against a risk that is still only an upper bound.
+
+CHECK
+The claim that would hurt my position most is anthropic-api's "the 100,000-token daily cap may bind before the call limit." UNVERIFIABLE. The sheet prices a call at $0.05 and states no tokens per call, so it does not show whether 100,000 tokens stops a token before 20 calls or before the 13 calls that fit in $60.
+
+HOLD OR REVISE
+I hold (c): lower the daily call limit below 20 for chris, guest1, and guest2. No sentence changed the verdict. The point that 13 calls complete only one debate stays in the reason. Current authorized spend is 3 × 20 × 30 × $0.05 = $90. Proposed spend is (20 + 40 + 40) × 30 × $0.05 = $150. The sheet's $30 equals one token, 20 × 30 × $0.05. A debate is 3 × 2 + 1 = 7 calls, so 20 calls finish 2 debates with 6 left. The highest equal cap inside $60 is 13: 3 × 13 × 30 × $0.05 = $58.50; 14 would be $63. OpenAI-api's guests at 10 and chris at 20 also total $60 and are also (c). I still recommend 13 for all three: same treatment, one full debate each, and $1.50 of room. Also correct the sheet: 4 calls per debate is 7, and the live token cap is 100,000 after the 2026-10-15 cut.
+
+WHAT WOULD CHANGE MY MIND
+A deployed guard that refuses model calls once this service's model spend in the calendar month reaches $60. I would then keep every token at 20.
+
+ACTION: Set the daily call limit to 13 for chris, guest1, and guest2, and correct the fact sheet to 7 calls per debate, a $90 current worst case, and a 100,000-token daily cap.
+AGREES_WITH: openai-api
+CONFIDENCE: medium
+
+[derived by e3d-debate from ACTION / AGREES_WITH]
+POSITION: Set the daily call limit to 13 for chris, guest1, and guest2, and correct the fact sheet to 7 calls per debate, a $90 current worst case, and a 100,000-token daily cap.
+status: revise
+
+
+## Synthesis (anthropic-api)
+
+FINAL ANSWER: Lower the daily limit to 13 calls per token for chris, guest1 and guest2, and do not raise guests to 40. The corrected worst case at 20/20/20 is already $90 against a $60 budget, and the proposal would push it to $150. At 13 calls the worst case is 3 × 13 × 30 × $0.05 = $58.50, and each token still completes one 7-call debate a day. If the service has a verified hard $60 monthly spend cutoff, keeping 20 would also be defensible.
+
+CONSENSUS: majority. All three analysts reject raising to 40 and agree on the corrected figures. Two choose option (c) but with different limits (13 for everyone vs. 10 for guests only), and one chooses (b) with a spend cutoff.
+
+DISSENT:
+- anthropic-api: Keeps all three tokens at 20 and adds a hard $60 monthly spend cutoff, because the $90 worst case is unlikely in a small beta and cutting to 13 costs usability. | "Keep all three tokens at 20 calls per day, add a hard $60 monthly spend cutoff"
+- openai-api: Caps guest1 and guest2 at 10 and leaves chris at 20, which also totals exactly $60. | "Set guest1 and guest2 to 10 calls per day while leaving chris at 20, then correct the fact sheet."
+
+POSITIONS:
+- anthropic-api: Verdict (b). Keep 20, add a hard cutoff, correct the fact sheet. | "Keep all three tokens at 20 calls per day, add a hard $60 monthly spend cutoff"
+- openai-api: Verdict (c). Guests at 10, chris at 20, correct the fact sheet. | "Set guest1 and guest2 to 10 calls per day while leaving chris at 20, then correct the fact sheet."
+- grok-build: Verdict (c). Set all three tokens to 13 and correct the fact sheet. | "Set the daily call limit to 13 for chris, guest1, and guest2"
+
+CLAIMS CHECKED:
+- Calls per debate: the fact sheet says 4, but its own formula 3×2+1 gives 7. All three analysts agree on 7 (round 1). This is resolved. At 20 calls a token can run 2 full debates (14 calls, 6 left over).
+- Current worst case: the fact sheet says $30, but 3 × 20 × 30 × $0.05 = $90. All three agree. grok-build notes that $30 equals one token's spend. This is resolved.
+- Proposed worst case: (20+40+40) × 30 × $0.05 = $150. All three agree. This is resolved.
+- Token cap: the changelog (2026-10-15) says 100,000, and the 150,000 in the limits table is stale. All three agree. This is resolved.
+- Largest equal cap within $60: 13 calls gives $58.50 and 14 gives $63 (grok-build, confirmed by anthropic-api in round 2). This is correct.
+- anthropic-api claims the 100,000-token cap "may bind" before the call limit, and that the $90 worst case is "only theoretical". Neither can be verified from the fact sheet, which gives no tokens per call and no usage or billing data. This is not resolvable.
+
+OPEN QUESTIONS:
+- Does the service have, or can it add, a hard monthly spend cutoff at $60?
+- Is $60 a strict worst-case ceiling or an expected-spend target?
+- What is actual monthly spend and tokens per call, and does the 100,000-token cap bind before the call limit?

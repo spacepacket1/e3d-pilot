@@ -1,0 +1,138 @@
+--- Round 1 / anthropic-api ---
+VERDICT: (b) Include it in docs/ as an ideas/design note, trimmed and labelled non-binding. It is a coherent framing, but it is a multi-party governance architecture with no validated mechanism. e3d-brain is a small, single-vault, local-first server, so adopting it as a requirement would be premature.
+
+KEY REASONS:
+- **What holds up:**
+  - "Relevance ≠ disclosure" and "contribute via an object, not vault access" are sound, and the private candidate layer fits the cognition layer's propose-then-human-accepts pattern.
+  - Keeping origin, relevance, visibility and authority as separate axes is a useful discipline.
+  - "Same event, different projections" is a good argument against forced single-homing.
+- **What is not new:** Visibility lists, "agents act on behalf of a user without granting reciprocal access", and the contribution object are ACLs, multi-tenancy, ABAC and capability-style delegation under new names. The doc cites none of this prior art. Its only real novelty is the AI-detects-relevance-but-doesn't-disclose candidate pipeline, and that is unvalidated. Its own open questions (revocation, departure, consensus vs opinion, private-evidence convergence) are the hard parts, and they are unanswered.
+- **Implications if adopted:**
+  - Data model: optional frontmatter `origin`, `relevant_to`, `visibility` and `authority`. `authority` likely overlaps existing status/supersession fields [unverified].
+  - MCP: read tools would have to filter by visibility, and there would need to be a `contribute` or export tool.
+  - Cognition: a "contribution candidate" proposal type.
+  - Smallest slice now: documentation only, plus confirming that unknown frontmatter keys pass through untouched. If any code is added, make it a default-private `visibility` that read tools respect.
+  - Wait on: multi-vault federation, a Group OS, policy engines, revocation, cross-member convergence, and agent-to-agent negotiation.
+- **Risks:**
+  - A visibility field that is advisory but looks enforced gives false confidence. Markdown files have no real access control.
+  - Sanitised contributions can leak through paraphrase, and provenance can leak identity.
+  - Multi-user semantics would break the single-owner, local-first assumption.
+  - Scope creep would pull a small server toward enterprise knowledge management.
+
+ASSUMPTIONS THAT CARRY THE ANSWER:
+- I could not read the repository, so the specs' current frontmatter, tool surface and single-user assumption are [unverified]. I am assuming one vault, one owner, and tolerance of extra frontmatter.
+- A design note costs little and does not bind the specs.
+
+WHAT WOULD CHANGE MY ANSWER: A named second party (e.g. an IteraWorks POC) that actually runs a second vault and needs cross-vault sharing would move this to (a) for a narrow slice. Absent that, any need to expose vault content to another principal triggers revisiting.
+
+EDITS BEFORE INCLUSION:
+- Cut the JEEVIS, Life Flywheel and IteraWorks sections, the personal-domain lists, the vault wikilinks and the Joel-specific examples.
+- Rename "Living Idea" to "Design note (non-binding)".
+- Add a short "Prior art" paragraph covering ACLs, ABAC and capability delegation.
+- Add a threat-model paragraph covering paraphrase leakage and advisory-only visibility.
+- Define "authority" against the existing status fields, and mark `contribution` as hypothetical.
+- Keep the open questions, ranked.
+
+RECOMMENDED NEXT ACTION: Commit a trimmed docs/ note with those edits, and add one line to the cognition spec's backlog: "revisit when a second vault or principal exists."
+
+--- Round 1 / openai-api ---
+VERDICT: **(b) include it as an ideas/design note in docs/ without committing to build.** It is directionally compatible with e3d-brain’s local-first, human-governed memory philosophy, but it is not yet a design requirement; federation, permissions, identity, and cross-vault sharing would materially expand the project’s scope.
+
+KEY REASONS:
+- **What holds up:** “Relevance does not imply disclosure,” “classification is not sharing,” and the separation of **origin / relevance / visibility / authority** are sound and useful. The idea of sharing **contribution objects** rather than granting vault access is especially relevant to e3d-brain.
+- **What is not yet proven:** cross-boundary convergence, AI-mediated policy enforcement, auto-approved contributions, and “organizational learning” are plausible but unvalidated. Much of the mechanism restates known patterns: access control, multi-tenancy, provenance, ABAC/capability-style sharing, publication workflows, and canonical-vs-draft knowledge.
+- **What is genuinely useful/new here:** not the security model itself, but the framing for a small Markdown/MCP memory server: private notes can mark external relevance without disclosure, and cognition can propose sanitized contribution drafts for human approval.
+- **Implications for e3d-brain:** if adopted fully, it would require scoped vault identities, frontmatter such as `origin`, `relevant_to`, `visibility`, `authority`, `provenance`, `shared_status`, MCP tools that respect scope, and cognition rules for contribution candidates, sanitization, supersession, and retraction. That is too much now. The smallest slice worth building is: **support metadata for origin/relevance/visibility plus a human-approved “export contribution draft” workflow.** Cross-vault querying, federated identity, auto-sharing, and group convergence should wait.
+- **Risks:** privacy leaks through summaries, backlinks, embeddings, provenance, search results, or “helpful” agent synthesis; scope creep from a small local-first server into a federated governance platform; unclear revocation after sharing; and possible conflict with e3d-brain’s deliberate simplicity [unverified].
+- **Edits before inclusion:** cut Joel-specific examples or move them to an appendix; rename “sovereign” to “independently governed” where possible; define “Group OS,” “contribution object,” “projection,” “visibility,” and “authority”; explicitly say this is **not** an access-control spec; separate principles from proposed mechanisms; shorten repeated claims about federation and multi-context knowledge.
+
+ASSUMPTIONS THAT CARRY THE ANSWER:
+- I cannot read the repository, so repo-specific claims are [unverified].
+- e3d-brain is intended to remain small, local-first, Markdown-backed, MCP-facing, and human-governed, per the prompt.
+- The current specs do not already require federated multi-vault identity, sharing, or permissions [unverified].
+
+WHAT WOULD CHANGE MY ANSWER: If the specs already define multi-vault scoped access and human-approved export/import flows, this could be promoted from design note to a narrow requirement. Recommended next action: add a trimmed `docs/federated-personal-organizational-intelligence.md` marked **non-binding design note**, with one extracted backlog item: “human-approved contribution object export.”
+
+--- Round 1 / grok-build ---
+I'll check the e3d-brain specs against the living idea before deciding whether it belongs in the project.VERDICT: (c) Defer. Leave this Living Idea in the vault. Do not add it to the e3d-brain specs or to `docs/`. Revisit only when two real vaults must exchange a sanitized note and hand-copy into the destination `_inbox/` has been rejected.
+
+KEY REASONS:
+- Sound: personal and group systems answer different questions; private vaults stay sovereign; relevance is not disclosure; a share is a human-accepted contribution with provenance. That last rule matches cognition G19, a one-way owner-run publish into another brain's `_inbox/`, marked out of scope [read: /Users/mini/e3d-brain/docs/e3d-brain-cognition-spec.md]. The asymmetry (a person's agent may read a shared system; the group does not inherit the personal vault) matches v1's ban on cross-principal flow [read: /Users/mini/e3d-brain/docs/e3d-brain-spec.md]. Little else is new: access control, multi-tenancy, attribute policy, capability sharing, and provenance are renamed. Ambient versus canonical restates proposal versus curated memory. Unproven: convergence without private evidence, auto-approval, revocation after a copy, and "what the organization is learning."
+- Adoption adds a second product. `origin` already means `mcp|hook|import|cli`, and memory is "advisory, never authority," so `visibility` and `authority` collide with those invariants. MCP has no cross-brain read and no accept tool. Cognition proposes inside one vault and never auto-accepts. Build nothing now. Projections, group ambient memory, multi-org permissions, and a JEEVIS mediator wait.
+- Private candidates (health, finances, undisclosed work) leak if relevance is treated as a publish signal. Retraction cannot remove a copy or a model context. Unenforced frontmatter is false safety. A Group OS and an IteraWorks POC conflict with "do not build hooks" for a future `shared/` publish [read: e3d-brain-spec.md Non-Goals].
+- Before any later copy into the repo: drop JEEVIS, Life Flywheel, the constitution and CIP links, and the POC pitch. Rename `origin` to `source_context` and `authority` to `epistemic_status`. Mark the contribution YAML as an illustration. State non-goals in the note: no shared server, no reciprocal access, no auto-approve, no MCP cross-read.
+
+ASSUMPTIONS THAT CARRY THE ANSWER:
+- v1 stays one principal, one vault, no shared server; unknown frontmatter is kept and is not policy [read: /Users/mini/e3d-brain/docs/e3d-brain-spec.md].
+- G19 already records the only compatible mechanism, and the ticket leaves it out of scope.
+- The note is provisional and says it changes no existing specification.
+
+WHAT WOULD CHANGE MY ANSWER: An owner-written decision that two named vaults must exchange sanitized notes inside e3d-brain, that hand-copy into `_inbox/` is insufficient, and a one-page contract exists (fields, human accept, no auto-approve, revocation is a new note). That justifies a short docs note, still not a spec requirement.
+
+NEXT ACTION: Add nothing now. On the next cognition-spec edit, append one sentence to G19: revisit when two vaults need a sanitized owner-run publish, and classification does not imply that publish.
+
+--- Round 2 / anthropic-api ---
+**1. STEELMAN.** grok-build's (c) is strongest like this: e3d-brain v1 is one principal and one vault, and the only compatible mechanism, an owner-run one-way publish into another brain's `_inbox/`, is already recorded and marked out of scope. A new docs note would therefore add a second, richer vocabulary (visibility, authority, projections, Group OS) that readers treat as a roadmap, so the honest move is one sentence in the existing backlog and nothing more.
+
+**2. CHECK.** The claim that hurts me most is "`origin` already means `mcp|hook|import|cli`". My edits and implications section proposed an `origin` field with the document's meaning, "where the event occurred". If grok-build is right, that field collides with an existing one, and a docs note using the vault's vocabulary would contradict the specs on day one. I cannot see the specs, so this is UNVERIFIABLE from the material given. grok-build marks it as read, and it is plausible for a server that records capture channel. I will treat it as probably true.
+
+**3. HOLD OR REVISE.** I am revising partway. The `origin` collision changes my mind about the shape of the note, not about the verdict.
+
+- **Verdict:** I keep (b), but the note shrinks to about one page. It keeps only these principles:
+  - Relevance is not disclosure.
+  - Share via a human-accepted contribution object, not vault access.
+  - Origin, relevance, visibility and authority are distinct concepts.
+  - Same event, different projections.
+- **Fields:** I adopt grok-build's renames, `source_context` for the document's origin and `epistemic_status` for authority, so nothing shadows existing fields.
+- **Mechanism:** The note should point at G19's owner-run publish as the only compatible mechanism. It should state non-goals explicitly: no shared server, no reciprocal access, no auto-approve, no MCP cross-read, and visibility is advisory, not enforced.
+- **Cut:** All the JEEVIS, Life Flywheel, IteraWorks POC and Group OS material goes.
+- **Why not (c):** grok-build's argument is strong, but it leaves the privacy rule "classification must not trigger publish" living in a single backlog sentence. That rule is the one piece worth guarding against future agent-eager features, and a short non-binding note records it with its rationale. If the maintainers prefer minimal docs, folding that into G19 is nearly equivalent and I would accept it.
+- **Dropped:** My earlier suggestion of a default-private `visibility` field that read tools respect. In a plain-Markdown vault with one owner it is false safety, and it adds code for no current user.
+
+**4. WHAT WOULD CHANGE MY MIND.** Opening `docs/e3d-brain-cognition-spec.md` and finding that G19 (or a neighbouring section) already states "classification does not imply publish" and the human-accept rule in full. In that case I would move to (c) and add nothing. A named second vault that needs exchange would instead move me toward a narrow (a).
+
+ACTION: Write a one-page non-binding docs note with the four principles, the explicit non-goals and renamed fields (`source_context`, `epistemic_status`), link it from G19, and leave the rest of the Living Idea in the vault.
+AGREES_WITH: grok-build
+CONFIDENCE: medium
+
+[derived by e3d-debate from ACTION / AGREES_WITH]
+POSITION: Write a one-page non-binding docs note with the four principles, the explicit non-goals and renamed fields (`source_context`, `epistemic_status`), link it from G19, and leave the rest of the Living Idea in the vault.
+status: revise
+
+--- Round 2 / openai-api ---
+STEELMAN: The strongest case for including it now is that a clearly marked non-binding design note can preserve useful concepts—especially “classification is not sharing” and contribution objects—without expanding the build scope. Because e3d-brain is open source and spec-driven, documenting adjacent ideas early may prevent future federation work from accidentally violating its local-first, human-approved philosophy.
+
+CHECK: TRUE from the prompt-level evidence, not repo-level verification: “A design note costs little and does not bind the specs.” That weakens a hard defer, because docs/ can hold non-committal architectural context without requiring implementation.
+
+HOLD OR REVISE: I revise from **(b) include as a docs idea note now** to **(c) defer with a trigger**. The sentence that changed my mind was grok-build’s claim that “origin already means `mcp|hook|import|cli`, and memory is ‘advisory, never authority,’” because if true, the proposed fields are not just future-facing; they actively collide with current spec language and could confuse implementers. The right stance is: do not add this document yet; preserve only a narrow revisit trigger for human-approved, one-way contribution/export between two real vaults.
+
+WHAT WOULD CHANGE MY MIND: A confirmed spec issue or user story naming two actual vaults/principals, with a failed manual-copy workaround, requiring sanitized contribution export/import while preserving “classification does not imply disclosure.”
+
+ACTION: Add one backlog note saying federation should be revisited only when two named vaults need human-approved sanitized contribution exchange.
+AGREES_WITH: grok-build
+CONFIDENCE: medium
+
+[derived by e3d-debate from ACTION / AGREES_WITH]
+POSITION: Add one backlog note saying federation should be revisited only when two named vaults need human-approved sanitized contribution exchange.
+status: revise
+
+--- Round 2 / grok-build ---
+I'll verify the spec claims that decide whether a non-binding note is enough or whether this stays deferred.STEELMAN: The case for a docs note is that "relevance to another vault is not a publish" is easy to lose in a personal vault, and a trimmed non-binding file beside G19 would put that rule where the next publish design is written. That file alone would leave every acceptance test unchanged.
+
+CHECK: FALSE. "support metadata for origin/relevance/visibility plus a human-approved" (openai-api). The memory spec already sets `origin` to `mcp|hook|import|cli`, and `status` already sets default visibility. Memory is advisory and must not grant authority. Cognition forbids model-assigned relevance scores and cross-brain writes. G19 and the memory spec's future `shared/` step both say to build no hooks until a separate review.
+
+HOLD OR REVISE: I hold (c). Leave the Living Idea in the vault. Adopt nothing and add no `docs/` essay. Anthropic-api's sentence "A design note costs little and does not bind the specs" is true of acceptance tests and changed nothing: in this repo `docs/` is the input to later tickets, and G19 plus the `shared/` open question already record the compatible mechanism, a one-way owner-run copy into another brain's `_inbox/` after its own security review. Unknown frontmatter keys are already preserved. A note that introduces `origin`, `visibility`, and `authority` would teach names the schema already uses.
+
+WHAT WOULD CHANGE MY MIND: An owner-written decision that names two vaults, says hand-copy into the destination `_inbox/` is insufficient, and attaches a one-page contract with new field names, human accept, no auto-approve, and revocation written as a new note.
+
+ACTION: On the next cognition-spec edit, append one sentence to the G19 open question: revisit when two vaults need a sanitized owner-run publish, and classification does not imply that publish.
+AGREES_WITH: none
+CONFIDENCE: high
+
+[derived by e3d-debate from ACTION / AGREES_WITH]
+POSITION: On the next cognition-spec edit, append one sentence to the G19 open question: revisit when two vaults need a sanitized owner-run publish, and classification does not imply that publish.
+status: revise
+
+FINAL ANSWER: Choose (c), defer. Keep the Living Idea in the vault and add no docs/ essay or spec requirement. e3d-brain v1 is one principal and one vault, its `origin` field already means capture channel (`mcp|hook|import|cli`), and G19 already records the only compatible mechanism: a one-way, owner-run, sanitized publish into another brain's `_inbox/`. The document's sound ideas (relevance is not disclosure, contributions are objects rather than vault access, origin/relevance/visibility/authority are separate axes) mostly restate ACLs, ABAC and capability delegation, and its hard questions (revocation, departure, private-evidence convergence) are unanswered. Next action: at the next cognition-spec edit, append one sentence to G19: "Revisit when two named vaults need a sanitized owner-run publish and hand-copy into `_inbox/` is insufficient; classification does not imply publish." If a doc is ever written, trim it to about one page, rename `origin` to `source_context` and `authority` to `epistemic_status`, and state the non-goals: no shared server, no reciprocal access, no auto-approve, no MCP cross-read.
+CONSENSUS: majority
+DISSENT: anthropic-api still prefers (b), a one-page non-binding docs note linked from G19, so the "classification is not publish" rule is recorded with its rationale. grok-build and openai-api chose (c). anthropic-api said it would accept folding the rule into G19 instead.

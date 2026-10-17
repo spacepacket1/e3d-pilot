@@ -1,0 +1,142 @@
+--- Round 1 / anthropic-api ---
+VERDICT: (b) Approve with specific required changes. Phases 1-3 can proceed to the human-input steps in §9, and Phase 4 stays unauthorized. I could not read the repo, so every repo-specific claim below is [unverified] and rests on the spec's own text.
+
+KEY REASONS:
+- **Risks, ranked:**
+  1. **False assurance from the spend-ceiling kill switch (§5 Phase 3, §6).** A ceiling breach only flips `ad_mandate.status`, and the Meta token is read-only. The spec says this itself, but the name "spend-ceiling kill switch" invites someone to rely on it for real money. The §5 text that the check is "always on and never configurable away" also conflicts with the shared `autoSuspendEnabled` flag, which defaults to observe-only.
+  2. **The health check fails open (§5 Phase 3, §9.2).** Product-scoped mandates return "insufficient data" until the campaign-to-product mapping is filled in. That outcome suspends nothing and, as described, alerts no one. The Diagnose trigger has the same blind spot.
+  3. **Autonomous chain with no volume or cost cap (§5 Phase 2).** Pursuing opportunity → brief → proposal → auto-decide → commission has no per-mandate or per-day limit. The spend ceilings bound ad dollars, not commissioning volume or creative-production cost. "No human click anywhere" also looks overstated, because the spec never says what moves an opportunity to "pursuing".
+- **Missing or contradicted:** §4 says `AD_RISK_POLICY` is a code constant changed only by a human PR. §9.1 and the Diagnose section call it instance config (`adRiskPolicy`, "unset on the real futco instance"). Those are different trust models, and the spec must say which one is real. Smaller inconsistency: the header says 239 tests pass and §9 says 230.
+- **Smallest change for the biggest risk:** make any spend-ceiling or degradation breach, and any "insufficient data" result, send an out-of-band alert to a named human. This must happen regardless of `autoSuspendEnabled`. Label the status flip "does not stop Meta spend" in the web UI and in the event text.
+
+ASSUMPTIONS THAT CARRY THE ANSWER:
+- The spec's account of its own limits is accurate: the token is `ads_read` only and no Meta-write executor exists. If a write path exists, risk 1 becomes a real-money risk and the verdict should become (c).
+- A human actually reviews the `breach-observed` events during the observe-only period. Nothing in the spec guarantees that.
+- The "pursuing" transition is human-driven. If it is automated, risk 3 gets worse.
+
+WHAT WOULD CHANGE MY ANSWER: Grep for any Meta write call or `ads_management` use outside `lib/authority/policy.js`, and for any code path that sets an opportunity to "pursuing" without a human. A write path would change the verdict to (c). An automated "pursuing" transition would raise risk 3.
+
+RECOMMENDED NEXT ACTION: Have the FutCo budget owner set real `adRiskPolicy` values and the campaign-to-product mapping, and resolve the §4 vs §9 contradiction. Add the out-of-band breach and insufficient-data alert. Run observe-only (`autoSuspendEnabled` false) for a defined period, reviewing breach events. Do not authorize Phase 4 until that period is clean.
+
+--- Round 1 / openai-api ---
+I cannot read the repository here; repo-specific implementation claims are [unverified].
+
+VERDICT: (c) hold until named gaps are closed. Do not authorize Phase 4 or any real-money autonomy until the hard-budget numbers, campaign/product mapping, and Meta-write safety model are explicitly reviewed and tested.
+
+KEY REASONS:
+- **Risk 1 — real-money overspend / ineffective kill switch** from sections 5–6. The spec says the kill switch only changes internal mandate status and cannot stop real Meta delivery today; Phase 4 would add real Meta writes but does not yet specify atomic pre-write checks, post-write reconciliation, Meta-side caps, or rollback behavior. [unverified]
+- **Risk 2 — ambiguous campaign-to-product mapping** from sections 5 and 9. `allowed_campaign_ids: null` depends on `research.meta.campaigns[].product`, which is currently unset, so health checks and Diagnose signals report insufficient data rather than enforce product-scoped controls. [unverified]
+- **Risk 3 — broad credential / privilege risk** from section 5 Phase 4. The spec notes a credential with `ads_management` and other broad scopes; that increases blast radius if Phase 4 is enabled incorrectly or if executor logic has a bug. [unverified]
+- Missing/contradicted item: section 5 says the Meta credential has `ads_management` and broad scopes, while section 6 says the Meta token is `ads_read`-scoped, read-only. That must be reconciled before relying on the safety boundary. [unverified]
+
+ASSUMPTIONS THAT CARRY THE ANSWER:
+- Phases 1–3 truly do not launch ads, change budgets, or spend money; they only automate creative/proposal flow and observe/suspend internal mandates. [unverified]
+- `activateAdMandate` fails closed when `adRiskPolicy` is unset, and no active mandate exists yet. [unverified]
+- Phase 4 is the “next phase” under consideration, not merely activation of the already-built Phase 2/3 cron jobs.
+
+WHAT WOULD CHANGE MY ANSWER: A reviewed Phase 4 design/test showing least-privilege Meta credentials, real `AD_RISK_POLICY` values, campaign-product mapping, mandatory Meta-side spend caps, pre-write ceiling checks, post-write spend reconciliation, and a kill switch that stops or reduces actual Meta delivery.
+
+Recommended next action: reconcile the Meta credential/scope contradiction and require a Phase 4 safety checklist before any Meta-write executor is authorized.
+
+--- Round 1 / grok-build ---
+The spec contradicts itself on the Meta token and on what a spend ceiling actually stops. I'll check those two claims in the repo before giving a verdict.VERDICT: (b) Approve with specific required changes. Phases 1–3 are a sound paper-creative loop and Phase 4 stays unauthorized. A budget owner must not complete section 9 until the spec stops calling a local status flip a spend stop.
+
+KEY REASONS:
+- Risk 1, sections 4, 5 (Phase 3), and 6. A `max_daily_spend_usd` or `max_monthly_spend_usd` breach suspends the mandate and stops new `commission-creative`. Live Meta campaigns keep delivering. Section 5 calls `evaluateSpendCeilings` the literal answer to overspending, section 4 calls that ceiling non-bypassable, and section 9 asks a human to enter the real numbers. Section 6 explains the gap by saying the token is `ads_read`-only. Section 5 says that same credential already has `ads_management` and broader scopes. The companion manifesto records that 2026-10-11 introspection [read: docs/futco-ad-outcome-loop-manifesto.md]. The fence that blocks spend is the missing write executor [unverified in e3d-corp].
+- Risk 2, section 5 Phases 2–3 and section 9. `autoDecideUnderMandate` runs only when `allowed_campaign_ids` is null. That product-wide shape is the one the health check marks "insufficient data" until `research.meta.campaigns[].product` is set on `hvac_v3` and `free_v2`. The futco cron is already live. `autoSuspendEnabled` defaults to false, and section 9 never lists turning it on.
+- Risk 3, sections 3, 4, and 7. Every numeric ceiling must be `<=` the matching `AD_RISK_POLICY` value, but the policy lists only daily spend, monthly spend, and `max_active_mandates`. `max_cpl_usd` and `max_cac_usd` have no baseline, null CPL means no gate, and Phase 3 never evaluates them. Three mandates can each sit at the full daily cap. The spec never says whether summed spend is shared or split by product.
+- Contradicted in-spec: section 6’s read-only token versus section 5’s `ads_management` confirmation. The header says 239/239 tests; section 9 still says 230/230. Section 4 puts the ceiling in a PR-only constant; section 9 puts it in futco instance config.
+
+Smallest change: in section 5 Phase 3, replace “the literal answer to what happens if we spend more than $X/day” with “a breach suspends this mandate and stops new commission-creative; Meta delivery keeps running.”
+
+ASSUMPTIONS THAT CARRY THE ANSWER:
+- The decision on the table is section 9 go-live for Phases 1–3. Phase 4 remains unauthorized.
+- `commission-creative` spends no money, as sections 2 and 8 state.
+- No current cron job writes to Meta [unverified].
+
+WHAT WOULD CHANGE MY ANSWER: A fresh token introspection showing only `ads_read`, plus a test that `activateAdMandate` refuses `allowed_campaign_ids: null` while any allowed product lacks `campaign.product`. A Meta write call reachable from the futco cron would move this to (c).
+
+Next action: Patch the section 5 ceiling sentence and the section 6 token sentence so both match the manifesto, add that activation fail-closed, then re-review before anyone sets `adRiskPolicy` or approves a mandate.
+
+--- Round 2 / anthropic-api ---
+**1. STEELMAN.** The strongest opposing position is openai's (c). The spec says the same Meta credential is both read-only and confirmed to carry `ads_management`. Its "spend-ceiling kill switch" only flips an internal status flag. No real budget numbers or campaign-to-product mapping exist. Going live on the cron before those are settled means nobody can say what actually bounds real money, so the review should hold until they are.
+
+**2. CHECK.** The claim that hurts me most is openai's: "section 5 says the Meta credential has `ads_management` and broad scopes". It is TRUE as a reading of the spec. §5 Phase 4 says "a credential already confirmed to carry `ads_management`", while §6 says the token is "`ads_read`-scoped, read-only, by design." Both cannot describe the same token. Which one is accurate is UNVERIFIABLE from here. My last answer took §6 at face value and listed the contradiction only as a hypothetical, so that was a gap. It matters because "no write path" currently rests on the absence of an executor, not on the credential's scope. One bug or one future PR would close that gap.
+
+**3. HOLD OR REVISE.** I keep (b), with one revision. Phases 1–3 write nothing to Meta by the spec's own account, so holding them adds little safety. The cron is already live and the only autonomous output is a creative direction. But the token contradiction moves up my list. It becomes required change #1, ahead of the alert fix I previously led with.
+
+My revised smallest change for the biggest risk has two parts:
+- Run a fresh token introspection, and record the result in the spec.
+- If the token carries `ads_management`, rotate to an `ads_read`-only token before any `ad_mandate` is approved. That turns "the fence is a missing executor" into "the fence is the credential."
+
+The out-of-band alert on breach and insufficient-data results stays as the second required change. It is still needed because the status flip stops no real spend.
+
+The sentence that shifted my emphasis is grok's: "The fence that blocks spend is the missing write executor." I had treated that as settled, and it should not be.
+
+My remaining required changes are unchanged:
+- Decide whether `AD_RISK_POLICY` is a code constant (§4) or instance config (§9.1).
+- Reword the "literal answer to what happens if we spend more than $X/day" sentence so it says Meta delivery keeps running.
+- Make activation refuse `allowed_campaign_ids: null` while any allowed product lacks a campaign mapping.
+
+**4. WHAT WOULD CHANGE MY MIND.** If token introspection shows `ads_management` on the token the futco cron uses, and any code path outside `lib/authority/policy.js` can reach a Meta write call, I move to (c). A clean `ads_read`-only introspection, with a grep showing no write call, would raise my confidence in (b).
+
+ACTION: Run token introspection on the credential the futco cron uses, record the scopes in the spec, and rotate to `ads_read`-only if `ads_management` is present, before anyone approves an `ad_mandate`.
+AGREES_WITH: grok-build
+CONFIDENCE: medium
+
+[derived by e3d-debate from ACTION / AGREES_WITH]
+POSITION: Run token introspection on the credential the futco cron uses, record the scopes in the spec, and rotate to `ads_read`-only if `ads_management` is present, before anyone approves an `ad_mandate`.
+status: revise
+
+--- Round 2 / openai-api ---
+STEELMAN: The strongest approve-with-changes position is that this spec authorizes only Phases 1–3, which automate creative/proposal handling but do not launch ads, change budgets, or spend real money. Because Phase 4 is explicitly excluded, the right response is to fix misleading wording and config gaps without blocking the already-bounded non-spend loop.
+
+CHECK: TRUE from the spec: “Phase 4 stays unauthorized.” That weakens my prior hold position because the most severe real-money execution risks are not actually authorized here.
+
+HOLD OR REVISE: I revise from (c) hold to (b) approve with specific required changes for Phases 1–3 only. The sentence that changed my mind most was grok-build’s: “Phases 1–3 are a sound paper-creative loop and Phase 4 stays unauthorized.”
+
+Required changes remain: reconcile the Meta token/scope contradiction, stop describing the spend-ceiling suspension as if it stops Meta delivery, clarify whether `AD_RISK_POLICY` is code or instance config, and add out-of-band alerts for breaches and insufficient-data states before any mandate is activated.
+
+WHAT WOULD CHANGE MY MIND: A reachable futco cron path or executor that writes to Meta—campaign launch, budget change, pause, or ad-set modification—without a separately reviewed Phase 4 safety design would move me back to (c) hold.
+
+ACTION: Patch the spec contradictions and warning language, add breach/insufficient-data alerts, and require re-review before activating the first mandate.
+AGREES_WITH: anthropic-api, grok-build
+CONFIDENCE: medium
+
+[derived by e3d-debate from ACTION / AGREES_WITH]
+POSITION: Patch the spec contradictions and warning language, add breach/insufficient-data alerts, and require re-review before activating the first mandate.
+status: approved
+
+--- Round 2 / grok-build ---
+The claim that would move this from a wording fix to a hold is whether anything on the live path can write to Meta. I'll check that against the repo before answering.STEELMAN: The spec is the document a person will use to authorize the next step, and it asserts both that no Meta-write executor exists and that the live token is read-only. Holding every authorization until the real scopes, the campaign mapping, and a tested write-safety model are on the page is what keeps section 9 from being read as permission to approach real money on an unsettled boundary.
+
+CHECK: FALSE. The claim is "the token is `ads_read` only and no Meta-write executor exists." `setMetaCampaignStatus` in `lib/research/metaCampaignControl.js` POSTs `ACTIVE` or `PAUSED` to `graph.facebook.com`, and `lib/cli.js` registers `changeMetaCampaignStatus`. The companion manifesto records that `META_ADS_READ_TOKEN` carries `ads_management`. That POST is absent from `ops/`. `autoDecideUnderMandate` allowlists only `commission-creative` and requires a separate human `confirmAndExecute` at `FINANCIAL_ACTION` for the status change.
+
+HOLD OR REVISE: Verdict stays (b). Phases 1–3 can proceed only after the spec is corrected, and autonomous spend stays unauthorized. The sentence that changed is my own: the pause/start executor is already in the tree. Sections 5 and 6 are false where they say there is no executor and that the token is read-only by design. A `max_daily_spend_usd` or `max_monthly_spend_usd` breach still only flips `ad_mandate.status` and stops new `commission-creative`. Live Meta delivery continues, and the kill switch never calls `setMetaCampaignStatus`. I keep (b) because the futco cron cannot reach that POST.
+
+WHAT WOULD CHANGE MY MIND: A crontab line or health-check path that calls `setMetaCampaignStatus` or `changeMetaCampaignStatus` without a separate human confirm.
+
+ACTION: Rewrite sections 5 and 6 to match `metaCampaignControl.js` and the 2026-10-11 token introspection, and leave `adRiskPolicy` unset until that rewrite is reviewed.
+AGREES_WITH: none
+CONFIDENCE: high
+
+[derived by e3d-debate from ACTION / AGREES_WITH]
+POSITION: Rewrite sections 5 and 6 to match `metaCampaignControl.js` and the 2026-10-11 token introspection, and leave `adRiskPolicy` unset until that rewrite is reviewed.
+status: revise
+
+FINAL ANSWER: Verdict (b), approve with specific required changes, applying to Phases 1-3 only. Phase 4 stays unauthorized.
+
+**Risks, ranked:**
+1. The "spend-ceiling kill switch" only flips `ad_mandate.status` and stops new commission-creative proposals. It does not stop Meta delivery (§5 Phase 3, §6). The spec also describes the ceiling check as "the literal answer" to overspend, and it still runs under the observe-only default.
+2. The Meta credential boundary is unsettled (§5 Phase 4 vs §6). One section says the token carries `ads_management`, the other says it is read-only. Grok-build reports that `setMetaCampaignStatus` already exists in the repo. This is unverified, and the only fence is the human-confirm step, not the credential.
+3. The health check and Diagnose trigger fail open on "insufficient data" until campaign-to-product mapping is set (§5 Phase 3, §9.2). A mandate with `allowed_campaign_ids: null` can be auto-decided while nothing alerts a human.
+
+**Contradicted or missing:** §4 says `AD_RISK_POLICY` is a PR-only code constant, while §9.1 treats `adRiskPolicy` as unset instance config. Also, §6 says there is no write executor, but one reportedly exists. The test count also differs (239 in the header vs 230 in §9).
+
+**Smallest change:** Rewrite the §5 and §6 sentences to say a breach suspends the mandate and stops new commission-creative, while Meta delivery keeps running. Add that the token's scopes were introspected and recorded.
+
+**Next action:** Introspect the token's scopes, correct §§4-6 to match the code, and add an out-of-band alert for breach and insufficient-data states. Only then should the budget owner set `adRiskPolicy`.
+
+CONSENSUS: majority
+
+DISSENT: Anthropic and OpenAI treat the token/executor contradiction as unverified, while grok-build says it is confirmed in the repo. They also differ on whether a reachable Meta write path would move the verdict to (c).
