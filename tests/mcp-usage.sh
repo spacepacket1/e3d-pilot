@@ -18,6 +18,7 @@ cat > "$STUB" <<'STUBEOF'
 out=""
 while [[ $# -gt 0 ]]; do case "$1" in --out-dir) out="$2"; shift 2 ;; *) shift ;; esac; done
 echo call >> "$STUB_CALLS"
+sleep "${STUB_SLEEP:-0}"
 mkdir -p "$out"
 printf '# Debate\n\n## Round 1 -- claude\n\nJSON file.\n\n## Round 1 -- codex\n\nSQLite.\n' > "$out/transcript.md"
 if [[ "${STUB_FAIL:-0}" == "1" ]]; then echo "provider exploded" >&2; exit 1; fi
@@ -92,5 +93,48 @@ ls "$(state f)" | grep -q '\.tmp$' && fail "no temp files should be left behind"
 tools="$(printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | "$SERVER" 2>/dev/null)"
 assert_eq "$(jq -r '.result.tools[] | select(.name=="e3d_usage") | .annotations.readOnlyHint' <<< "$tools")" "true"
 jq -e '.result.tools[] | select(.name=="e3d_usage") | .description | test("FREE")' <<< "$tools" >/dev/null || fail "e3d_usage description must say FREE"
+
+# a debate result starts with a block the agent must pass on: consensus, dissent, warnings (an agent dropped them before)
+out="$(call c e3d_debate "$Q")"
+first="$(jq -r '.results[0].content[0].text' <<< "$out" | head -1)"
+assert_contains "$first" "REPORT THIS TO THE USER" "the first line of a debate result is the must-report block"
+assert_contains "$first" "dissent: Codex prefers SQLite." "dissent is in that block in full"
+assert_contains "$first" "SPLIT" "and the consensus level"
+
+# concurrent debates cannot both pass the same cap: each reserves its worst case (3 calls) atomically before it runs,
+# even from separate server processes sharing one counter file; the winner settles to what it actually used
+CC='{"E3D_MCP_DAILY_CALLS":"4","STUB_SLEEP":"3"}'
+call conc e3d_debate "$Q" "$CC" > "$TMP/c1.json" &
+call conc e3d_debate "$Q" "$CC" > "$TMP/c2.json" &
+wait
+errs=0; for f in "$TMP/c1.json" "$TMP/c2.json"; do [[ "$(jq -r '.results[0].isError // false' "$f")" == "true" ]] && errs=$((errs+1)); done
+assert_eq "$errs" "1" "exactly one of two simultaneous debates fits a cap of 4 calls (worst case 3 each)"
+refused="$(for f in "$TMP/c1.json" "$TMP/c2.json"; do jq -r 'select(.results[0].isError==true) | .results[0].content[0].text' "$f"; done)"
+assert_contains "$refused" "daily budget"
+out="$(call conc e3d_usage '{}' "$CC")"
+assert_eq "$(sc <<< "$out" | jq -r .calls_today)" "3" "the winner settled to its actual 3 calls and the loser recorded nothing"
+
+# reserve / settle / release at the unit level (the pieces the budget guarantees rest on)
+node --input-type=module - "$ROOT" "$TMP/unit-state" <<'JS'
+import assert from 'node:assert/strict';
+const { createUsage, jobCost } = await import(`${process.argv[2]}/lib/mcp/usage.js`);
+const u = createUsage({ env: { E3D_MCP_STATE_DIR: process.argv[3], E3D_MCP_DAILY_CALLS: '10', E3D_MCP_DAILY_EST_TOKENS: '100000' } });
+let r = await u.reserve('p', { calls: 4, tokens: 20000 }, 'job');
+assert.equal(r.ok, true); assert.equal(r.budget.calls_today, 4);
+r = await u.reserve('p', { calls: 7, tokens: 1 }, 'job');
+assert.equal(r.ok, false, 'a reservation that would break the call cap is refused'); assert.match(r.reason, /only 6 of today's 10/);
+assert.equal((await u.snapshot('p')).calls_today, 4, 'a refusal records nothing');
+r = await u.reserve('p', { calls: 1, tokens: 90000 }, 'job');
+assert.equal(r.ok, false, 'the token cap is enforced too'); assert.match(r.reason, /tokens/);
+assert.equal((await u.release('p', { calls: 4, tokens: 20000 }, 'job')).calls_today, 0, 'release gives a reservation back');
+await u.reserve('p', { calls: 3, tokens: 9000 }, 'debate');
+const st = await u.settle('p', { calls: 3, tokens: 9000 }, { calls: 2, inTokens: 500, outTokens: 100 });
+assert.equal(st.calls_today, 2, 'settle replaces the worst case with actual use'); assert.equal(st.est_tokens_today, 600);
+assert.deepEqual(jobCost('stage', { providers: 2 }), { calls: 4, tokens: 80000 }, 'a stage costs 2 calls per configured provider');
+assert.deepEqual(jobCost('implement', { drafters: 1, negotiators: 2 }), { calls: 5, tokens: 75000 });
+assert.equal(jobCost('execute', { phases: 3, reviewers: 1 }).calls, 10);
+assert.throws(() => jobCost('nope'));
+console.log('usage unit ok');
+JS
 
 echo "mcp-usage.sh: ok"

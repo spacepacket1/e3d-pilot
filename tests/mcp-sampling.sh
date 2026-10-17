@@ -146,6 +146,21 @@ out="$(call e3d_debate '{"question":"q","providers":["mcp-sampling","mcp-samplin
 assert_eq "$(jq -r '.results[0].isError // false' <<< "$out")" "true"
 assert_contains "$(txt <<< "$out")" "supports sampling"
 
+# when the editor's own models answer, the server stops BEFORE the editor gives up (about 3 minutes), says so, and states
+# how many calls were counted -- instead of running on unseen and charging calls nobody sees
+SLOW="$TMP/slow-debate"
+cat > "$SLOW" <<'SEOF'
+#!/usr/bin/env bash
+out=""; while [[ $# -gt 0 ]]; do case "$1" in --out-dir) out="$2"; shift 2 ;; *) shift ;; esac; done
+mkdir -p "$out"; printf '# Debate\n\n## Round 1 -- mcp-sampling\n\nanswer one\n' > "$out/transcript.md"
+sleep 20
+SEOF
+chmod +x "$SLOW"
+out="$(E3D_MCP_DEBATE_BIN="$SLOW" E3D_MCP_SAMPLING_TIMEOUT_SEC=1 call e3d_debate '{"question":"q","providers":["mcp-sampling","mcp-sampling-b"]}' "$(jq -nc --arg t "$BLOCK" '{capabilities:{sampling:{}}, sampling:{model:"m", text:$t}}')")"
+assert_eq "$(jq -r '.results[0].isError // false' <<< "$out")" "true"
+assert_contains "$(txt <<< "$out")" "timed out after 1s and was stopped"
+assert_contains "$(txt <<< "$out")" "1 model call(s) had already answered and are counted"
+
 # ---- config_check warns about sampling-backed stages that cannot work ----
 REPO="$TMP/repo"; mkdir -p "$REPO"; git init -q "$REPO"; git -C "$REPO" config user.email t@e.com; git -C "$REPO" config user.name T
 printf x > "$REPO/a"; git -C "$REPO" add a; git -C "$REPO" commit -q -m i; mkdir -p "$REPO/.e3d-pilot"
