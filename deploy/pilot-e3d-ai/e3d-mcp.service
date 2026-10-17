@@ -1,0 +1,31 @@
+[Unit]
+Description=e3d-mcp hosted debate service (pilot.e3d.ai)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=e3dpilot
+Group=e3dpilot
+EnvironmentFile=/etc/e3d-mcp/pilot.env
+WorkingDirectory=/opt/e3d-pilot
+ExecStart=@NODE@ /opt/e3d-pilot/bin/e3d-mcp --http
+Restart=on-failure
+RestartSec=5
+# Isolation: this shares a machine with production sites, so it gets no write access beyond its state directory,
+# no home directory, a private /tmp, and hard resource ceilings.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+ReadWritePaths=/var/lib/e3d-mcp
+MemoryMax=768M
+CPUQuota=60%
+TasksMax=200
+
+[Install]
+WantedBy=multi-user.target
