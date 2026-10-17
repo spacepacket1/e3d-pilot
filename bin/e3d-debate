@@ -27,6 +27,8 @@ DEBATE_SYNTHESIZER="claude"
 DEBATE_MAX_WORDS=200
 # v1 = original prompts (a speaker saw its own answer labelled as a peer's; rounds not described as simultaneous).
 # v2 = own answer labelled YOU, simultaneity stated in round 2+ and in the synthesizer prompt.
+# v3b = experimental rewrite of round 1 and rounds 2+ (docs/prompt-review-2026-10.md R1, R2); v3c = v3b plus the
+# R3 synthesis prompt. Selected with --prompts; v2 stays the default until the pilot says otherwise.
 DEBATE_PROMPT_VERSION="v2"
 OUT_DIR=""
 QUESTION=""
@@ -36,7 +38,7 @@ LINK_IDEA=""
 
 usage() {
   cat <<'EOF'
-e3d-debate "<question>" [--providers claude,codex] [--rounds 2] [--synthesizer claude] [--max-words 200] [--question-file <path>] [--out-dir <dir>] [--repo <path> --idea <idea-id>]
+e3d-debate "<question>" [--providers claude,codex] [--rounds 2] [--synthesizer claude] [--max-words 200] [--prompts v2|v3b|v3c] [--question-file <path>] [--out-dir <dir>] [--repo <path> --idea <idea-id>]
 
 Runs the question through N rounds across the given lib/providers/<name>
 adapters (round 1: independent answers; round 2+: each provider sees every
@@ -77,6 +79,7 @@ while [[ $# -gt 0 ]]; do
     --rounds) DEBATE_ROUNDS="$2"; shift 2 ;;
     --synthesizer) DEBATE_SYNTHESIZER="$2"; shift 2 ;;
     --max-words) DEBATE_MAX_WORDS="$2"; shift 2 ;;
+    --prompts) DEBATE_PROMPT_VERSION="$2"; shift 2 ;;
     --question-file) QUESTION_FILE="$2"; shift 2 ;;
     --out-dir) OUT_DIR="$2"; shift 2 ;;
     --repo) LINK_REPO="$2"; shift 2 ;;
@@ -91,6 +94,7 @@ if [[ -n "$QUESTION_FILE" ]]; then
   QUESTION="$(cat "$QUESTION_FILE")"
 fi
 
+case "$DEBATE_PROMPT_VERSION" in v2|v3b|v3c) ;; *) echo "error: --prompts must be v2, v3b or v3c" >&2; exit 1 ;; esac
 [[ -n "$QUESTION" ]] || { echo "error: question required (see --help)" >&2; exit 1; }
 [[ "$DEBATE_MAX_WORDS" =~ ^[0-9]+$ ]] && (( DEBATE_MAX_WORDS >= 1 )) || { echo "error: --max-words must be a positive integer" >&2; exit 1; }
 [[ "$DEBATE_ROUNDS" =~ ^[0-9]+$ ]] && (( DEBATE_ROUNDS >= 1 )) || { echo "error: --rounds must be a positive integer" >&2; exit 1; }
@@ -145,6 +149,93 @@ if jev_available; then
   fi
 fi
 
+# --- experimental prompts (v3b / v3c), see docs/prompt-review-2026-10.md R1-R3 ---
+others_of() { local me="$1" o out=""; for o in "${DEBATE_PROVIDERS[@]}"; do [[ "$o" == "$me" ]] || out+="${out:+, }$o"; done; printf '%s' "$out"; }
+
+v3_round1_prompt() {
+  local me="$1"
+  cat <<EOP
+You are $me, one of ${#DEBATE_PROVIDERS[@]} analysts who will each answer independently before seeing the others.
+
+THE QUESTION
+$QUESTION
+
+GROUNDING
+- Facts stated in the question are authoritative. Do not contradict them.
+- If you can read files or run commands, use that only to check a claim you intend to rely on.
+  Mark every claim that depends on the repository as [read: path] or [from memory]. If you cannot read
+  the repository, say so in one line and mark repo-specific claims [unverified].
+- Do not describe your process. Your reply is only the answer.
+
+ANSWER IN THIS SHAPE (under $DEBATE_MAX_WORDS words):
+VERDICT: <one or two sentences>
+KEY REASONS: <2 to 4 bullets>
+ASSUMPTIONS THAT CARRY THE ANSWER: <1 to 3 bullets>
+WHAT WOULD CHANGE MY ANSWER: <one checkable thing>
+EOP
+}
+
+v3_round2_prompt() {
+  local me="$1" o
+  printf 'You are %s, one of %d analysts debating one question. The others are: %s.\n\nTHE QUESTION\n%s\n\nWHAT WAS WRITTEN LAST ROUND\n' "$me" "${#DEBATE_PROVIDERS[@]}" "$(others_of "$me")" "$QUESTION"
+  for o in "${DEBATE_PROVIDERS[@]}"; do
+    [[ "$o" == "$me" ]] && continue
+    printf -- '--- %s ---\n%s\n' "$o" "${LAST_ANSWER[$o]}"
+  done
+  printf -- '--- YOU (your own previous answer; you may revise it, you are not debating it) ---\n%s\n\n' "${LAST_ANSWER[$me]}"
+  cat <<EOP
+Every analyst writes each round at the same time. Nobody has seen anyone's text for the current
+round, so respond only to the text above and never accuse someone of something they may have
+fixed since.
+
+DO THIS, IN ORDER:
+1. STEELMAN: in two sentences, state the strongest version of the position you disagree with most,
+   in words its holder would accept.
+2. CHECK: pick the one claim from the others that would hurt your position most if true. Say whether
+   it is TRUE, FALSE, or UNVERIFIABLE from what you can see, and quote at most 15 words of it exactly.
+3. HOLD OR REVISE: say what you now believe and which sentence (if any) changed your mind.
+4. WHAT WOULD CHANGE MY MIND: one concrete, checkable fact or result.
+Under $DEBATE_MAX_WORDS words. Output only the answer: do not describe your process or what you are about to read.
+
+End with exactly these three lines:
+ACTION: <one imperative sentence a person could carry out>
+AGREES_WITH: <names whose ACTION you would also accept, or "none">
+CONFIDENCE: <low|medium|high>
+EOP
+}
+
+# The v3 round-2+ format has no POSITION/status lines, but the early-convergence check and the MCP verdict
+# contract read them. Derive them: POSITION = ACTION; status = approved only if AGREES_WITH names every other analyst.
+v3_append_derived_lines() {
+  local me="$1" answer="$2" action agrees o st="approved"
+  action="$(grep -m1 -E '^ACTION:' <<< "$answer" | sed -E 's/^ACTION:[[:space:]]*//' || true)"
+  agrees="$(grep -m1 -E '^AGREES_WITH:' <<< "$answer" | sed -E 's/^AGREES_WITH:[[:space:]]*//' | tr 'A-Z' 'a-z' || true)"
+  for o in "${DEBATE_PROVIDERS[@]}"; do
+    [[ "$o" == "$me" ]] && continue
+    grep -qi -- "$o" <<< "$agrees" || st="revise"
+  done
+  [[ -n "$action" ]] || st="revise"
+  printf '%s\n\n[derived by e3d-debate from ACTION / AGREES_WITH]\nPOSITION: %s\nstatus: %s' "$answer" "$action" "$st"
+}
+
+v3_synthesis_instructions() {
+  cat <<'EOP'
+
+You are the judge of a debate. Above are the question and the full transcript. Every analyst wrote each
+round at the same time, so a rebuttal in round N answers the text of round N-1. Judge accusations by
+that timeline.
+
+Produce exactly this (keep this order; DISSENT must come before POSITIONS):
+FINAL ANSWER: <2 to 4 sentences: the action to take and the single biggest reason>
+CONSENSUS: <full = every analyst's last ACTION is the same action; majority = most share one action and at least one differs; split = two or more distinct actions each with a real backer>
+DISSENT: one entry per analyst whose action differs from FINAL ANSWER: <name>: <what they would do instead and why> | "<verbatim quote>". Write "none" only if every analyst agrees.
+POSITIONS: one line per analyst: <name>: <their final ACTION in your words> | "<verbatim quote, at most 20 words, from their final round>"
+CLAIMS CHECKED: any factual claim where analysts contradicted each other, and what the transcript shows (round and analyst). Say "not resolvable" when it is.
+OPEN QUESTIONS: up to 3.
+Rules: every quote must be copied verbatim from that analyst's text. If you cannot find a quote, omit the claim. Never attribute a statement to someone who did not write it.
+EOP
+}
+
 declare -A LAST_ANSWER
 converged=0
 converged_at_round=0
@@ -157,7 +248,9 @@ for ((round = 1; round <= DEBATE_ROUNDS; round++)); do
     out_file="$work_dir/round${round}-${provider}.out"
     status_file="$work_dir/round${round}-${provider}.status"
     {
-      if (( round == 1 )); then
+      if [[ "$DEBATE_PROMPT_VERSION" != "v2" ]]; then
+        if (( round == 1 )); then v3_round1_prompt "$provider"; else v3_round2_prompt "$provider"; fi
+      elif (( round == 1 )); then
         printf 'You are one of several AI models independently answering a question, before comparing notes with the others in later rounds.\n\n'
         printf 'Question: %s\n\n' "$QUESTION"
         printf 'Give your best direct answer with your key reasoning and any load-bearing assumptions. Be decisive, not hedgy. Under %d words.\n' "$DEBATE_MAX_WORDS"
@@ -198,6 +291,9 @@ for ((round = 1; round <= DEBATE_ROUNDS; round++)); do
     else
       answer="(provider $provider failed in round $round -- see $work_dir/round${round}-${provider}.stderr)"
     fi
+    if [[ "$DEBATE_PROMPT_VERSION" != "v2" && $round -ge 2 && "$status" == "0" ]]; then
+      answer="$(v3_append_derived_lines "$provider" "$answer")"
+    fi
     LAST_ANSWER[$provider]="$answer"
     printf '## Round %d -- %s\n\n%s\n\n' "$round" "$provider" "$answer" >> "$transcript_md"
     printf -- '--- Round %d / %s ---\n%s\n\n' "$round" "$provider" "$answer"
@@ -229,12 +325,18 @@ synth_prompt="$work_dir/synthesis.prompt.md"
 {
   printf 'Below is the full transcript of a debate between multiple AI models answering one question for a human who needs a single, decisive answer (%s).\n\n' "$rounds_ran_note"
   printf 'Question: %s\n\n' "$QUESTION"
-  printf 'Note: within each round all participants wrote at the same time, so a participant could not have addressed a point first made in the same round. Do not credit or fault anyone for that.\n\n'
+  if [[ "$DEBATE_PROMPT_VERSION" != "v3c" ]]; then
+    printf 'Note: within each round all participants wrote at the same time, so a participant could not have addressed a point first made in the same round. Do not credit or fault anyone for that.\n\n'
+  fi
   cat "$transcript_md"
-  printf '\nRead the transcript and produce a final answer. Output exactly this format:\n'
-  printf 'FINAL ANSWER: <2-4 decisive sentences>\n'
-  printf 'CONSENSUS: <full | majority | split>\n'
-  printf 'DISSENT: <one line on any remaining disagreement worth flagging, or "none">\n'
+  if [[ "$DEBATE_PROMPT_VERSION" == "v3c" ]]; then
+    v3_synthesis_instructions
+  else
+    printf '\nRead the transcript and produce a final answer. Output exactly this format:\n'
+    printf 'FINAL ANSWER: <2-4 decisive sentences>\n'
+    printf 'CONSENSUS: <full | majority | split>\n'
+    printf 'DISSENT: <one line on any remaining disagreement worth flagging, or "none">\n'
+  fi
 } > "$synth_prompt"
 
 synth_out="$work_dir/synthesis.out"
