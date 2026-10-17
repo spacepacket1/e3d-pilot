@@ -25,6 +25,9 @@ DEBATE_PROVIDERS=(claude codex)
 DEBATE_ROUNDS=2
 DEBATE_SYNTHESIZER="claude"
 DEBATE_MAX_WORDS=200
+# v1 = original prompts (a speaker saw its own answer labelled as a peer's; rounds not described as simultaneous).
+# v2 = own answer labelled YOU, simultaneity stated in round 2+ and in the synthesizer prompt.
+DEBATE_PROMPT_VERSION="v2"
 OUT_DIR=""
 QUESTION=""
 QUESTION_FILE=""
@@ -112,7 +115,7 @@ fi
 
 work_dir="$(mktemp -d "${TMPDIR:-/tmp}/e3d-debate.XXXXXX")"
 transcript_md="$work_dir/transcript.md"
-printf '# Debate\n\n**Question:** %s\n\n' "$QUESTION" > "$transcript_md"
+printf '# Debate\n\n**Prompt version:** %s\n\n**Question:** %s\n\n' "$DEBATE_PROMPT_VERSION" "$QUESTION" > "$transcript_md"
 
 # Jev pre-screen: shadow-mode only (idea-82a5c2225266) -- this NEVER skips or
 # shortens the debate below, it just logs an informational signal into the
@@ -163,8 +166,13 @@ for ((round = 1; round <= DEBATE_ROUNDS; round++)); do
         printf 'Question: %s\n\n' "$QUESTION"
         printf 'Here is what each participant said in the previous round:\n\n'
         for other in "${DEBATE_PROVIDERS[@]}"; do
-          printf -- '--- %s (previous round) ---\n%s\n\n' "$other" "${LAST_ANSWER[$other]}"
+          if [[ "$other" == "$provider" ]]; then
+            printf -- '--- YOU (your own answer in the previous round) ---\n%s\n\n' "${LAST_ANSWER[$other]}"
+          else
+            printf -- '--- %s (previous round) ---\n%s\n\n' "$other" "${LAST_ANSWER[$other]}"
+          fi
         done
+        printf 'Every participant writes each round at the same time and cannot see anyone'\''s text from the current round. Do not say someone ignored or failed to address a point unless it was already in the previous round'\''s text above.\n\n'
         printf 'Critically evaluate the other answers against your own. If your prior position holds up, restate it and rebut what'\''s wrong in the others. If you'\''ve changed your mind, say so plainly and why. Under %d words.\n\n' "$DEBATE_MAX_WORDS"
         printf 'End with exactly these two lines, in this exact format:\n'
         printf 'POSITION: <one-sentence current answer>\n'
@@ -221,6 +229,7 @@ synth_prompt="$work_dir/synthesis.prompt.md"
 {
   printf 'Below is the full transcript of a debate between multiple AI models answering one question for a human who needs a single, decisive answer (%s).\n\n' "$rounds_ran_note"
   printf 'Question: %s\n\n' "$QUESTION"
+  printf 'Note: within each round all participants wrote at the same time, so a participant could not have addressed a point first made in the same round. Do not credit or fault anyone for that.\n\n'
   cat "$transcript_md"
   printf '\nRead the transcript and produce a final answer. Output exactly this format:\n'
   printf 'FINAL ANSWER: <2-4 decisive sentences>\n'
