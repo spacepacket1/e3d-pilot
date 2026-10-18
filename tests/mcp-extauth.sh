@@ -234,6 +234,22 @@ for (const policy of ['charge', 'release']) {
   assert.equal(m.stats().orphans, 1); assert.equal(m.stats()[`orphans_${policy === 'charge' ? 'charged' : 'released'}`], 1); assert.deepEqual(intents(d), []);
   assert.equal((await u.snapshot('acct')).calls_today, policy === 'charge' ? 3 : 0, `the local counter matches the external outcome under policy ${policy}`);
 }
+// crash boundaries of abort: the release decision is persisted before the local release, and the local release is keyed by
+// the request id, so recovery after a crash at ANY point leaves the counter released exactly once and never charges the work
+for (const crashAfterLocal of [false, true]) {
+  const d = `${dir}/abort-crash-${crashAfterLocal}`; const u = createUsage({ env: { E3D_MCP_STATE_DIR: d } });
+  const ext = fakeExternal(); const ma = createMetering({ localUsage: u, external: ext, dir: d });
+  const b = await ma.begin('acct', cost); assert.equal((await u.snapshot('acct')).calls_today, 3);
+  const f = `${d}/metering-intents/${intents(d)[0]}`; const rec = JSON.parse(readFileSync(f, 'utf8'));
+  rec.pid = 999999999; rec.settlement = { call: 'release', payload: { reservation_id: rec.reservation_id, reason: 'not_run' } };
+  (await import('node:fs')).writeFileSync(f, JSON.stringify(rec)); // "crashed" after persisting the decision
+  if (crashAfterLocal) await u.release('acct', cost, 'debate', rec.request_id); // ...and after the local release
+  const mr = createMetering({ localUsage: u, external: ext, dir: d, env: { E3D_MCP_ORPHAN_POLICY: 'charge' } });
+  await mr.recover(); await createMetering({ localUsage: u, external: ext, dir: d }).recover();
+  assert.equal((await u.snapshot('acct')).calls_today, 0, `released once (crash after local release: ${crashAfterLocal})`);
+  assert.equal(ext.calls.settle.length, 0, 'unrun work is never charged'); assert.equal(ext.calls.release.length, 1);
+}
+ok('crash boundaries of abort: released once, never charged');
 // two processes recovering one intent: it is reconciled exactly once (the loser sees the owner's lock or the removed file)
 {
   const d = `${dir}/orphan-race`; const u = createUsage({ env: { E3D_MCP_STATE_DIR: d } });

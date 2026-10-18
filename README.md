@@ -256,6 +256,7 @@ node examples/external-auth-conformance.js <that URL> <token>          # run aga
 | `E3D_MCP_AUTH_IP_PER_MIN` | 30 | Rejected (unknown or malformed) keys one IP may present per minute before further unknown keys are refused without asking the service. Successful keys do not count. |
 | `E3D_MCP_AUTH_HEALTH_SEC` | 15 | Interval of the background `health` probe behind `/readyz`. |
 | `E3D_MCP_OUTBOX_MAX` | 5000 | Undelivered settlements allowed before new billed work is refused. |
+| `E3D_MCP_ORPHAN_MAX_AGE_SEC` | 21600 | Age after which an unfinished debate's metering intent is reconciled even if its process id looks alive (pids are reused after crashes). |
 | `E3D_MCP_OUTBOX_MAX_DEAD` | 1 | Dead-lettered settlements tolerated before new billed work is refused; retry or resolve them with `--outbox-status` and `--outbox-retry-dead`. |
 | `E3D_MCP_OUTBOX_CLAIM_SEC` | 300 | A delivery claim older than this belongs to a crashed process and is retried. |
 | `E3D_MCP_ORPHAN_POLICY` | `charge` | What a debate that was running when the server crashed costs on restart: `charge` (the reserved units, outcome `orphaned`) or `release`. |
