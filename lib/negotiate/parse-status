@@ -65,19 +65,27 @@ if [[ "$status" == "revise" ]]; then
 fi
 
 # Plain-language objections: items between ---OBJECTIONS--- and the spec fence (or the next marker). Bash 3.2 safe.
+# Tolerant of common formatting variation: "-", "*" or "1." bullets, **bold** keys, one bullet per field. An item needs a
+# non-empty what_goes_wrong to count; a new item starts at a bullet "severity:" or when a key repeats.
 parse_objections() {
-  local on=0 line key val cur_key="" have=0 out="[]" count=0
+  local on=0 line key val cur_key="" have=0 out="[]" count=0 bulleted=0
   local sev="" what="" where_="" fix=""
+  local bullet='([-*]|[0-9]+[.)])'
   flush_item() {
-    if [[ $have -eq 1 && $count -lt 10 ]]; then
-      case "$(printf '%s' "$sev" | tr 'A-Z_ ' 'a-z--')" in
+    if [[ $have -eq 1 && $count -lt 10 && -n "${what//[[:space:]]/}" ]]; then
+      case "$(printf '%s' "$sev" | tr 'A-Z_ ' 'a-z--' | sed -E 's/^-+//; s/-+$//')" in
         blocker) sev="blocker" ;; should-fix|shouldfix) sev="should-fix" ;; nit) sev="nit" ;; *) sev="unrated" ;;
       esac
-      out="$(jq -c --arg sev "$sev" --arg what "${what:0:600}" --arg where_ "${where_:0:300}" --arg fix "${fix:0:600}" \
+      out="$(jq -c --arg sev "$sev" --arg what "$(printf '%s' "${what:0:600}" | sed -E 's/^[[:space:]]+//')" --arg where_ "$(printf '%s' "${where_:0:300}" | sed -E 's/^[[:space:]]+//')" --arg fix "$(printf '%s' "${fix:0:600}" | sed -E 's/^[[:space:]]+//')" \
         '. + [{severity: $sev, what_goes_wrong: $what, where: $where_, fix: $fix}]' <<<"$out")"
       count=$((count + 1))
     fi
     sev=""; what=""; where_=""; fix=""; cur_key=""; have=0
+  }
+  item_has_key() {
+    case "$1" in
+      severity) [[ -n "$sev" ]] ;; what_goes_wrong) [[ -n "$what" ]] ;; where) [[ -n "$where_" ]] ;; fix) [[ -n "$fix" ]] ;;
+    esac
   }
   while IFS= read -r line; do
     if [[ $on -eq 0 ]]; then
@@ -86,20 +94,26 @@ parse_objections() {
     fi
     [[ "$line" =~ ^\`\`\` ]] && break
     [[ "$line" =~ ^---[A-Z]+---[[:space:]]*$ ]] && break
-    if [[ "$line" =~ ^[[:space:]]*-[[:space:]]+(severity|what_goes_wrong|where|fix):[[:space:]]*(.*)$ ]]; then
-      flush_item; key="${BASH_REMATCH[1]}"; val="${BASH_REMATCH[2]}"; have=1
+    line="${line//\*\*/}"
+    bulleted=0
+    if [[ "$line" =~ ^[[:space:]]*${bullet}[[:space:]]+(severity|what_goes_wrong|where|fix):[[:space:]]*(.*)$ ]]; then
+      bulleted=1; key="${BASH_REMATCH[2]}"; val="${BASH_REMATCH[3]}"
     elif [[ "$line" =~ ^[[:space:]]*(severity|what_goes_wrong|where|fix):[[:space:]]*(.*)$ ]]; then
-      key="${BASH_REMATCH[1]}"; val="${BASH_REMATCH[2]}"; have=1
+      key="${BASH_REMATCH[1]}"; val="${BASH_REMATCH[2]}"
     elif [[ -n "${line//[[:space:]]/}" && -n "$cur_key" ]]; then
-      key="$cur_key"; val="$(printf '%s' "$line" | sed -E 's/^[[:space:]]+//')"
-      case "$key" in
+      val="$(printf '%s' "$line" | sed -E 's/^[[:space:]]+//')"
+      case "$cur_key" in
         severity) sev="$sev $val" ;; what_goes_wrong) what="$what $val" ;; where) where_="$where_ $val" ;; fix) fix="$fix $val" ;;
       esac
       continue
     else
       continue
     fi
-    cur_key="$key"
+    # A bulleted "severity:" opens a new objection; so does any key the current item already has.
+    if [[ $have -eq 1 ]] && { [[ $bulleted -eq 1 && "$key" == "severity" ]] || item_has_key "$key"; }; then
+      flush_item
+    fi
+    have=1; cur_key="$key"
     case "$key" in
       severity) sev="$val" ;; what_goes_wrong) what="$val" ;; where) where_="$val" ;; fix) fix="$val" ;;
     esac

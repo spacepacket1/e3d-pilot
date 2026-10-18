@@ -306,6 +306,28 @@ EOF2
   rm -f "$file"
 }
 
+parse_status_objections_tolerates_common_formatting() {
+  local file out
+  file="$(mktemp)"
+  # one bullet per field
+  printf -- '---STATUS---\nstatus: revise\nreason: r\n---OBJECTIONS---\n- severity: blocker\n- what_goes_wrong: data is lost\n- where: Phase 2\n- fix: persist first\n- severity: nit\n- what_goes_wrong: wording\n```spec\n# S\n```\n' > "$file"
+  out="$("$NEGOTIATE_DIR/parse-status" "$file" objections)"
+  assert_eq "$(jq 'length' <<<"$out")" "2" "a bullet per field is one objection, not four"
+  assert_eq "$(jq -r '.[0] | [.severity,.what_goes_wrong,.where,.fix] | join("|")' <<<"$out")" "blocker|data is lost|Phase 2|persist first" "fields of the first objection"
+  assert_eq "$(jq -r '.[1].severity' <<<"$out")" "nit" "second objection starts at its severity"
+  # bold keys and star bullets
+  printf -- '---STATUS---\nstatus: revise\nreason: r\n---OBJECTIONS---\n* **severity:** should-fix\n  **what_goes_wrong:** A visitor sees nothing.\n  **where:** Phase 1\n```spec\n# S\n```\n' > "$file"
+  out="$("$NEGOTIATE_DIR/parse-status" "$file" objections)"
+  assert_eq "$(jq -r '.[0] | [.severity,.what_goes_wrong,.where] | join("|")' <<<"$out")" "should-fix|A visitor sees nothing.|Phase 1" "bold keys and star bullets"
+  # numbered bullets
+  printf -- '---STATUS---\nstatus: revise\nreason: r\n---OBJECTIONS---\n1. severity: blocker\n   what_goes_wrong: First.\n2. severity: nit\n   what_goes_wrong: Second.\n```spec\n# S\n```\n' > "$file"
+  assert_eq "$("$NEGOTIATE_DIR/parse-status" "$file" objections | jq 'length')" "2" "numbered bullets"
+  # an item without what_goes_wrong is not an objection
+  printf -- '---STATUS---\nstatus: revise\nreason: r\n---OBJECTIONS---\n- severity: blocker\n  where: Phase 2\n```spec\n# S\n```\n' > "$file"
+  assert_eq "$("$NEGOTIATE_DIR/parse-status" "$file" objections)" "[]" "severity alone is not an objection"
+  rm -f "$file"
+}
+
 parse_status_objections_absent_or_junk_never_fails() {
   local file
   file="$(mktemp)"
@@ -499,6 +521,7 @@ main() {
   local_provider_serializes_concurrent_calls_via_lock
   parse_status_extracts_approved_without_spec
   parse_status_extracts_plain_language_objections
+  parse_status_objections_tolerates_common_formatting
   parse_status_objections_absent_or_junk_never_fails
   parse_status_extracts_revise_and_spec_block_even_when_fenced
   parse_status_synthesizes_reason_when_missing
