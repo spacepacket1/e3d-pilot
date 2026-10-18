@@ -1,0 +1,416 @@
+# Debate
+
+**Question:** Context: E3D is considering an always-on local "AI operations appliance": hardware + local models (Qwen) + agent runtime + E3D-Pilot (improves software) + E3D-Corp (operates a business), first proven on E3D's own HVAC automation business, governed by GREEN/YELLOW/RED autonomy policy classes (RED = money, credentials, permission/autonomy expansion, legal, public statements: human approval; Pilot/Qwen can never weaken their own policy). Current baseline: one 24 GB Mac mini running Qwen, shared by several agent systems (contention). Local-first, not local-only: frontier models remain for hard work; Qwen's real capability must be measured, not assumed. Competitors: ~$3.5K personal AI appliances (Core/Ghost), plus DIY GPU PC + Ollama/OpenWebUI/Claude Code. Hardware candidates: Lanner/industrial edge-AI, NVIDIA/AMD, Apple Silicon.
+
+Question: Is there a genuinely differentiated, economically viable product here -- i.e. can autonomous software produce enough ongoing value that customers don't care the hardware is commodity? Specifically: (1) what is commodity vs defensible; (2) should E3D sell hardware at all versus software/service on customer-chosen or leased hardware; (3) is the HVAC vertical the right proving ground; (4) what is the SMALLEST prototype (on the existing Mac mini or a modest purchase) that proves or kills the thesis before significant hardware spend, and what measurable go/no-go gate would you set; (5) biggest risks (model capability, governance/safety, customer trust, support burden, margins). Give a concrete recommendation, not a survey.
+
+**Jev pre-screen (shadow mode, informational only):** obviousness noul=0.11 (1.0 = clearly obvious, 0.0 = clearly needs debate) -- logged for calibration, does not affect whether this debate runs.
+
+## Round 1 -- claude
+
+**Verdict: Conditionally yes, but only as software and service. Don't build a hardware company. Prove the loop on the existing Mac mini first.**
+
+**(1) Commodity vs defensible**
+- Commodity: hardware, Qwen and other open weights, Ollama and OpenWebUI, and generic agent runtimes. Core/Ghost and DIY stacks will keep compressing these.
+- Defensible, in order of strength:
+  1. The GREEN/YELLOW/RED governance layer, with audit trails and a rule that the system can't weaken its own policy. Buyers will pay for this once agents touch money or customers.
+  2. Vertical operating playbooks, which are real HVAC workflows with measured outcomes.
+  3. Outcome data. Which tasks Qwen can handle versus which need a frontier model, and the routing built from that data.
+  4. Pilot's self-improvement loop, but only if it shows measurable gains.
+- Weak on its own: "local-first." It is a privacy and cost selling point, not a moat.
+
+**(2) Hardware**
+Don't sell it. Hardware means inventory, RMAs, thin margins, and competing with $3.5K boxes. Sell a subscription to the software and operations layer, running on customer-owned or leased Apple Silicon or NVIDIA. Offer a "certified hardware list" and a pre-imaged option through a reseller, with no balance-sheet exposure. Revisit hardware only if latency, privacy, or support problems demand it.
+
+**(3) HVAC as the proving ground**
+Yes, as the first customer, which is E3D's own business. You get free ground truth, real stakes, and no sales cycle. But it is an n=1 trap. HVAC is also a poor first market for the product, since HVAC owners buy ServiceTitan and similar tools, not appliances. Treat HVAC as the lab. Then pick the first paid vertical by what the data shows: a small business with repetitive back-office work and a high cost of errors.
+
+**(4) Smallest prototype (no new spend)**
+Run the existing 24 GB Mac mini for 6 weeks against 5–8 real HVAC workflows. Examples are inbound lead triage, quote drafting, scheduling and dispatch suggestions, invoice follow-up, and review replies. Route by policy class:
+- GREEN: auto-execute.
+- YELLOW: execute, then notify.
+- RED: queue for approval.
+
+Fix contention first by giving the Mac mini a single scheduler with priority queues. Otherwise you'll be measuring contention, not capability.
+
+**Go/no-go gate (all must hold by week 6):**
+- At least 70% of tasks are completed by Qwen with no frontier escalation, and the blended cost per task is under 30% of the all-frontier cost.
+- Human approval-edit rate on RED/YELLOW drafts is under 20%.
+- Zero policy violations, with RED actions executed unapproved = 0. Run adversarial tests, including attempts to expand its own permissions.
+- Owner time saved is at least 8 hours per week, or at least $X of attributable revenue or cost recovery. Choose X now (about $1.5K/month).
+- Support load: fewer than 2 human interventions per week for system faults.
+
+If Qwen fails the 70% bar but frontier-backed runs hit the other gates, the thesis becomes "governed autonomy as a service." That's still viable, but it isn't an appliance story. If the quality gates fail with frontier models too, kill it.
+
+**(5) Biggest risks**
+1. **Model capability.** Qwen on 24 GB is small and weak at long-horizon tool use. Measure it, don't assume it.
+2. **Governance failure.** One bad RED leak, such as a wrong payment or a customer message sent in error, ends trust. Enforce RED outside the model, in deterministic code.
+3. **Customer trust.** SMBs won't hand over credentials without a track record, so sell shadow mode first.
+4. **Support burden.** Per-customer integrations are a services business in disguise. Hold to a strict integration scope.
+5. **Margins.** If the value is under about $500/month per customer, support costs eat it.
+
+**Load-bearing assumption:** value comes from completed, governed work, not from the box. If week 6 doesn't show that, stop.
+
+## Round 1 -- codex
+
+Yes—but only as a vertical managed-operations product. The “AI appliance” itself is not differentiated. Do not launch general-purpose hardware.
+
+1. Commodity vs. defensible
+
+Commodity: compute, Qwen/Ollama, agent runtimes, vector stores, dashboards, and the physical box.
+
+Defensible: E3D’s HVAC workflows; integrations; accumulated operating history; evaluation datasets; failure recovery; approval/audit controls; and evidence that the system reliably improves a business outcome. The moat is a continuously tested operating system for a specific business—not “local AI.”
+
+The strongest positioning is: “We operate this bounded part of your HVAC business for a predictable monthly price, with local data custody and human approval for consequential actions.”
+
+2. Hardware strategy
+
+Sell software plus a managed service. Support one certified reference configuration initially, deployed on an E3D-leased or customer-owned Mac mini. Charge setup and recurring fees; bundle hardware only when procurement simplicity closes the sale. Do not design or inventory industrial hardware until customers demonstrate environmental, uptime, or compliance needs that consumer hardware cannot meet.
+
+Dedicated hardware per customer avoids contention and makes performance/support measurable. Commodity hardware is an advantage if customers buy outcomes.
+
+3. HVAC as proving ground
+
+Yes. E3D has domain access, real workflows, ground truth, and immediate internal ROI. Start with administrative operations—not autonomous physical control: lead intake, estimate preparation, permit/document packets, scheduling assistance, job-file QA, invoice follow-up, and maintenance-plan renewal. Avoid dispatch promises, pricing commitments, equipment control, payments, and public communications without approval.
+
+4. Smallest thesis test
+
+Use the existing Mac mini. Give one Qwen-based agent one narrow, high-volume workflow: turn inbound requests and existing company data into a complete, cited estimate/job-preparation packet and prioritized follow-up queue. Integrate read-only first; proposed writes/actions go through an approval inbox. Log every input, output, correction, approval, latency, escalation, and model used. Permit frontier-model escalation and measure it explicitly.
+
+Run shadow mode for two weeks, then supervised production for four weeks across at least 100 real cases.
+
+Go only if it achieves all of:
+
+- ≥70% of cases completed without substantive human rework
+- ≥50% reduction in human handling time
+- zero unapproved RED actions or material customer-facing errors
+- <20% frontier-model escalation
+- projected customer value ≥5× fully loaded monthly delivery cost
+- operator willingness to pay at least $1,000/month
+
+Kill or redesign if it misses two gates after one focused iteration. Buy a second modest Mac only if contention prevents valid measurement.
+
+5. Biggest risks
+
+The largest risk is not model intelligence; it is exception handling disguised by impressive demos. Next are integration/support sprawl, customer distrust, silent governance failures, and service labor destroying margins. Mitigate with narrow workflows, immutable policy enforcement outside the model, complete audit trails, certified configurations, explicit escalation, and pricing based on delivered operational value.
+
+Load-bearing assumption: HVAC offices have repetitive digital workflows worth several thousand dollars monthly and will accept supervised automation. If the prototype cannot prove that, no hardware choice rescues the thesis.
+
+## Round 1 -- devin
+
+**Recommendation: Don't build the appliance yet. Prove the agent layer first on your own business.**
+
+**1. Commodity vs defensible**
+Hardware, base models, and infra orchestration (Ollama, vLLM) are fully commodity. Defensible: the GREEN/YELLOW/RED governance layer, domain-specific agent workflows, and the integration surface with vertical-specific data sources (BAS/HVAC sensors, ERP, supplier APIs). The policy engine is the only thing competitors can't trivially clone — if it actually prevents catastrophic autonomous mistakes at scale.
+
+**2. Hardware go-to-market**
+Don't sell hardware. Margins are thin, support burden is brutal, and it commoditizes your story. Offer software/subscription on customer-chosen or leased hardware. Optional: resell a pre-configured mini (Mac mini or comparable) as a convenience SKU at cost+shipping, no margin dependency. This keeps you out of the hardware support trap while removing friction for non-technical buyers.
+
+**3. HVAC as proving ground**
+Yes — correct choice. Outcomes are measurable (energy cost, equipment uptime, labor hours), decisions are mostly GREEN-class (scheduling, alerts, reporting), and E3D owns the business so there's zero customer acquisition risk for the initial proof. Risk: HVAC is narrow; validate early that agent workflows generalize to 2-3 adjacent verticals (facilities management, light manufacturing) or the TAM is too small.
+
+**4. Smallest prototype / go/no-go gate**
+**Prototype:** On the existing Mac mini, deploy the agent runtime against E3D's own HVAC operation for 60 days. Scope: autonomous scheduling, anomaly triage, supplier communication drafts, cost reporting. No new hardware spend.
+
+**Go/no-go gate (measurable, binary):**
+- Labor displaced: ≥15 hours/week of operational work handled without human initiation
+- Decision accuracy: ≥95% of GREEN-class decisions accepted unchanged when reviewed
+- RED-class safety: 0 undetected RED violations in the 60-day window
+- Qwen task success rate: ≥80% of assigned agent tasks completed without frontier model fallback
+
+If all four pass: build the subscription product. If Qwen fallback rate >50%, the local-first thesis needs rework before any hardware investment.
+
+**5. Biggest risks, ranked**
+1. **Model capability** — Qwen on 24 GB will hit reasoning ceilings on multi-step operational chains. Measure honestly; don't paper over failures with frontier fallback.
+2. **One RED-class failure** — a single autonomous financial or safety mistake in an SMB context is unrecoverable reputationally.
+3. **Support burden** — "the agent did something wrong at 2am" is expensive; need robust human-in-the-loop escalation UX before any external customer.
+4. **TAM** — HVAC alone may not justify the platform investment; generalization must be validated early.
+5. **Margins** — viable only as SaaS ($500–1500/month subscription); hardware economics alone don't work.
+
+## Round 1 -- grok-build
+
+I'll ground this in E3D's actual products, HVAC operations, and the appliance thesis before giving a go/no-go recommendation.**No. Do not sell an AI operations appliance.** Sell a governed always-on **operations service** (E3D-Corp + Pilot + policy kernel). Hardware is a later convenience SKU. Dogfood HVAC on the existing Mac mini; buy at most one extra 24 GB mini to isolate the test.
+
+**Commodity vs defensible.** Boxes, Qwen/Ollama/MLX, and agent runtimes are commodity. Core/Ghost already sell the $3.5K “personal AI computer”; DIY already undercuts it. Customers will ignore the metal only if the software moves **P&L every week**. Defensible pieces: (1) a policy kernel agents cannot weaken (GREEN auto / YELLOW notify / RED = money, credentials, autonomy expansion, legal, public speech); (2) a closed operate → measure → Pilot-proposes-code → human-gated deploy loop; (3) vertical playbooks + outcome memory. The box is packaging.
+
+**Hardware.** Do not sell it in v1. E3D has no RMA, UL, field-replace, or spare-parts org; hardware margins and support will eat the software story. Ship software onto customer-chosen or leased machines. A configured mini/NVIDIA box is allowed only after paying users ask for turnkey.
+
+**HVAC.** Right **dogfood**, wrong first **SKU**, unless a real weekly job book already exists. HVAC justifies local-first (sites, latency, messy vendor systems, real cash). It also concentrates liability (comfort, equipment, billing). Use E3D’s own HVAC to generate numbers. Do not productize for other contractors until those numbers exist. If HVAC volume is still being invented, the HVAC thesis and the appliance thesis are entangled—run the prototype on whichever live operation already has weekly tickets.
+
+**Smallest prototype (≤30–45 days, ≤~$700).** Kill contention as a confounder: pin Qwen to dedicated hours on the current mini, or buy one extra 24 GB mini. No Lanner, no GPU tower. Three loops only: inbound job triage → schedule proposal; quote/invoice draft from job notes; overnight exception watch. Qwen takes GREEN first; frontier shadows/escalates. RED never executes. Policy file hash-pinned; Pilot cannot patch it.
+
+**Go only if all five hold in weeks 3–4:**
+1. Operator attests ≥8 hours/week saved (or equivalent recovered jobs/revenue).
+2. Qwen ships ≥40% of GREEN tasks as-is or nits-only—else this is a Claude wrapper and the appliance thesis is dead.
+3. Zero unapproved RED actions; every RED item is a usable approval packet.
+4. Operator leaves it on without being asked.
+5. Frontier + power cost < 30% of labor value saved.
+
+**Kill** if value is chat, Qwen cannot carry GREEN, policy is bypassed, or the box is the thing people talk about.
+
+**Risks, in order:** Qwen too weak for GREEN (forces cloud, gutting “local appliance”); one RED escape destroying trust; hardware support if you sell boxes; HVAC liability; hardware-led margins.
+
+**Assumption:** HVAC (or a substitute ops surface) already produces weekly real work, not simulated tickets.
+
+Recurring revenue is the policy kernel + the ops loop, billed as a service. The appliance is a deployment mode you have not earned yet.
+
+## Round 2 -- claude
+
+**Critique and position (round 2)**
+
+All five answers agree on the main points: don't sell hardware, sell governed software or service, dogfood on the existing Mac mini, enforce RED in code outside the model, and measure Qwen instead of assuming it. The differences are in the details of the gate.
+
+**Where I hold my position**
+
+My round-1 position stands: conditional yes, software and service only, prove it on the Mac mini first.
+
+**What the others get wrong, or add**
+
+- **Devin: "don't paper over failures with frontier fallback," ≥80% Qwen success.**
+  - The 80% bar is arbitrary and probably too high for a 24 GB model.
+  - Devin's gate has no cost or economics test, and no check that the system is safe to run unattended.
+  - "≥95% of GREEN decisions accepted unchanged" is the wrong metric. It rewards trivial tasks.
+  - Devin is right that the TAM and generalization risk is real. I should have weighted that more.
+- **Grok-build: Qwen ≥40% of GREEN tasks, "operator leaves it on without being asked."**
+  - 40% is too low to support a local-first claim.
+  - It is also a vacuous threshold, since "nits-only" is subjective.
+  - The "leaves it on" test is a good, cheap proxy for real value, and I'm adopting it.
+  - Its caution that HVAC may be the wrong first SKU matches my view. Its idea of buying a second mini to isolate contention is reasonable. A priority scheduler costs nothing, so I'd try that first.
+- **Codex: a single narrow workflow, ≥100 cases, ≥50% handling-time reduction, ≥$1,000/month willingness to pay.**
+  - Codex has the best rigor on measurement.
+  - One workflow is a cleaner test than my 5–8 workflows, because it limits integration sprawl and makes the numbers interpretable.
+  - Willingness to pay is the only external-market signal in any gate. Everyone else tests internal value only.
+  - I'm adopting the narrower scope and the willingness-to-pay gate.
+  - Codex's "<20% frontier escalation" is stricter than my 30% and just as arbitrary.
+
+**What I'd change in my own answer**
+
+- Narrow the scope to 2–3 workflows rather than 5–8.
+- Add a real external signal: at least 2 non-E3D operators agree to a paid shadow-mode pilot before any hardware spend.
+- Add the "leaves it on" test.
+- Keep a separate, explicit fallback: if Qwen misses but frontier-backed runs pass, the product becomes governed autonomy as a service rather than a local appliance. Only Grok-build and I state this clearly.
+
+**Net**
+
+Whether the gate is 40%, 70% or 80% matters less than whether it is fixed before the test starts. Nobody disagrees on the action: run a 6-week dogfood on the existing mini with no new hardware, keep RED deterministic, and decide from the data. The differences are threshold tuning, not strategy.
+
+POSITION: Don't build a hardware company; sell governed operations software or service, and run a 6-week, no-new-hardware dogfood test on the existing Mac mini with 2–3 workflows, pre-committed gates, and at least 2 outside operators willing to pay for shadow mode.
+status: approved
+
+## Round 2 -- codex
+
+My core position holds: build a vertical managed-operations service, not a hardware product. One correction to my prior answer: a fixed <20% frontier-escalation gate is too rigid. Local-first succeeds when routing economics work, not when Qwen wins an arbitrary purity contest.
+
+Claude is mostly right, especially on separating an appliance failure from a viable frontier-backed service. But governance is not itself a strong moat—it is reproducible software. Defensibility comes from governance plus HVAC integrations, exception data, recovery procedures, and demonstrated outcomes. Testing 5–8 workflows simultaneously would also obscure which loop creates value.
+
+Devin overstates both the defensibility of the policy engine and HVAC’s easy safety profile. Scheduling can create customer commitments, overtime costs, and service failures; it is not automatically GREEN. Its 15-hours/week and 80%-local thresholds are unsupported and could reject a valuable narrow workflow.
+
+Grok correctly distinguishes dogfood from product-market fit, but three loops are still too many for the smallest experiment. A 40% local acceptance rate is also insufficient for an appliance-oriented claim, while “operator leaves it on” is useful evidence but not an economic gate.
+
+The minimum credible test remains one high-volume workflow on the existing Mac mini: produce a cited estimate/job-preparation packet and follow-up queue from inbound requests and company records. Run two weeks in shadow mode and four supervised weeks, covering at least 100 cases. Enforce policy outside the model; all writes are proposed, and RED actions cannot execute.
+
+Proceed to a paid HVAC design partner only if:
+
+- At least 70% of cases need no substantive rework.
+- Human handling time falls at least 50%.
+- At least 60% of eligible GREEN work completes locally.
+- There are zero unapproved RED actions or material customer-facing errors.
+- Fully loaded delivery cost is below 20% of measured customer value.
+- One external contractor commits at least $1,000/month after reviewing results.
+
+If operations value passes but local completion fails, sell governed cloud-assisted automation—not an appliance. Buy dedicated hardware only after contention invalidates measurement or paying customers require turnkey deployment. Do not touch Lanner or custom inventory yet.
+
+The principal risk is exception-handling labor destroying margins; model limitations, trust, policy escape, integration sprawl, and hardware support follow. Commodity hardware is acceptable because the product is accountable completed work.
+
+POSITION: E3D should prove one governed HVAC workflow, sell it as a managed software service, and treat commodity hardware only as an optional deployment component earned by paid demand.
+status: revise
+
+## Round 2 -- devin
+
+**Round 2 assessment**
+
+All four answers converge on the core structure: no hardware in v1, software/service, prove the loop internally on HVAC first. The debate is in the details, and the details matter for go/no-go.
+
+**Where grok-build is wrong:** The 40% Qwen-carries-GREEN gate is too lenient. If Qwen handles only 40% of GREEN tasks unaided, the system is a governed Claude wrapper billed as a local appliance. That thesis is incoherent—the economics don't work and the positioning is dishonest. The gate should be ≥70-80% (my original position, matching claude and codex). Grok-build acknowledges this implicitly ("Qwen cannot carry GREEN, policy is bypassed... kill") but sets the gate too low to enforce it.
+
+**Where grok-build is right:** Contention is a measurement confounder, not just an operational annoyance. If Qwen is being interrupted mid-task by competing agents, you're measuring the scheduler, not the model. Grok-build's solution—pin Qwen to dedicated hours or buy one extra mini (~$700)—is the correct pre-condition before any capability measurement. I didn't state this explicitly; it belongs in the prototype setup.
+
+**Where claude is right that I understated:** HVAC is the right *dogfood*, but it's probably the wrong first *paid* market. HVAC contractors buy ServiceTitan, not autonomous ops appliances. The internal proof should generate data about which workflows generalize—scheduling triage, document drafting, exception alerting—so the first external customer is chosen by the data, not by proximity to the existing business. I called out TAM risk; claude and grok-build are more specific about the market mismatch.
+
+**Where codex adds useful precision:** The 5× cost-to-value ratio gate (projected customer value ≥5× fully loaded delivery cost) is a good economic sanity check I didn't include. Add it.
+
+**Revised go/no-go gates (replacing my original four):**
+1. ≥75% of GREEN tasks completed by Qwen without frontier escalation
+2. ≥50% reduction in human handling time on covered workflows
+3. Zero unapproved RED actions (enforce outside the model, in deterministic code)
+4. Projected customer value ≥5× fully loaded monthly delivery cost
+5. Owner keeps it running without being prompted—no forced demos
+
+**What stays the same:** 60-day window, existing Mac mini (pin dedicated hours first), no new hardware unless contention prevents valid measurement, subscription pricing, HVAC internal only until gates pass.
+
+POSITION: Don't sell hardware; run a 60-day governed-agent proof on the existing Mac mini with a ≥75% local-model task-completion gate before any external customer or hardware spend.
+status: revise
+
+## Round 2 -- grok-build
+
+I'll check E3D's actual ops surface so the go/no-go recommendation matches the business, not the appliance pitch.I changed two commitments. The 40% Qwen bar was too weak to prove an appliance and, tied to the other gates, the wrong kill switch for a service. Three loops were too wide to falsify anything. Codex’s single workflow is the right experiment. Claude’s split scoreboard is the right decision.
+
+Commodity is the mini, Qwen, Ollama, agent runtimes, and dashboards. Defensible is a policy kernel the model cannot edit, the audit trail of one workflow, and a measured routing table of what Qwen finishes versus what must escalate. Pilot’s repair loop counts only after a human-gated change moves that same metric.
+
+Do not sell, lease, or resell hardware. Bundling a mini to close a deal, or offering one at cost plus shipping, starts returns and support before anyone has paid for a workflow. A second 24 GB mini is allowed only if queue contention makes the log lie. Anyone who wants a box buys it from a written reference spec.
+
+HVAC stays the lab and the first invoice. Shopping for a new vertical spends the only advantage E3D has: live tickets and a peer who does the same work. Treating “HVAC” as a platform, or opening facilities and manufacturing beside it, does the opposite. Sell the workflow that clears the gate. No field-service suite, no dispatch, no equipment control.
+
+Prototype on the current mini with one scheduler. One agent turns inbound requests and company data into a cited estimate packet and a follow-up queue. Tools stay read-only. Every write is an approval packet. Two weeks shadow, four weeks supervised, at least 100 real cases. RED never executes. Policy lives in code, hash-pinned, and must fail closed when tested with attempts to widen its own permissions.
+
+Service go requires all of these at week 6: at least 70% of cases accepted without substantive rework; at least 8 hours a week saved on this workflow; zero unapproved RED actions; the operator would pay at least $1,000 a month with fully loaded delivery at or under $200; frontier and power spend under 30% of the dollars saved.
+
+The appliance gate is separate. Qwen must finish at least 70% of those cases with no frontier call. Miss it and the service can still be sold. A box cannot. An 80% local rate, a 15-hour bar, or a 20% escalation cap will throw out a service the P&L already supports.
+
+The risks that matter are one RED escape, exception labor eating the $1,000 price, and Qwen being too weak to keep the local-cost story. If week 6 misses the service gates after one focused iteration, stop.
+
+POSITION: Prove one HVAC admin workflow as a governed service on the current Mac mini, and treat hardware as undeserved until Qwen completes at least 70% of those cases with no frontier call.
+status: revise
+
+## Round 3 -- claude
+
+**Round 3 assessment**
+
+I'm holding my round-2 position, with one update: I'm adopting Grok-build's split between a service gate and an appliance gate. It resolves the main disagreement left in this debate.
+
+**What I'm changing**
+
+- **Two scoreboards, as Grok-build proposes.** A service gate decides whether to sell the workflow. A separate appliance gate, at least 70% of cases finished by Qwen with no frontier call, decides whether any hardware is justified. Devin's single ≥75% local gate would kill a service the P&L supports. A purely cost-based gate, as Codex now argues, would let a "local-first" claim go unmeasured.
+- **One workflow, not 2–3.** Codex and Grok-build are right that a single workflow keeps the numbers interpretable. I drop my earlier 2–3.
+- **Scheduler first, second mini only if needed.** Pin Qwen to a priority scheduler before measuring, as Devin and Grok-build both say. Buy a second 24 GB mini only if contention still corrupts the log.
+
+**What I'm keeping**
+
+- **At least 2 outside operators agree to a paid shadow-mode pilot.** Codex's single $1,000/month commitment is a good bar. But one contractor who has a relationship with E3D is a thin sample, so I keep two.
+- **The "leaves it on" test.** It's a cheap check on real value.
+- **Governed autonomy as a service is the fallback if Qwen misses.**
+
+**Where the others are still wrong**
+
+- **Devin's 5× value-to-cost ratio is more lenient than Grok-build's and Codex's ~20% cost caps.** That gate is fine, but the real killer is exception-handling labor. Cost must include human review time, and Devin's gate doesn't say so.
+- **Devin's 60-day window and ≥75% bar are not better-grounded than the others' numbers.** Fixing the thresholds before the test starts matters more than their exact values.
+- **Codex's "defensibility = integrations + exception data" is right, but I'd add one more asset.** The routing table of what Qwen finishes versus what must escalate is measured, E3D-specific and hard to copy. Grok-build already named it.
+- **Devin's claim that HVAC contractors buy ServiceTitan is a hypothesis, not a finding.** The two-operator pilot test is how to check it. It isn't a reason to leave HVAC.
+
+**The prototype**
+
+- **Setup:** one HVAC admin workflow, a cited estimate or job-prep packet with a follow-up queue, on the existing mini.
+- **Phases:** two weeks of shadow mode, then four supervised weeks, at least 100 real cases.
+- **Controls:** tools are read-only, writes are approval packets, and policy is hash-pinned code outside the model that fails closed.
+
+**Service gate, all required at week 6:**
+
+- At least 70% of cases accepted without substantive rework.
+- At least 50% reduction in human handling time.
+- Zero unapproved RED actions or material customer-facing errors.
+- Fully loaded delivery cost, including review labor, at or under 20% of measured value.
+- Two outside operators commit to paid shadow-mode pilots.
+
+**Appliance gate, separate:** Qwen finishes at least 70% of cases with no frontier call.
+
+If the service gate misses after one focused iteration, stop.
+
+POSITION: Prove one governed HVAC admin workflow on the existing Mac mini over 6 weeks, with a service gate (70% accepted, 50% time saved, zero RED escapes, cost ≤20% of value, two outside operators committed) and a separate appliance gate (Qwen finishes ≥70% of cases with no frontier call). Sell no hardware until both gates pass.
+status: approved
+
+## Round 3 -- codex
+
+My position holds, with one refinement: local completion should be a separate appliance gate, not a service viability gate.
+
+Claude’s 2–3 workflows dilute the smallest falsifiable experiment; one workflow is enough. Two operators merely expressing willingness to pay is weaker than one signed paid pilot after seeing results.
+
+Devin’s ≥75% local threshold is appropriate only for appliance positioning. Applying it before any external customer could kill a profitable cloud-assisted service. Its “owner keeps it running” test is useful behavioral evidence, but not an economic gate.
+
+Grok is closest to my recommendation. However, eight hours saved and $200 delivery cost are arbitrary absolute numbers. The meaningful test is customer value relative to fully loaded delivery cost, including exception handling, onboarding, support, frontier inference, and hardware administration. Its approval packets also make this a test of decision support, not autonomous execution—which is appropriate initially, but should be described honestly.
+
+HVAC is the right proving ground and first sales target because E3D has proprietary access to workflows, exceptions, outcomes, and credible peers. That advantage matters more than theoretical market size. It does not justify building an HVAC platform: sell only the validated workflow.
+
+Run one six-week workflow on the current mini: cited estimate/job-preparation packets plus follow-up queues from inbound requests and company records. Use two weeks shadow mode, four supervised, and at least 100 real cases. Keep policy enforcement outside the model, fail closed, and prevent RED execution. Buy another mini only if controlled scheduling cannot remove contention.
+
+Service go requires ≥70% accepted without substantive rework, ≥50% lower human handling time, zero unapproved RED actions or material customer-facing errors, fully loaded cost below 20% of measured value, and one external HVAC contractor signing a pilot worth at least $1,000/month. Appliance positioning additionally requires Qwen to complete ≥70% of eligible cases without frontier help. If service passes and local completion fails, sell managed cloud-assisted automation. Do not sell or lease hardware; publish a reference specification and optionally coordinate third-party procurement later.
+
+The largest risk is exception labor silently eliminating margins, followed by governance failure, weak Qwen capability, integration sprawl, trust, and hardware support.
+
+POSITION: Prove one governed HVAC workflow as a paid managed service, require a separate ≥70% Qwen-local gate for any appliance claim, and avoid selling hardware until customer demand proves it necessary.
+status: revise
+
+## Round 3 -- devin
+
+**Round 3 assessment**
+
+Convergence is real on the core: one workflow, existing Mac mini, ~6 weeks, no hardware. The remaining differences are threshold tuning and whether "one" vs "2-3" workflows matters—it does.
+
+**Where I'm changing my position**
+
+- **Scope**: I drop to one workflow. Grok-build and codex are right. Two or three loops running in parallel produce uninterpretable data. If the single workflow fails, you learn why. If it passes, you have a clean case study to sell.
+- **Service/appliance gate split**: Grok-build's framing is the clearest. Service passes or fails independently of whether Qwen carries local. If service passes but Qwen fails the local gate, you sell governed cloud-assisted operations—not an appliance. This split was implicit in my round 2; it should be explicit.
+- **External WTP signal**: Claude and codex are right to require it. Add: at least one external operator commits ≥$1,000/month in writing before any hardware spend. Internal dogfood measures efficiency; external WTP measures whether anyone else cares.
+
+**Where I hold**
+
+- **≥75% local threshold for appliance gate**: Grok-build's 70% is too close to the rounding error band for a 100-case trial. 75% is still modest enough to be achievable and meaningful enough to support the local-first claim.
+- **5× cost-to-value ratio**: Codex frames it as cost ≤20% of value (equivalent). Grok-build uses dollar amounts ($1,000 revenue, $200 delivery, $300 compute). All equivalent. Keep it as the economic gate.
+- **Devin/contention fix first**: Grok-build noted this; I adopted it last round. Pin Qwen to dedicated hours or isolate to a second mini (~$700) before any measurement begins. Measuring a contended model is measuring the scheduler.
+
+**Where claude is wrong**
+
+Two or three workflows is still too wide for the minimum falsifiable test. Claude's gate also relies on "2 outside operators in shadow mode" as a pre-condition for hardware spend—useful, but it's a market signal that should be the go gate, not a gating pre-condition for a 6-week experiment that costs nothing extra.
+
+**What would cause different action vs. others**
+
+Grok-build and codex would act nearly identically to my revised position. Claude's 2-3 workflows would increase experiment scope without increasing falsifiability. That's the only remaining behavioral difference.
+
+**Revised gates (week 6):**
+- ≥70% cases accepted without substantive rework (service gate)
+- ≥50% human handling time reduction (service gate)
+- Zero unapproved RED actions (hard kill)
+- Fully loaded delivery cost ≤20% of measured customer value (service gate)
+- ≥1 external operator commits ≥$1,000/month (market gate)
+- ≥75% of cases completed by Qwen without frontier escalation (appliance gate—miss it, sell service not box)
+
+POSITION: Prove one governed HVAC admin workflow on the existing Mac mini with Qwen pinned to dedicated hours, enforce service and appliance gates separately at week 6, and treat hardware as unearned until both gates pass and one external operator has committed to pay.
+status: approved
+
+## Round 3 -- grok-build
+
+I still split the decision. Devin’s revision makes the split sharper, and that is the action that does not match.
+
+I changed one gate. “The operator would pay $1,000” is biased: the owner wants the thesis to survive. After the six-week log, one outside HVAC contractor must commit at least $1,000 a month or the service does not proceed. I drop the separate 8-hour kill switch. Hours alone can bless a bloated queue or kill a short, expensive one.
+
+Service go, all required: at least 70% of cases accepted with no substantive rework; at least 50% less handling time; zero unapproved RED actions; fully loaded delivery at or under 20% of measured value (at a $1,000 price, that is $200); and that external commit.
+
+I do not adopt Devin’s ≥75% Qwen bar as the gate before any customer. A person following that waits, or kills the offer, where a person following me sells governed cloud-assisted automation. Local completion is the appliance gate only. Under 70% of cases with no frontier call, do not ship a box and do not say “local appliance.” Codex’s checklist puts 60% local on the design-partner decision and the next paragraph allows the service anyway. The paragraph is the decision. Local share stays off the service list.
+
+Claude’s 2–3 workflows and two paid shadow operators inside the measurement window change the experiment. Two workflows make a failed week unreadable. Outsiders during the 100 cases add integration noise before the log is clean. One workflow: inbound requests and company records become a cited estimate packet and a follow-up queue. Read-only tools. Every write is an approval packet. Two weeks shadow, four supervised, at least 100 real cases, on the current mini, one scheduler. A second mini only if contention makes that log lie.
+
+Picking the first paid market from “generalization data” spends the only asset: live HVAC tickets and a peer who does the work. The first invoice is this workflow to one other HVAC operator. It is not a ServiceTitan replacement, not dispatch, not equipment control. If that operator will not pay, stop. Do not open another vertical to rescue the deck.
+
+Hardware stays off the price list. Policy stays in code, hash-pinned, fail-closed. One RED escape, or exception labor above the cost cap, kills it. If week 6 misses the service gates after one focused iteration, stop.
+
+POSITION: Prove one HVAC estimate-packet workflow as a governed service on the current Mac mini, sell it only after an outside contractor commits $1,000 a month, and withhold any appliance until Qwen finishes at least 70% of those cases with no frontier call.
+status: revise
+
+
+## Synthesis (claude)
+
+FINAL ANSWER: Don't sell hardware. Sell governed operations as a managed software service, and treat the appliance as a deployment mode that has to be earned. Run a 6-week test on the existing Mac mini with one HVAC workflow: inbound requests and company records become a cited estimate packet and a follow-up queue. Use read-only tools, approval packets for every write, and hash-pinned, fail-closed policy code that enforces RED outside the model. Put a priority scheduler on the mini first so contention doesn't corrupt the measurements. Use 2 weeks of shadow mode and 4 weeks supervised, covering at least 100 real cases.
+
+The service gate requires all of these:
+- At least 70% of cases accepted without substantive rework.
+- At least 50% less human handling time.
+- Zero unapproved RED actions or material customer-facing errors.
+- Fully loaded delivery cost, including review labor, at or under 20% of measured value.
+- One outside HVAC contractor commits at least $1,000/month.
+
+A separate appliance gate requires Qwen to finish at least 70% of cases with no frontier call. If the service gate passes but the appliance gate fails, sell cloud-assisted automation, not a box. If the service gate misses after one focused iteration, stop.
+
+The defensible assets are the policy kernel, vertical workflows and integrations, exception and outcome data, and the measured Qwen-vs-frontier routing table. Hardware, Qwen and the agent runtimes are commodity. HVAC is the right lab and first customer. The main risks are exception-handling labor eating margins, a single RED escape, and Qwen being too weak.
+
+CONSENSUS: majority
+
+DISSENT: Devin wants the local-model appliance gate at ≥75% rather than 70%. Claude wants two outside operators committed rather than one, and Codex wants a signed paid pilot, not just a commitment.
