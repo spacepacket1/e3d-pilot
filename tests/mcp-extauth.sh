@@ -810,6 +810,14 @@ if grep -rl "MARKER" "$TMP"/*.log "$TMP"/*.out; then fail "a planted marker leak
 [[ -s "$TMP/client.log" && -s "$TMP/conf.log" && -s "$TMP/outbox-client.log" ]] || fail "logs were captured"
 echo "ok - no token in captured logs"
 
+# --- S3e: the recently-active token memory is bounded and evicts the OLDEST entry ---
+start_server S3E E3D_MCP_AUTH_IP_PER_MIN=1 E3D_MCP_AUTH_KNOWN_ACTIVE_MAX=2 E3D_MCP_AUTH_CACHE_SEC=30
+for t in "$TOKEN_OK" "$TOKEN_SIBLING" "$TOKEN_AB1"; do r="$(init S3E "$t")"; assert_eq "$(status "$r")" "200"; done   # three active tokens, memory holds two: TOKEN_OK is evicted
+r="$(init S3E "bad-e-$(openssl rand -hex 8)")"; assert_eq "$(status "$r")" "401" "one failure uses up this address's limit of 1"
+r="$(init S3E "$TOKEN_SIBLING")"; assert_eq "$(status "$r")" "200" "a remembered token still bypasses the limiter"
+r="$(init S3E "$TOKEN_OK")"; assert_eq "$(status "$r")" "429" "the evicted (oldest) token is limited like any unknown one"
+echo "ok - the recently-active token memory evicts its oldest entry"
+
 # --- S3d: a token revoked after it was known active gets no free pass once the cache has expired ---
 start_server S3D E3D_MCP_AUTH_IP_PER_MIN=3
 r="$(init S3D "$TOKEN_SIBLING")"; assert_eq "$(status "$r")" "200" "active key accepted (and remembered as active)"
