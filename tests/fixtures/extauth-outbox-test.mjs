@@ -91,6 +91,17 @@ await test('record ids are the idempotency key; backoff is 30 s doubling to 15 m
   }
 });
 
+await test('concurrent enqueues of one id with different payloads never lose a payload', async () => {
+  const { outbox, dirs } = setup('conflict-race');
+  const results = await Promise.all([2, 3, 4, 5, 6, 7].map((calls) => outbox.enqueue('settle', settleArgs('res_race', calls))));
+  assert.equal(results.filter((r) => r.queued).length, 1, 'exactly one wins the id');
+  assert.equal(files(dirs.pending).length, 1);
+  assert.equal(files(dirs.dead).length, 5, 'every other payload is kept whole in dead/');
+  assert.equal(results.filter((r) => r.conflict).length, 5);
+  const calls = new Set([...files(dirs.pending).map((f) => join(dirs.pending, f)), ...files(dirs.dead).map((f) => join(dirs.dead, f))].map((f) => JSON.parse(readFileSync(f, 'utf8')).payload.actual.calls));
+  assert.deepEqual([...calls].sort(), [2, 3, 4, 5, 6, 7], 'no payload was discarded');
+});
+
 await test('a dead-lettered conflict record can be retried with the documented operator command', async () => {
   const { outbox, dirs } = setup('conflict-retry');
   await outbox.enqueue('settle', settleArgs('res_conflict_retry'));
