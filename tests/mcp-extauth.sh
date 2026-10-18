@@ -286,6 +286,21 @@ ok('crash boundaries of abort: released once, never charged');
   assert.equal((await u.snapshot('acct')).calls_today, 1 + 40, 'a replay, or an adjustment for a reserve that never happened, changes nothing');
   ok('idempotent local markers: open reservations keep theirs, replays and unreserved ids are no-ops');
 }
+// a debate that spans UTC midnight (or is recovered the next day): its settlement is still applied, charged to the new day
+{
+  const d = `${dir}/rollover`; const u = createUsage({ env: { E3D_MCP_STATE_DIR: d } });
+  const fs = await import('node:fs');
+  await u.reserve('acct', { calls: 3, tokens: 30 }, 'debate', 'spans-midnight'); await u.reserve('acct', { calls: 2, tokens: 20 }, 'debate', 'aborted-next-day');
+  const f = `${d}/acct.json`; const st = JSON.parse(readFileSync(f, 'utf8')); st.day = '2000-01-01'; fs.writeFileSync(f, JSON.stringify(st)); // "yesterday"
+  assert.equal((await u.snapshot('acct')).calls_today, 0, 'a new day starts at zero');
+  await u.settle('acct', { calls: 3, tokens: 30 }, { calls: 2, inTokens: 40, outTokens: 10 }, 'spans-midnight');
+  assert.equal((await u.snapshot('acct')).calls_today, 2, 'the actual use is charged to the day it finished on');
+  await u.release('acct', { calls: 2, tokens: 20 }, 'debate', 'aborted-next-day');
+  assert.equal((await u.snapshot('acct')).calls_today, 2, 'releasing a carried reservation charges nothing to today');
+  await u.settle('acct', { calls: 3, tokens: 30 }, { calls: 2, inTokens: 40, outTokens: 10 }, 'spans-midnight');
+  assert.equal((await u.snapshot('acct')).calls_today, 2, 'a replay is still a no-op');
+  ok('reservations spanning UTC midnight are settled onto the new day exactly once');
+}
 // a failed local adjustment keeps the intent so recovery retries it (the external side may already be settled)
 {
   const d = `${dir}/local-fail`; const real = createUsage({ env: { E3D_MCP_STATE_DIR: d } });
