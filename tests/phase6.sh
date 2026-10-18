@@ -150,6 +150,35 @@ OUT
       exit 1
     fi
     ;;
+  revise-plain-once)
+    if grep -q 'phase6-replacement-plain' <<<"$prompt"; then
+      cat <<'OUT'
+---STATUS---
+status: approved
+reason: the plain-language fix landed
+OUT
+    else
+      cat <<'OUT'
+---STATUS---
+status: revise
+reason: two gaps found
+---OBJECTIONS---
+- severity: should-fix
+  what_goes_wrong: A visitor with JavaScript off sees an empty page,
+    so nothing is indexed.
+  where: Phase 2
+  fix: Render on the server first.
+- severity: Nit
+  what_goes_wrong: The title does not match the page.
+  where: Overview
+```spec
+# Phase 6 Replacement Plain
+
+phase6-replacement-plain
+```
+OUT
+    fi
+    ;;
   always-revise)
     cat <<'OUT'
 ---STATUS---
@@ -342,6 +371,7 @@ negotiate_three_reviewers_apply_replacements_in_order() {
   assert_eq "$(jq -s 'map(.reviewer_index) | join(",")' -r "$objections" | head -c 5)" "1,2,3" "reviewer indexes recorded"
   assert_eq "$(jq -s '[.[] | select(.status == "revise")] | length' "$objections")" "2" "two revise turns recorded"
   assert_eq "$(jq -s '[.[] | select(.status == "revise" and .changed and .lines_added > 0)] | length' "$objections")" "2" "each revise turn changed the draft"
+  assert_eq "$(jq -s '[.[] | select(.plain_language)] | length' "$objections")" "0" "old-style responses still work and record no objections"
   assert_eq "$(jq -s '.[1].spec_before_sha == .[0].spec_after_sha' "$objections")" "true" "the second reviewer saw the first reviewer's replacement"
 
   contents="$(cat "$spec_final")"
@@ -422,7 +452,36 @@ negotiate_all_approve_converges_at_arity() {
   rm -f "$trace"
 }
 
+negotiate_records_plain_language_objections() {
+  local repo run_id out objections log prompt
+  repo="$(make_repo_with_commit)"
+  run_id="2026-07-27-repo-negotiate-plain"
+  write_phase6_config "$repo" '["phase6-plain-once"]'
+  write_phase6_draft "$repo" "$run_id"
+  make_phase6_provider "phase6-plain-once" "revise-plain-once"
+
+  out="$("$BIN" run --repo "$repo" --stage negotiate --run-id "$run_id")"
+  assert_contains "$out" "converged in round 2"
+
+  objections="$repo/.e3d-pilot/runs/$run_id/negotiation-objections.jsonl"
+  log="$repo/.e3d-pilot/runs/$run_id/negotiation-log.md"
+  prompt="$(cat "$repo/.e3d-pilot/runs/$run_id/negotiate-round-1-reviewer-1-phase6-plain-once-prompt.md")"
+  assert_contains "$prompt" "---OBJECTIONS---"
+  assert_contains "$prompt" "what_goes_wrong"
+
+  assert_eq "$(wc -l < "$objections" | tr -d '[:space:]')" "2" "one record per reviewer turn"
+  assert_eq "$(jq -s '.[0].plain_language' "$objections")" "true" "the revise turn carried plain-language objections"
+  assert_eq "$(jq -s '.[0].objections | length' "$objections")" "2" "both objections recorded"
+  assert_eq "$(jq -s -r '.[0].objections | map(.severity) | join(",")' "$objections")" "should-fix,nit" "severity normalized"
+  assert_contains "$(jq -s -r '.[0].objections[0].what_goes_wrong' "$objections")" "so nothing is indexed" "continuation line joined"
+  assert_eq "$(jq -s '.[1].plain_language' "$objections")" "false" "an approval has no objections"
+  assert_contains "$(cat "$log")" "Objections:"
+  assert_contains "$(cat "$log")" "1. [should-fix] Phase 2: A visitor with JavaScript off"
+  assert_contains "$(cat "$log")" "Fix: Render on the server first."
+}
+
 main() {
+  negotiate_records_plain_language_objections
   negotiate_two_reviewers_converge_round_one
   negotiate_unavailable_reviewer_fails_before_round_one_requests
   negotiate_always_revise_hits_max_rounds_and_needs_human

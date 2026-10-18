@@ -272,6 +272,52 @@ PY
 
 # --- lib/negotiate/parse-status ----------------------------------------
 
+parse_status_extracts_plain_language_objections() {
+  local file out
+  file="$(mktemp)"
+  cat > "$file" <<'EOF2'
+---STATUS---
+status: revise
+reason: gaps found
+---OBJECTIONS---
+- severity: should-fix
+  what_goes_wrong: First line,
+    continued here.
+  where: Phase 2
+  fix: Do the thing.
+- severity: BLOCKER
+  what_goes_wrong: Second problem.
+  where: Overview
+- severity: whatever
+  what_goes_wrong: Third problem.
+```spec
+# Spec
+
+body
+```
+EOF2
+  out="$("$NEGOTIATE_DIR/parse-status" "$file" objections)"
+  assert_eq "$(jq 'length' <<<"$out")" "3" "three objections"
+  assert_eq "$(jq -r 'map(.severity) | join(",")' <<<"$out")" "should-fix,blocker,unrated" "severity normalized; unknown becomes unrated"
+  assert_eq "$(jq -r '.[0].what_goes_wrong' <<<"$out")" "First line, continued here." "continuation joined"
+  assert_eq "$(jq -r '.[0].fix' <<<"$out")" "Do the thing." "fix kept"
+  assert_eq "$("$NEGOTIATE_DIR/parse-status" "$file" spec)" $'# Spec\n\nbody' "the spec block is unaffected by the section"
+  assert_eq "$("$NEGOTIATE_DIR/parse-status" "$file" all | jq '.objections | length')" "3" "all includes objections"
+  rm -f "$file"
+}
+
+parse_status_objections_absent_or_junk_never_fails() {
+  local file
+  file="$(mktemp)"
+  printf -- '---STATUS---\nstatus: revise\nreason: old style\n```spec\n# S\n```\n' > "$file"
+  assert_eq "$("$NEGOTIATE_DIR/parse-status" "$file" objections)" "[]" "no section gives an empty array"
+  printf -- '---STATUS---\nstatus: revise\nreason: junk\n---OBJECTIONS---\nnot a list at all\n- random text\n```spec\n# S\n```\n' > "$file"
+  assert_eq "$("$NEGOTIATE_DIR/parse-status" "$file" objections)" "[]" "an unreadable section gives an empty array, not an error"
+  printf -- '---STATUS---\nstatus: approved\nreason: fine\n' > "$file"
+  assert_eq "$("$NEGOTIATE_DIR/parse-status" "$file" all | jq -c '.objections')" "[]" "approved responses have none"
+  rm -f "$file"
+}
+
 parse_status_extracts_approved_without_spec() {
   local file out status
   file="$(mktemp)"
@@ -452,6 +498,8 @@ main() {
   local_provider_reports_unavailable_exit_code_when_unset
   local_provider_serializes_concurrent_calls_via_lock
   parse_status_extracts_approved_without_spec
+  parse_status_extracts_plain_language_objections
+  parse_status_objections_absent_or_junk_never_fails
   parse_status_extracts_revise_and_spec_block_even_when_fenced
   parse_status_synthesizes_reason_when_missing
   parse_status_extracts_marker_glued_to_reasoning_prefix

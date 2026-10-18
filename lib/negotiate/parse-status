@@ -6,10 +6,19 @@
 # Markdown fence.
 #
 # Usage: parse-status <response-file> [field]
-#   field: status | reason | spec | all (default: all, prints JSON)
+#   field: status | reason | spec | objections | all (default: all, prints JSON)
+#
+# Optional plain-language objections (docs/objection-capture.md): after the reason line, a revising reviewer may add
+#   ---OBJECTIONS---
+#   - severity: blocker|should-fix|nit
+#     what_goes_wrong: <plain sentences: what breaks, for whom, when>
+#     where: <section of the draft>
+#     fix: <what the replacement spec changed>
+# `objections` prints a JSON array ([] when the section is absent or unreadable). It never fails the parse: older
+# responses and small models that skip the section keep working.
 set -euo pipefail
 
-response_file="${1:?usage: parse-status <response-file> [status|reason|spec|all]}"
+response_file="${1:?usage: parse-status <response-file> [status|reason|spec|objections|all]}"
 field="${2:-all}"
 
 [[ -f "$response_file" ]] || { echo "error: response file not found: $response_file" >&2; exit 1; }
@@ -55,6 +64,50 @@ if [[ "$status" == "revise" ]]; then
   }
 fi
 
+# Plain-language objections: items between ---OBJECTIONS--- and the spec fence (or the next marker). Bash 3.2 safe.
+parse_objections() {
+  local on=0 line key val cur_key="" have=0 out="[]" count=0
+  local sev="" what="" where_="" fix=""
+  flush_item() {
+    if [[ $have -eq 1 && $count -lt 10 ]]; then
+      case "$(printf '%s' "$sev" | tr 'A-Z_ ' 'a-z--')" in
+        blocker) sev="blocker" ;; should-fix|shouldfix) sev="should-fix" ;; nit) sev="nit" ;; *) sev="unrated" ;;
+      esac
+      out="$(jq -c --arg sev "$sev" --arg what "${what:0:600}" --arg where_ "${where_:0:300}" --arg fix "${fix:0:600}" \
+        '. + [{severity: $sev, what_goes_wrong: $what, where: $where_, fix: $fix}]' <<<"$out")"
+      count=$((count + 1))
+    fi
+    sev=""; what=""; where_=""; fix=""; cur_key=""; have=0
+  }
+  while IFS= read -r line; do
+    if [[ $on -eq 0 ]]; then
+      [[ "$line" =~ ^---OBJECTIONS---[[:space:]]*$ ]] && on=1
+      continue
+    fi
+    [[ "$line" =~ ^\`\`\` ]] && break
+    [[ "$line" =~ ^---[A-Z]+---[[:space:]]*$ ]] && break
+    if [[ "$line" =~ ^[[:space:]]*-[[:space:]]+(severity|what_goes_wrong|where|fix):[[:space:]]*(.*)$ ]]; then
+      flush_item; key="${BASH_REMATCH[1]}"; val="${BASH_REMATCH[2]}"; have=1
+    elif [[ "$line" =~ ^[[:space:]]*(severity|what_goes_wrong|where|fix):[[:space:]]*(.*)$ ]]; then
+      key="${BASH_REMATCH[1]}"; val="${BASH_REMATCH[2]}"; have=1
+    elif [[ -n "${line//[[:space:]]/}" && -n "$cur_key" ]]; then
+      key="$cur_key"; val="$(printf '%s' "$line" | sed -E 's/^[[:space:]]+//')"
+      case "$key" in
+        severity) sev="$sev $val" ;; what_goes_wrong) what="$what $val" ;; where) where_="$where_ $val" ;; fix) fix="$fix $val" ;;
+      esac
+      continue
+    else
+      continue
+    fi
+    cur_key="$key"
+    case "$key" in
+      severity) sev="$val" ;; what_goes_wrong) what="$val" ;; where) where_="$val" ;; fix) fix="$val" ;;
+    esac
+  done < "$response_file"
+  flush_item
+  printf '%s\n' "$out"
+}
+
 case "$field" in
   status)
     printf '%s\n' "$status"
@@ -62,15 +115,18 @@ case "$field" in
   reason)
     printf '%s\n' "$reason"
     ;;
+  objections)
+    parse_objections
+    ;;
   spec)
     printf '%s\n' "$spec_block"
     ;;
   all)
-    jq -n --arg status "$status" --arg reason "$reason" --arg spec "$spec_block" \
-      '{status: $status, reason: $reason, spec: (if $spec == "" then null else $spec end)}'
+    jq -n --arg status "$status" --arg reason "$reason" --arg spec "$spec_block" --argjson objections "$(parse_objections)" \
+      '{status: $status, reason: $reason, spec: (if $spec == "" then null else $spec end), objections: $objections}'
     ;;
   *)
-    echo "error: unknown field: $field (expected status, reason, spec, or all)" >&2
+    echo "error: unknown field: $field (expected status, reason, spec, objections, or all)" >&2
     exit 1
     ;;
 esac
