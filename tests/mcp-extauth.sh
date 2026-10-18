@@ -646,7 +646,7 @@ assert_eq "$(tr ' ' '\n' <<< "$codes" | grep -c '^401$')" "5" "5 failed attempts
 assert_eq "$(tr ' ' '\n' <<< "$codes" | grep -c '^429$')" "16" "the rest are stopped by the IP limiter"
 intro1="$(grep -c '"call":"introspect"' "$TMP/srv.log" || true)"
 [[ $((intro1 - intro0)) -le 5 ]] || fail "the storm reached the service $((intro1 - intro0)) times"
-sleep 1.2; r="$(ping S3 "$TOKEN_OK" "$S3_OK")"; assert_eq "$(status "$r")" "200" "a known active key is not blocked by the storm"
+r="$(ping S3 "$TOKEN_OK" "$S3_OK")"; assert_eq "$(status "$r")" "200" "a key that was active within the cache window is not blocked by the storm (the bypass never outlives the introspection cache)"
 echo "ok - unique-token storm stopped by the IP limiter ($((intro1 - intro0)) introspect calls reached the stub)"
 
 # --- S3b: behind a trusted reverse proxy the limiter keys on the client address from X-Forwarded-For, not the proxy's ---
@@ -809,5 +809,20 @@ done
 if grep -rl "MARKER" "$TMP"/*.log "$TMP"/*.out; then fail "a planted marker leaked into the logs above"; fi
 [[ -s "$TMP/client.log" && -s "$TMP/conf.log" && -s "$TMP/outbox-client.log" ]] || fail "logs were captured"
 echo "ok - no token in captured logs"
+
+# --- S3d: a token revoked after it was known active gets no free pass once the cache has expired ---
+start_server S3D E3D_MCP_AUTH_IP_PER_MIN=3
+r="$(init S3D "$TOKEN_SIBLING")"; assert_eq "$(status "$r")" "200" "active key accepted (and remembered as active)"
+curl -fsS -X POST -H "authorization: Bearer $SVC" -H 'content-type: application/json' -d '{"key_id":"key-sibling"}' "$SRV_URL/_stub/revoke" > /dev/null
+sleep 1.3   # the introspection cache (E3D_MCP_AUTH_CACHE_SEC=1) has expired
+intro0="$(grep -c '"call":"introspect"' "$TMP/srv.log" || true)"
+inject '{"mode":"slow","calls":["introspect"],"ms":1200}'
+rm -rf "$TMP/storm2"; mkdir -p "$TMP/storm2"; storm_pids=()
+for i in $(seq 1 10); do ( curl -s -m 30 -o /dev/null -w '%{http_code}' -X POST "${J[@]}" -H "Authorization: Bearer $TOKEN_SIBLING" -d "$INIT" "http://127.0.0.1:$(sport S3D)/mcp" > "$TMP/storm2/$i" ) & storm_pids+=($!); done
+wait "${storm_pids[@]}"
+inject '{"mode":null}'
+c429="$(for f in "$TMP"/storm2/*; do cat "$f"; echo; done | grep -c '^429$')"
+[[ "$c429" -ge 6 ]] || fail "a burst with a revoked token got only $c429 refusals with a limit of 3"
+echo "ok - a revoked token's burst is bounded by the per-IP limit once the cache has expired"
 
 echo "mcp-extauth: all tests passed"
