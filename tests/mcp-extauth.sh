@@ -380,7 +380,7 @@ body() { tail -n +2 <<< "$1"; }
 hdr() { grep -i "^$1:" "$TMP/headers" | head -1 | sed -E 's/^[^:]+: *//' | tr -d '\r'; }
 INIT='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"extauth-test","version":"0"}}}'
 J=(-H 'content-type: application/json' -H 'accept: application/json')
-init() { http "$1" /mcp -X POST "${J[@]}" -H "Authorization: Bearer $2" -d "$INIT"; }   # init <server> <token>
+init() { local srv="$1" tok="$2"; shift 2; http "$srv" /mcp -X POST "${J[@]}" -H "Authorization: Bearer $tok" "$@" -d "$INIT"; }   # init <server> <token> [extra curl args]
 sid_of() { init "$1" "$2" > /dev/null; hdr mcp-session-id; }
 rpc() { http "$1" /mcp -X POST "${J[@]}" -H "Authorization: Bearer $2" -H "mcp-session-id: $3" -d "$4"; }   # rpc <server> <token> <sid> <json>
 ping() { rpc "$1" "$2" "$3" '{"jsonrpc":"2.0","id":3,"method":"ping"}'; }
@@ -553,6 +553,14 @@ intro1="$(grep -c '"call":"introspect"' "$TMP/srv.log" || true)"
 [[ $((intro1 - intro0)) -le 5 ]] || fail "the storm reached the service $((intro1 - intro0)) times"
 sleep 1.2; r="$(ping S3 "$TOKEN_OK" "$S3_OK")"; assert_eq "$(status "$r")" "200" "a known active key is not blocked by the storm"
 echo "ok - unique-token storm stopped by the IP limiter ($((intro1 - intro0)) introspect calls reached the stub)"
+
+# --- S3b: behind a trusted reverse proxy the limiter keys on the client address from X-Forwarded-For, not the proxy's ---
+start_server S3B E3D_MCP_AUTH_IP_PER_MIN=3 E3D_MCP_TRUST_PROXY_HOPS=1
+codes=""; for i in 1 2 3 4 5; do r="$(init S3B "bad-$i-$(openssl rand -hex 8)" -H "X-Forwarded-For: 198.51.100.7")"; codes+="$(status "$r") "; done
+assert_eq "$(tr ' ' '\n' <<< "$codes" | grep -c '^429$')" "2" "one abusive client is stopped by its own address"
+r="$(init S3B "$TOKEN_OK" -H "X-Forwarded-For: 203.0.113.9")"; assert_eq "$(status "$r")" "200" "another client behind the same proxy is not locked out"
+r="$(init S3B "bad-x-$(openssl rand -hex 8)" -H "X-Forwarded-For: 203.0.113.9")"; assert_eq "$(status "$r")" "401" "and its own failures count separately"
+echo "ok - the failed-key limiter is per client address behind a trusted proxy"
 
 # --- S4: the outbox bound refuses new billed work ---
 start_server S4 E3D_MCP_OUTBOX_MAX=1

@@ -95,9 +95,17 @@ await test('enqueue is durable, mode 0600 in 0700 dirs, and the same record_id t
   const { outbox, dirs } = setup('enqueue');
   const a = await outbox.enqueue('settle', settleArgs('res_dupe_check'));
   assert.equal(a.queued, true);
-  const b = await outbox.enqueue('settle', settleArgs('res_dupe_check', 5));
-  assert.deepEqual([b.queued, b.duplicate], [false, true], 'second enqueue is a no-op');
+  const b = await outbox.enqueue('settle', settleArgs('res_dupe_check'));
+  assert.deepEqual([b.queued, b.duplicate], [false, true], 'an identical second enqueue is a no-op');
   assert.equal(files(dirs.pending).length, 1);
+  // Same id, DIFFERENT payload: never reported as a duplicate success. The second payload is kept whole in dead/.
+  const conflict = await outbox.enqueue('settle', settleArgs('res_dupe_check', 5));
+  assert.deepEqual([conflict.queued, conflict.duplicate, conflict.dead, conflict.conflict], [false, false, true, true]);
+  assert.equal(files(dirs.pending).length, 1, 'the original record is untouched');
+  assert.equal(files(dirs.dead).length, 1, 'the conflicting payload is retained in dead/');
+  const deadRec = JSON.parse(readFileSync(join(dirs.dead, files(dirs.dead)[0]), 'utf8'));
+  assert.equal(deadRec.payload.actual.calls, 5); assert.match(deadRec.dead_reason, /conflicts with the existing record/);
+  assert.equal(outbox.canAccept(), false, 'a dead-lettered conflict stops new billed work until an operator resolves it');
   const rec = JSON.parse(readFileSync(join(dirs.pending, files(dirs.pending)[0]), 'utf8'));
   assert.equal(rec.record_id, 'settle.reservation_id.res_dupe_check');
   assert.equal(rec.payload.actual.calls, 2, 'the first payload is kept');
