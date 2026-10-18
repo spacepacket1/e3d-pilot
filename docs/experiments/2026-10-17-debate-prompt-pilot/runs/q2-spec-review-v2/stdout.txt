@@ -1,0 +1,171 @@
+--- Round 1 / anthropic-api ---
+**1. Verdict: (c) Hold until named gaps are closed.**
+
+Phases 1-3 are reasonable. They fail closed, are auditable, and spend no money. The hold applies to authorizing anything beyond them, especially Phase 4. The spec's own §2, §5 and §6 say the precedent is paper-only, there is no executor, and the controls guard nothing real yet.
+
+**2. Top three risks, ranked**
+
+1. **The kill switch and spend ceiling give false assurance (§5 Phase 3, §6).** The "spend-ceiling kill switch" only flips an internal status that gates creative commissioning. It cannot stop real spend, and §6 admits this. Anyone reading "kill switch built" or "spend-ceiling check always on" could assume protection exists. Autosuspend is also off by default. If Phase 4 ships on this basis, the first real overspend is also the first real test of the mechanism.
+2. **The hard ceiling and the campaign-to-product mapping are unset (§4, §9.1, §9.2).** The ceiling is a placeholder, and the mapping is empty on the real instance. Product-scoped mandates return "insufficient data", so the breaker silently provides no protection for exactly the mandates that use `allowed_campaign_ids: null`. Unevaluable must not look the same as healthy.
+3. **The autonomous chain has no volume or cost bound (§5 Phase 2).** The chain runs from pursuing opportunity to brief to proposal to auto-decide to commission, scanning all pending proposals against all mandates on cron. The mandate limits only spend, but there is no cap on commissions per day or per mandate. Because Phase 2 is zero-dollar, nothing bounds the commissioning volume or its downstream compute cost. The full cron schedule is already live with no cap.
+
+**3. Contradiction.** §5 Phase 4 says the Meta credential is "confirmed to carry `ads_management` and several other broad scopes." §6 says the token is "`ads_read`-scoped, read-only, by design." Both cannot be true. If the first is true, "this system cannot spend" rests on the absence of code, not on a capability limit.
+
+Smaller inconsistencies:
+- The header says 239 tests and §9 says 230.
+- §4 puts `AD_RISK_POLICY` in code, changed only by PR. §9 describes `adRiskPolicy` as an unset instance config value. These are different trust models, and the instance config is looser.
+
+**4. Smallest change for risk #1.** Check the token's actual scopes against Meta's debug_token endpoint. If it carries `ads_management`, reissue it as `ads_read` only. Then record "verified read-only token" as a hard precondition for any Phase 4 discussion. Also rename the §6 control to "mandate status suspend", so it doesn't read as a spend limit.
+
+**Load-bearing assumptions**
+- Humans still run the real Meta campaigns directly in Ads Manager.
+- `activateAdMandate` really does fail closed without a policy, which I haven't verified.
+
+**Recommended next action:** The budget owner reconciles the token scope this week, then supplies the real ceiling numbers and the campaign-to-product mapping. After that, re-review. Phase 4 should not be scoped until the breaker has run in observe-only mode on real data and its signals have been checked against Ads Manager.
+
+--- Round 1 / openai-api ---
+1. **VERDICT: (c) hold until named gaps are closed.**  
+   Phases 1–3 look reasonable for non-spending automation, but this spec is not sufficient to authorize autonomous real-money ad spend. The Phase 4 boundary is correctly called out, but the actual spend-control design is not yet specified enough.
+
+2. **Three biggest risks, ranked**
+
+   1. **Spend controls are mostly after-the-fact, not pre-execution** — Sections 4, 5 Phase 3, 6, Phase 4.  
+      The hard ceiling and health check detect spend from Meta evidence and can suspend the mandate, but the spec does not yet define a Meta-write executor that checks projected spend before every budget-changing action. For real spend, a post-hoc circuit breaker can still overspend between polls or due to attribution/reporting delay.
+
+   2. **Credential/scope ambiguity around Meta write access** — Sections 5 Phase 4 and 6.  
+      Section 5 says the credential is already confirmed to carry `ads_management` and broad scopes. Section 6 says the Meta token is `ads_read`-scoped, read-only, by design. That contradiction is load-bearing: the risk profile is completely different depending on which is true.
+
+   3. **Product-to-campaign mapping is missing, weakening monitoring and suspension** — Sections 5 Phase 3 and 9.  
+      Mandates with `allowed_campaign_ids: null` depend on `research.meta.campaigns[].product`, but the real FutCo config lacks it. The health check then reports “insufficient data,” meaning product-scoped mandates cannot be reliably evaluated against campaign spend/performance.
+
+3. **One thing missing or contradicted elsewhere**
+
+   The Meta credential scope is contradicted. Section 5 says Phase 4 would use a credential already carrying `ads_management`; Section 6 says the system’s Meta token is read-only `ads_read` “by design.” Before any spend authorization, the spec must name the actual credential, its scopes, where it is stored, and which executor can use it.
+
+4. **Single smallest change that would reduce the biggest risk**
+
+   Add one explicit Phase 4 gating requirement: **no Meta-write action may execute unless a synchronous pre-write budget check confirms that current Meta spend plus the proposed change cannot exceed both `AD_RISK_POLICY` and the active mandate’s daily/monthly ceilings; otherwise fail closed.**  
+   This should be enforced inside the Meta-write executor, not only by the scheduled health check.
+
+**Recommended next action:** do not authorize Phase 4 yet; open a blocking Phase 4 design PR that resolves the Meta credential contradiction and specifies/test-enforces the pre-write spend guard.
+
+--- Round 1 / grok-build ---
+The spec makes strong safety claims. I'll check the ones that decide the verdict against the code and the companion docs before answering.The status block says the live loop is only waiting on human inputs. I'll check the two claims that would make that unsafe: token scope, and whether cron already closes the human gate.**1. Verdict: (c) hold until named gaps are closed.**
+
+Phases 1–3 are a real bounding pattern: mandates only tighten ceilings, `paper_only_creative` stays hard-true, a human still approves each mandate, and Phase 4 is split out. Keep that code. Do not authorize the live loop. The status block and section 9 say the cron is already on and the only leftovers are budget numbers, a product mapping, and a mandate. Filling those in arms the loop on top of a write-capable credential and a ceiling that leaves Meta delivery running.
+
+**2. Three biggest risks**
+
+1. **Write credential under a read-only safety story (sections 5 and 6).** Phase 4 says the credential already carries `ads_management` and other broad scopes. Section 6 says the token is `ads_read`-only by design, and that this is why the system cannot start delivery and why suspend only flips an internal status. The companion manifesto records a 2026-10-11 introspection of `META_ADS_READ_TOKEN` that matches section 5. Suspend, revoke, and the spend check leave live Meta delivery running, and any new caller of that token can start spend.
+
+2. **The spend ceiling does not stop spending, and by default it does not stop the loop (section 5 Phase 3, section 6, status).** `autoSuspendEnabled` defaults to false, so a breach only appends `breach-observed`. With the flag on, suspend stops new `commission-creative` decisions. `autoDecideUnderMandate` checks active status, product, `allowed_campaign_ids === null`, and `paper_only_creative`. It never reads daily or monthly spend, `max_cpl_usd`, or `expires_at`. Section 5 still calls this the answer to spending more than $X/day.
+
+3. **The mandates Phase 2 can act on are the ones Phase 3 cannot measure (section 5, section 9).** Auto-decide fails closed unless `allowed_campaign_ids` is null. The health check then needs `research.meta.campaigns[].product`. On the live instance, `hvac_v3` and `free_v2` have none, so the check returns "insufficient data." Draft, propose, and decide are already on the crontab. The first active mandate can commission creative while the always-on ceiling has no campaign set to enforce.
+
+**3. What is contradicted**
+
+Section 6 says the Meta token is `ads_read`-scoped and read-only by design. Section 5 says that same credential carries `ads_management`. Those two sentences cannot both be the safety premise for a go-ahead.
+
+**4. Smallest change that cuts the biggest risk**
+
+Revoke every scope on the live Meta token except `ads_read`, and make `activateAdMandate` refuse to activate until a scope probe confirms that list.
+
+**Next action:** Hold the mandate, the budget numbers, and Phase 4. Have the token owner revoke the extra scopes and replace the section 6 sentence with the probe result before any `ad_mandate` is proposed.
+
+Assumption: the manifesto's 2026-10-11 introspection is what section 5 means by "already confirmed." I did not re-probe the token in this session.
+
+--- Round 2 / anthropic-api ---
+**Position held: verdict (c).** All three of us reach (c) and name the same scope contradiction (§5 Phase 4 versus §6). The disagreement is about ordering and what to do first.
+
+**Where I update.** Grok has two points I underweighted.
+- **Phase 2 auto-decide ignores spend and expiry.** `autoDecideUnderMandate` checks active status, product, null campaign IDs, and `paper_only_creative`. It does not read spend, CPL, or `expires_at`, as far as the spec describes. So §5 calling the spend-ceiling check "the literal answer to spending more than $X/day" overstates it. I rated this under false assurance, but it deserves explicit mention.
+- **Phase 2 only acts on null-campaign mandates, which Phase 3 cannot yet measure.** This is sharper than my risk #2. Because cron for draft, propose, and decide is already live, the first approved mandate would run with its ceiling check returning "insufficient data."
+
+I would therefore gate `activateAdMandate` on three things, not just a policy being set:
+- a token-scope probe
+- a populated campaign-to-product mapping
+- the health check returning evaluable, not "insufficient data"
+
+**Where I disagree with openai-api.** Its pre-write synchronous budget guard is a correct Phase 4 requirement, and I would add it as a one-line precondition. But it is not the smallest change for the biggest risk, and its next action ("open a blocking Phase 4 design PR") pulls the wrong way. §5 says Phase 4 needs its own review, a period of clean Phase 2/3 running, and that nothing in Phases 1-3 is a stepping-stone. Designing the executor now, before the credential is reconciled and before the breaker has run on real data, reverses that ordering. A guard inside an executor that does not exist reduces no present risk. The present risk is that "cannot spend" rests on missing code, not on a capability limit.
+
+**Where I disagree with grok-build, mildly.** Revoking all scopes except `ads_read` is the right remedy if the probe confirms the broad scopes. But I would verify first with Meta's debug_token, because neither of us re-probed the token. Grok also says to hold the budget numbers. That is fine as sequencing, but I would not hold the mapping, because it is a harmless read-only config that the observe-only breaker needs.
+
+**Contradiction (unchanged).** §5 says the credential carries `ads_management`; §6 says it is `ads_read` only. The other inconsistencies are minor:
+- 239 tests in the header versus 230 in §9.
+- `AD_RISK_POLICY` is a code constant in §4 but an instance config in §9.
+
+**Smallest change for the biggest risk.** Probe the token. If it carries write scopes, reissue it as `ads_read` only. Make "verified read-only" a precondition for activating any mandate and for any Phase 4 discussion. Rename the §6 control to "mandate status suspend" so it does not read as a spend limit.
+
+**Next action.** The token owner runs debug_token this week and reissues the token as `ads_read` if needed. Then the budget owner sets the ceiling and the mapping. Run the breaker in observe-only mode, and compare its output with Ads Manager before any mandate is activated. Phase 4 design waits until that is done.
+
+POSITION: Hold (c): verify and reduce the Meta token to read-only first, gate mandate activation on the scope probe and an evaluable breaker, run observe-only on real data, and defer Phase 4 design until then.
+status: revise
+
+--- Round 2 / openai-api ---
+My prior position mostly holds, with one refinement: the **credential contradiction is the immediate blocker**, while the **lack of synchronous pre-write spend enforcement is the core Phase 4 design blocker**. Both must be closed before any real-money autonomy.
+
+**Verdict remains: (c) hold until named gaps are closed.**
+
+I agree with anthropic-api and grok-build on the main outcome: do not authorize the live spend phase. The spec is acceptable as a non-spending creative-automation scaffold, but not as a basis for autonomous financial action.
+
+Where I think the other answers are strongest:
+- Both correctly identify the `ads_management` vs `ads_read` contradiction as load-bearing. If the token is write-capable, the spec’s “cannot spend by design” claim is false or at least incomplete.
+- Both correctly flag that the “kill switch” does not stop real Meta delivery today. It stops internal mandate-driven actions only.
+- Both correctly treat unset `adRiskPolicy` and missing campaign/product mapping as blockers for real operation.
+
+Where I differ:
+- Anthropic’s “false assurance from kill switch” is a good framing, but its proposed smallest change—token scope verification and renaming the control—reduces confusion more than it solves the eventual spend-control problem. For Phase 4, a write token will necessarily exist somewhere; the design must say how every write is budget-guarded before execution.
+- Grok’s claim that “filling those in arms the loop on top of a write-capable credential” may overstate the current spec if there is truly no Meta-write executor. Filling the human inputs appears to arm autonomous creative commissioning, not ad launch or budget mutation. The concern is still valid as a latent capability/safety-boundary problem, but the spec’s own Phase 4 separation matters.
+- Grok’s proposed scope probe on `activateAdMandate` is useful for Phases 1–3, but would be insufficient for Phase 4 unless paired with executor-level pre-write checks.
+
+My ranked risks now:
+
+1. **No specified pre-execution spend guard for Phase 4** — §§4, 5 Phase 3/4, 6. The ceiling is validated at mandate creation and monitored after the fact, but no executor-level rule prevents a budget-changing write that would exceed daily/monthly limits.
+
+2. **Contradictory Meta credential safety premise** — §§5, 6. The spec cannot simultaneously rely on a read-only token and acknowledge an `ads_management` credential.
+
+3. **Product-scoped monitoring is not enforceable yet** — §§5 Phase 3, 9. `allowed_campaign_ids: null` depends on campaign/product mapping that is absent on the real instance, causing “insufficient data.”
+
+Missing/contradicted item: the Meta credential scope.
+
+Smallest change to reduce the biggest risk: add a mandatory Phase 4 executor invariant: before every Meta write, synchronously compute current spend plus proposed effect against both `AD_RISK_POLICY` and active mandate ceilings, and fail closed.
+
+Recommended next action: open a blocking Phase 4 design PR resolving credential scope and adding tested pre-write budget enforcement before any spend authorization.
+
+POSITION: Hold until the credential contradiction, campaign mapping, real budget ceilings, and Phase 4 pre-write spend guard are closed.
+status: revise
+
+--- Round 2 / grok-build ---
+The three answers agree on a hold, but they would authorize different next steps. I'll check the token-scope and ceiling claims those steps depend on.**1. Verdict: (c) hold.** Unchanged. Keep Phases 1–3. Do not authorize the live loop or Phase 4.
+
+Checked this round: `activateAdMandate` does fail closed without `instanceConfig.adRiskPolicy`. `evaluateMandateCoverage` ignores spend, CPL, and `expires_at`. The 2026-10-11 manifesto still says `META_ADS_READ_TOKEN` carries `ads_management`. An insufficient-data health result is its own outcome kind, appends no event, and does not block auto-decide.
+
+**2. Risks**
+
+1. Write-capable token under a read-only story (§5 Phase 4, §6). The manifesto matches §5. §6’s “`ads_read` by design” is the sentence a go-ahead would trust, and that record says it is false. Suspend only flips an internal status.
+2. The ceiling does not stop spend, and by default it does not stop the loop (§5 Phase 3, §6). `autoSuspendEnabled` acts only when exactly `true`; otherwise a breach writes `breach-observed`. With the flag on, suspend stops new creative commissions, not Meta delivery. §5 still calls this the answer to spending more than $X/day.
+3. Mandates Phase 2 can run are the ones Phase 3 cannot price (§5, §9). Coverage requires `allowed_campaign_ids === null`. Those need `campaigns[].product`, unset on `hvac_v3` and `free_v2`, so the check returns insufficient data while cron can still commission.
+
+**3. Contradiction.** §6 says the token is read-only by design. §5 and the manifesto say it carries `ads_management`. Both cannot be the safety premise.
+
+§4’s PR-only `AD_RISK_POLICY` constant versus §9’s instance `adRiskPolicy` is a smaller contradiction. The code implements the looser one. That was underweighted last round. It still sits below the token: there is no writer.
+
+**4. Smallest change.** Strip the live token to `ads_read`, and make `activateAdMandate` refuse until a scope probe confirms that list.
+
+OpenAI’s pre-write guard is the right rule for a future executor. No executor exists, so that sentence does not shrink a token that can already write. Anthropic’s `debug_token` check is the probe half; “reissue if `ads_management`” is optional after a document that already says the scope is there. Renaming the kill switch fixes a label and leaves the scopes. Setting ceiling numbers after a token meeting is the step that lets `activateAdMandate` succeed.
+
+**Next action:** Hold the budget numbers, the mandate, and Phase 4. The token owner revokes every scope except `ads_read` and replaces the §6 sentence with the probe result before anyone proposes an `ad_mandate`.
+
+POSITION: Hold the live loop and Phase 4 until the Meta token is stripped to ads_read and section 6 is rewritten from a scope probe, and do not set budget numbers or open a Phase 4 design PR before that.
+status: revise
+
+FINAL ANSWER: Verdict (c), hold until named gaps are closed. Phases 1-3 are sound as non-spending scaffolding, but the live loop and Phase 4 should not proceed. The ranked risks are:
+1. A write-capable Meta token sits under a "read-only by design" safety story (§5 Phase 4 contradicts §6).
+2. The spend-ceiling "kill switch" only flips an internal status, and auto-suspend is off by default, so it cannot stop real spend or even creative commissioning on a spend breach (§5 Phase 3, §6).
+3. Auto-decide only acts on null-campaign mandates, which the breaker cannot evaluate because the campaign-to-product mapping is unset, so cron could commission creative while the health check returns "insufficient data" (§5, §9).
+
+The contradiction is the token scope (§5 says `ads_management`, §6 says `ads_read` only). The smallest change is to probe the token with Meta's debug_token, strip it to `ads_read`, and make `activateAdMandate` refuse to activate until that probe passes. The recommended next action is for the token owner to run the probe and reissue the token as `ads_read` and rewrite §6 from the result. Only then should the budget owner set the real ceilings and the mapping, and the breaker should run observe-only against Ads Manager before any mandate is proposed.
+
+CONSENSUS: majority
+
+DISSENT: openai-api ranks the missing synchronous pre-write spend guard for Phase 4 as the top risk and wants a Phase 4 design PR opened now. The other two say to fix the token first and defer Phase 4 design until the breaker has run cleanly on real data.

@@ -1,0 +1,4 @@
+=== Round 1 ===
+=== Round 2 ===
+=== Synthesis (anthropic-api) ===
+transcript: /Users/mini/e3d-pilot/docs/experiments/2026-10-17-debate-prompt-pilot/runs/q2-spec-review-v3b/transcript.md

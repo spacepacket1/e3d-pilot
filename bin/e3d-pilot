@@ -77,6 +77,7 @@ Usage:
   e3d-pilot ideas repair-run --repo <path> --run-id <run-id> [--from-stage <stage>] <idea-id>
   e3d-pilot ideas approve-merge --repo <path> <idea-id> [--actor <actor>] [--note <text>]
   e3d-pilot ideas merge --repo <path> <idea-id>
+  e3d-pilot replay harvest --repo <path>
   e3d-pilot provenance export --repo <path> [--out <file>]
   e3d-pilot provenance trace --repo <path> <idea-id> [--json]
   e3d-pilot provenance query lineage --repo <path> [--json]
@@ -1420,6 +1421,7 @@ ensure_worktree() {
   branch="e3d-pilot/$run_id"
   worktree_dir="$(mktemp -d "${TMPDIR:-/tmp}/e3d-pilot.${run_id}.XXXXXX")"
   start_ref="HEAD"
+  git -C "$repo" rev-parse HEAD > "$run_dir/execute-start-sha.txt" 2>/dev/null || true
 
   # A prior execute attempt for this same run (e.g. one that failed before a
   # repair-run retry, via `ideas repair-run --from-stage execute`) may have
@@ -4056,6 +4058,7 @@ ideas_do_implement_repo() {
   target_tmp="$(mktemp "${TMPDIR:-/tmp}/e3d-implementation-target.XXXXXX")"
   local pipeline_status=0
   run_repo_implementation_pipeline "$repo" "$run_id" "$approved_base" "$actual_start" "$target_tmp" "primary" "$base_branch" draft "$stop_before" || pipeline_status=$?
+  "$REPO_ROOT/lib/replay/harvest.sh" "$repo" >/dev/null 2>&1 || true
   if [[ $pipeline_status -eq 2 ]]; then
     rm -f "$targets_tmp" "$target_tmp"
     printf 'ideas: paused %s run=%s before=%s\n' "$idea_id" "$run_id" "$stop_before"
@@ -6521,6 +6524,11 @@ main() {
     provenance)
       shift
       cmd_provenance "$@"
+      ;;
+    replay)
+      shift
+      [[ "${1:-}" == harvest && "${2:-}" == --repo && -n "${3:-}" ]] || die "usage: e3d-pilot replay harvest --repo <path>"
+      "$REPO_ROOT/lib/replay/harvest.sh" "$3"
       ;;
     fleet)
       shift
