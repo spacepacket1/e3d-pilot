@@ -1574,10 +1574,25 @@ copy_execute_local_data_paths() {
   done
 }
 
+# Optional extra guidance for the e3d-code execute backend (additive: e3d-code appends it
+# after its built-in guardrails). Source: E3D_PILOT_EXTRA_GUIDANCE_FILE, else
+# config.execute_extra_guidance_file (relative paths resolve against the repo). Prints the
+# resolved path, or nothing when unset. The path and sha256 are recorded in the run dir so
+# an experiment's harness variant is traceable.
+resolve_execute_extra_guidance() {
+  local repo="$1" config_file="$2" run_dir="$3" file
+  file="${E3D_PILOT_EXTRA_GUIDANCE_FILE:-$(jq -r '.execute_extra_guidance_file // empty' "$config_file")}"
+  [[ -n "$file" ]] || return 0
+  [[ "$file" == /* ]] || file="$repo/$file"
+  [[ -r "$file" ]] || die "execute extra guidance file not readable: $file"
+  printf '%s\t%s\n' "$file" "$(shasum -a 256 "$file" | awk '{print $1}')" > "$run_dir/execute-extra-guidance.txt"
+  printf '%s' "$file"
+}
+
 execute_stage() {
   local repo="$1" run_id="$2" run_dir config_file spec_final_file violations_file worktree_dir branch
   local max_diff_files max_diff_lines diff_counts diff_files diff_lines e3d_code_bin e3d_code_stdout e3d_code_stderr e3d_code_status
-  local worktree_spec_file e3d_code_command_file execute_backend provider_script execute_prompt execute_stdout execute_stderr execute_status availability_output availability_status
+  local extra_guidance_file worktree_spec_file e3d_code_command_file execute_backend provider_script execute_prompt execute_stdout execute_stderr execute_status availability_output availability_status
 
   ensure_git_repo "$repo"
   config_file="$(config_path_for_repo "$repo")"
@@ -1638,8 +1653,10 @@ execute_stage() {
         "${E3D_PILOT_CODEX_CONTEXT_WINDOW:-128000}" "${E3D_PILOT_CODEX_AUTO_COMPACT_LIMIT:-96000}" \
         "$e3d_code_bin" "$worktree_spec_file" > "$e3d_code_command_file"
 
+      extra_guidance_file="$(resolve_execute_extra_guidance "$repo" "$config_file" "$run_dir")"
       set +e
       ( cd "$worktree_dir" && \
+        E3D_CODE_EXTRA_GUIDANCE_FILE="$extra_guidance_file" \
         MAX_PHASES_PER_RUN="${E3D_PILOT_CODE_MAX_PHASES:-${E3D_PILOT_S2C_MAX_PHASES:-8}}" \
         MAX_PROVIDER_TOKENS_PER_PHASE="${E3D_PILOT_CODE_MAX_TOKENS_PER_PHASE:-${E3D_PILOT_S2C_MAX_TOKENS_PER_PHASE:-120000}}" \
         CODEX_CONTEXT_WINDOW="${E3D_PILOT_CODEX_CONTEXT_WINDOW:-128000}" \
@@ -2585,6 +2602,7 @@ validate_config_file() {
   json_type_check "$file" 'if has("docs") then (.docs | type == "string") else true end' "config.docs must be a string when provided"
   json_type_check "$file" 'if has("execute_local_data_paths") then (.execute_local_data_paths | type == "array") else true end' "config.execute_local_data_paths must be an array when provided"
   json_type_check "$file" 'if has("execute_local_data_paths") then (.execute_local_data_paths | all(.[]; type == "string")) else true end' "config.execute_local_data_paths must be an array of strings when provided"
+  json_type_check "$file" 'if has("execute_extra_guidance_file") then (.execute_extra_guidance_file | type == "string") else true end' "config.execute_extra_guidance_file must be a string when provided"
   json_type_check "$file" 'if has("live_verify") then (.live_verify | type == "object") else true end' "config.live_verify must be an object when provided"
   json_type_check "$file" 'if has("live_verify") then (.live_verify | has("command")) else true end' "config.live_verify.command is required when live_verify is provided"
   json_type_check "$file" 'if has("live_verify") then (.live_verify.command | type == "string") else true end' "config.live_verify.command must be a string"
