@@ -315,6 +315,21 @@ ok('crash boundaries of abort: released once, never charged');
   assert.equal(rec.phase, 'started'); assert.equal(rec.settlement, undefined, 'the old started intent remains (recovery can only conflict with the real settle, never double charge)');
   ok('an unwritable journal at commit does not make usage free');
 }
+// a crashed recoverer's lock is reclaimed once it is old, even when its pid now belongs to a live process; a young one is honoured
+{
+  const d = `${dir}/stale-lock`; const u = createUsage({ env: { E3D_MCP_STATE_DIR: d } });
+  const fs = await import('node:fs');
+  const ext = fakeExternal(); { const mm = createMetering({ localUsage: u, external: ext, dir: d }); const bb = await mm.begin('acct', cost); await mm.start(bb.handle); }
+  const f = `${d}/metering-intents/${intents(d)[0]}`; const rec = JSON.parse(readFileSync(f, 'utf8')); rec.pid = 999999999; fs.writeFileSync(f, JSON.stringify(rec));
+  fs.writeFileSync(`${f}.lock`, String(process.ppid)); // a live pid (a reused one)
+  await createMetering({ localUsage: u, external: ext, dir: d, env: { E3D_MCP_ORPHAN_POLICY: 'release' } }).recover();
+  assert.equal(ext.calls.release.length, 0, 'a young lock held by a live pid is honoured'); assert.equal(intents(d).length, 1);
+  const old = new Date(Date.now() - 3600 * 1000); fs.utimesSync(`${f}.lock`, old, old);
+  await createMetering({ localUsage: u, external: ext, dir: d, env: { E3D_MCP_ORPHAN_POLICY: 'release' } }).recover();
+  assert.equal(ext.calls.release.length, 1, 'an old lock is reclaimed'); assert.deepEqual(intents(d), []);
+  for (const bad of ['-5', '0', '1.5', 'abc', '99999999999']) assert.throws(() => createMetering({ localUsage: u, external: ext, dir: d, env: { E3D_MCP_ORPHAN_MAX_AGE_SEC: bad } }), /E3D_MCP_ORPHAN_MAX_AGE_SEC/, `rejects ${bad}`);
+  ok('stale recovery locks are reclaimed; a bad orphan max age is refused');
+}
 // a failed local adjustment keeps the intent so recovery retries it (the external side may already be settled)
 {
   const d = `${dir}/local-fail`; const real = createUsage({ env: { E3D_MCP_STATE_DIR: d } });
