@@ -301,6 +301,20 @@ ok('crash boundaries of abort: released once, never charged');
   assert.equal((await u.snapshot('acct')).calls_today, 2, 'a replay is still a no-op');
   ok('reservations spanning UTC midnight are settled onto the new day exactly once');
 }
+// the journal is unwritable when the debate finishes: the usage is still billed (never free), the failure is counted and logged
+{
+  const d = `${dir}/journal-fail`; const u = createUsage({ env: { E3D_MCP_STATE_DIR: d } });
+  const fs = await import('node:fs'); const lines = [];
+  const ext = fakeExternal(); const m = createMetering({ localUsage: u, external: ext, dir: d, log: (l) => lines.push(l) });
+  const b = await m.begin('acct', cost); await m.start(b.handle);
+  fs.chmodSync(`${d}/metering-intents`, 0o500); // read-only: no new intent file can be written or removed
+  try { await m.commit(b.handle, spent, { outcome: 'ok', duration_ms: 5 }); } finally { fs.chmodSync(`${d}/metering-intents`, 0o700); }
+  assert.equal(ext.calls.settle.length, 1, 'settled externally even though the journal could not be written');
+  assert.ok(lines.some((l) => /could not record the settlement/.test(l)));
+  const rec = JSON.parse(readFileSync(`${d}/metering-intents/${intents(d)[0]}`, 'utf8'));
+  assert.equal(rec.phase, 'started'); assert.equal(rec.settlement, undefined, 'the old started intent remains (recovery can only conflict with the real settle, never double charge)');
+  ok('an unwritable journal at commit does not make usage free');
+}
 // a failed local adjustment keeps the intent so recovery retries it (the external side may already be settled)
 {
   const d = `${dir}/local-fail`; const real = createUsage({ env: { E3D_MCP_STATE_DIR: d } });
