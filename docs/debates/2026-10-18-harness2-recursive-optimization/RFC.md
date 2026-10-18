@@ -28,3 +28,12 @@ Answers to the key questions
 
 ## Do NOT build
 A generic 8-component framework, an improvement-harness service, a dashboard, or auto-adoption of edits/lessons.
+
+## Addendum (2026-10-18): precondition check — result: DEFER (D)
+The RFC required two checks before the experiment. Both failed.
+1. Execute-phase prompt from a file: **no.** The default backend (`e3d-code`, config value `s2c`) builds its prompt in an inline heredoc (`bin/e3d-code`, `phase_prompt`); the `grok-build` path builds its prompt with inline `printf` (`bin/e3d-pilot`, `build_direct_execute_prompt`). The editable surface is the "Guardrails" block of the `e3d-code` heredoc.
+2. At least 10 replayable tasks: **no.** 5 runs with a `spec-final.md` in e3d-pilot plus 6 in e3d-corp = 11 before filtering; only 5 of e3d-pilot's reached `implemented`. After excluding secret-dependent runs and sealing 4 as held-out, fewer than 10 remain.
+
+Unblocking work (not done yet):
+- Guardrails override: make the `e3d-code` guardrails block loadable from a file, with the built-in text as the default. Note this deliberately makes a safety-relevant block replaceable, so it needs explicit owner sign-off, and the RFC's rule that guardrails stay read-only during experiments must be enforced by the experiment runner, not by this hook.
+- Run harvesting: save every new run as a replayable task (spec, repo SHA, outcome) so the task set grows passively.
