@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/spacepacket1/e3d-pilot/blob/main/docs/external-auth/health.response.schema.json",
+  "title": "health response",
+  "type": "object",
+  "required": [
+    "status"
+  ],
+  "properties": {
+    "status": {
+      "const": "ok"
+    }
+  }
+}

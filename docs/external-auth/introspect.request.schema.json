@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/spacepacket1/e3d-pilot/blob/main/docs/external-auth/introspect.request.schema.json",
+  "title": "introspect request",
+  "type": "object",
+  "required": [
+    "token"
+  ],
+  "properties": {
+    "token": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^[!-~]+$"
+    }
+  }
+}

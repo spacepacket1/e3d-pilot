@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/spacepacket1/e3d-pilot/blob/main/docs/external-auth/introspect.response.schema.json",
+  "title": "introspect response",
+  "oneOf": [
+    {
+      "type": "object",
+      "required": [
+        "active",
+        "principal"
+      ],
+      "properties": {
+        "active": {
+          "const": true
+        },
+        "principal": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.:-]{1,80}$"
+        },
+        "tools": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_.-]{1,64}$"
+          }
+        },
+        "limits": {
+          "type": "object",
+          "properties": {
+            "rate_per_min": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100000
+            },
+            "max_inflight": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1000
+            }
+          }
+        },
+        "expires_at": {
+          "type": "string",
+          "format": "date-time",
+          "maxLength": 64
+        }
+      }
+    },
+    {
+      "type": "object",
+      "required": [
+        "active"
+      ],
+      "properties": {
+        "active": {
+          "const": false
+        }
+      }
+    }
+  ]
+}

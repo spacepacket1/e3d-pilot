@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/spacepacket1/e3d-pilot/blob/main/docs/external-auth/reserve.response.schema.json",
+  "title": "reserve response",
+  "oneOf": [
+    {
+      "type": "object",
+      "required": [
+        "ok",
+        "reservation_id",
+        "expires_at"
+      ],
+      "properties": {
+        "ok": {
+          "const": true
+        },
+        "reservation_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.:-]{1,128}$"
+        },
+        "expires_at": {
+          "type": "string",
+          "format": "date-time",
+          "maxLength": 64
+        }
+      }
+    },
+    {
+      "type": "object",
+      "required": [
+        "ok",
+        "code"
+      ],
+      "properties": {
+        "ok": {
+          "const": false
+        },
+        "code": {
+          "enum": [
+            "insufficient_credits",
+            "suspended",
+            "limit_reached",
+            "unknown_principal",
+            "conflict"
+          ]
+        },
+        "message": {
+          "type": "string",
+          "maxLength": 500
+        }
+      }
+    }
+  ]
+}

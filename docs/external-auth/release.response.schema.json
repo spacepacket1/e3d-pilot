@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/spacepacket1/e3d-pilot/blob/main/docs/external-auth/release.response.schema.json",
+  "title": "release response",
+  "type": "object",
+  "required": [
+    "ok"
+  ],
+  "properties": {
+    "ok": {
+      "const": true
+    }
+  }
+}

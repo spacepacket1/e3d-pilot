@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/spacepacket1/e3d-pilot/blob/main/docs/external-auth/settle.request.schema.json",
+  "title": "settle request",
+  "type": "object",
+  "required": [
+    "reservation_id",
+    "actual",
+    "models",
+    "outcome",
+    "duration_ms"
+  ],
+  "properties": {
+    "reservation_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_.:-]{1,128}$"
+    },
+    "actual": {
+      "type": "object",
+      "required": [
+        "calls",
+        "est_input_tokens",
+        "est_output_tokens"
+      ],
+      "properties": {
+        "calls": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10000
+        },
+        "est_input_tokens": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000000000
+        },
+        "est_output_tokens": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000000000
+        }
+      }
+    },
+    "models": {
+      "type": "array",
+      "maxItems": 32,
+      "items": {
+        "type": "object",
+        "required": [
+          "provider",
+          "model",
+          "calls"
+        ],
+        "properties": {
+          "provider": {
+            "type": "string",
+            "pattern": "^[!-~]{1,64}$"
+          },
+          "model": {
+            "type": "string",
+            "pattern": "^[!-~]{1,128}$"
+          },
+          "calls": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 10000
+          }
+        }
+      }
+    },
+    "outcome": {
+      "enum": [
+        "ok",
+        "error",
+        "timeout",
+        "orphaned"
+      ]
+    },
+    "duration_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 86400000
+    }
+  }
+}

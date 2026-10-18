@@ -85,6 +85,7 @@ assert_contains "$(cat "$TMP/A.err")" '"timeoutMs":120000'   # hosted default ke
 HTTP_PATH=/healthz; r="$(http A)"; assert_eq "$(status "$r")" "200" "healthz needs no auth"; assert_contains "$(body "$r")" '"status":"ok"'
 assert_not_contains "$(body "$r")" "$ALICE"
 HTTP_PATH=/nope; r="$(http A)"; assert_eq "$(status "$r")" "404"
+HTTP_PATH=/readyz; r="$(http A)"; assert_eq "$(status "$r")" "404" "readyz exists only with the external auth hook"
 HTTP_PATH=/mcp
 
 # auth matrix
