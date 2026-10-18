@@ -2349,9 +2349,23 @@ build_negotiate_prompt() {
     printf 'status: approved\n'
     printf 'reason: <one-line reason>\n\n'
     printf 'Use "status: revise" in place of "status: approved" if the draft needs changes.\n'
-    printf 'When status is revise, put a fenced ```spec block directly after the reason line,\n'
-    printf 'containing the full replacement spec (not a diff or a summary of changes), then\n'
-    printf 'nothing else.\n\n'
+    printf 'When status is revise, first add a short objections section so a reader who has not\n'
+    printf 'studied the draft can follow what you found, directly after the reason line:\n\n'
+    printf -- '---OBJECTIONS---\n'
+    printf -- '- severity: blocker | should-fix | nit\n'
+    printf '  what_goes_wrong: <one or two plain sentences: what would break or go wrong, for whom, and when>\n'
+    printf '  where: <the section or phase of the draft this is about>\n'
+    printf '  fix: <what you changed in the replacement spec to address it>\n\n'
+    printf 'Write what_goes_wrong the way you would explain it to a colleague: name the concrete\n'
+    printf 'situation ("a visitor with JavaScript off sees an empty report") rather than the abstract\n'
+    printf 'rule ("violates graceful degradation"), and avoid jargon. Severity: blocker = building\n'
+    printf 'this as written would fail or be wrong; should-fix = a real gap worth fixing now; nit =\n'
+    printf 'wording or polish. One bullet per distinct problem, at most five, most severe first.\n'
+    printf 'An approved draft needs no objections section. The line "---OBJECTIONS---" must appear\n'
+    printf 'verbatim on its own line.\n\n'
+    printf 'Then put a fenced ```spec block directly after the objections (or directly after the\n'
+    printf 'reason line if you have none), containing the full replacement spec (not a diff or a\n'
+    printf 'summary of changes), then nothing else.\n\n'
     printf 'The line "---STATUS---" must appear verbatim and on its own line; it is a fixed\n'
     printf 'parser marker, not a section title to be reworded or restyled.\n\n'
     printf 'Current draft:\n\n'
@@ -2381,7 +2395,7 @@ negotiate_stage() {
   local repo="$1" run_id="$2" run_dir config_file spec_draft_file negotiation_log_file max_rounds
   local provider provider_script availability_output provider_status round reviewer_index
   local round_log_file round_prompt_file round_response_file provider_output status reason replacement_spec
-  local parse_rc attempt attempt_suffix parse_failed provider_stderr_file
+  local parse_rc attempt attempt_suffix parse_failed provider_stderr_file objections_json="[]"
   local -a providers statuses
 
   ensure_git_repo "$repo"
@@ -2492,6 +2506,11 @@ negotiate_stage() {
           [[ $parse_rc -eq 0 ]] || parse_failed=1
         fi
 
+        objections_json="[]"
+        if [[ $parse_failed -eq 0 && "$status" == "revise" ]]; then
+          objections_json="$("$REPO_ROOT/lib/negotiate/parse-status" "$round_response_file" objections 2>/dev/null)" || objections_json="[]"
+        fi
+
         [[ $parse_failed -eq 0 ]] && break
         if [[ $attempt -eq 2 ]]; then
           die "negotiate reviewer \"$provider\" (round $round) response failed to parse as a status block after a retry; see $round_response_file"
@@ -2502,13 +2521,18 @@ negotiate_stage() {
       if [[ "$status" == "revise" ]]; then
         printf '%s\n' "$replacement_spec" > "$spec_draft_file"
       fi
-      negotiate_record_objection "$run_dir" "$run_id" "$objections_invocation" "$round" "$reviewer_index" "$provider" "$status" "$reason" "$turn_before_file" "$spec_draft_file"
+      negotiate_record_objection "$run_dir" "$run_id" "$objections_invocation" "$round" "$reviewer_index" "$provider" "$status" "$reason" "$turn_before_file" "$spec_draft_file" "$objections_json"
       statuses+=("$status")
 
       {
         printf '### Reviewer %s: %s\n\n' "$reviewer_index" "$provider"
         printf 'Status: %s\n\n' "$status"
         printf 'Reason: %s\n\n' "$reason"
+        if [[ "$status" == "revise" && "$objections_json" != "[]" ]]; then
+          printf 'Objections:\n\n'
+          jq -r 'to_entries[] | "\(.key + 1). [\(.value.severity)] \(.value.where): \(.value.what_goes_wrong)" + (if .value.fix != "" then " Fix: \(.value.fix)" else "" end)' <<<"$objections_json"
+          printf '\n'
+        fi
         if [[ "$status" == "revise" ]]; then
           printf 'Replacement Spec:\n\n```spec\n%s\n```\n\n' "$replacement_spec"
         fi

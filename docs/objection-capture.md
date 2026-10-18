@@ -36,4 +36,31 @@ Rebuilds the same records from existing `negotiation-log.md` files (deterministi
 `backfilled: true` and `survives_in_final` (the share of the lines a turn added that remain in the final spec). Runs
 that already have a file are skipped unless `--force`.
 
+## 4. Plain-language objections
+
+A blind review of 40 past objections (2026-10-18) found that a reader who knows the system still could not judge many of
+them: the reasons were abstract. The negotiate prompt now asks a revising reviewer to add, after the `reason:` line:
+
+```
+---OBJECTIONS---
+- severity: blocker | should-fix | nit
+  what_goes_wrong: <one or two plain sentences: what would break, for whom, and when>
+  where: <the section or phase of the draft>
+  fix: <what the replacement spec changed>
+```
+
+Severity: `blocker` = building it as written would fail or be wrong; `should-fix` = a real gap worth fixing now; `nit` =
+wording or polish. The reviewer is asked to name the concrete situation, not the abstract rule, with at most five
+bullets, most severe first.
+
+- `lib/negotiate/parse-status <response> objections` prints the list as a JSON array. It is lenient: an absent,
+  empty or unreadable section gives `[]` and never fails the parse, so older responses and small models keep working.
+  Unknown severities become `unrated`.
+- Each turn's record in `negotiation-objections.jsonl` gains `objections` and `plain_language`.
+- The negotiation log shows the list under the reason, for people.
+
+Checked live on 2026-10-18 against Claude and Codex with a small spec with deliberate gaps: both followed the format
+and wrote concrete objections ("if one send fails, the job restarts the whole run, so subscribers who already got the
+digest get it again").
+
 None of this labels an objection as valid. That needs a human or independently validated adjudication.

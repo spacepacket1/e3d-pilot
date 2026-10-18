@@ -4,15 +4,17 @@
 # <run_dir>/negotiation-objections.jsonl:
 #   run_id, invocation (UTC start of this negotiate invocation), round, reviewer_index, provider, status, reason,
 #   spec_before_sha / spec_after_sha (the draft the reviewer saw / the draft after applying its replacement),
-#   changed, lines_added, lines_removed.
+#   changed, lines_added, lines_removed, objections (the reviewer's plain-language list: severity, what_goes_wrong,
+#   where, fix; [] when it gave none) and plain_language (true when it gave at least one).
 # A "revise" turn applies its replacement spec immediately, so later reviewers in the round see it: there is no
 # separate adopted/rejected choice to record. Whether a change survives to spec-final.md is derived offline from
 # negotiation-log.md, which keeps every replacement spec. Recording must never fail the stage.
 
 negotiate_record_objection() {
   local run_dir="$1" run_id="$2" invocation="$3" round="$4" index="$5" provider="$6" status="$7" reason="$8"
-  local before_file="$9" after_file="${10}"
+  local before_file="$9" after_file="${10}" objections_json="${11:-[]}"
   local before_sha after_sha added removed
+  jq -e 'type == "array"' <<<"$objections_json" >/dev/null 2>&1 || objections_json="[]"
   before_sha="$(ideas_sha256 < "$before_file" 2>/dev/null)" || return 0
   after_sha="$(ideas_sha256 < "$after_file" 2>/dev/null)" || return 0
   added="$(diff "$before_file" "$after_file" 2>/dev/null | grep -c '^>' || true)"
@@ -21,10 +23,11 @@ negotiate_record_objection() {
     --arg run_id "$run_id" --arg invocation "$invocation" --argjson round "$round" --argjson index "$index" \
     --arg provider "$provider" --arg status "$status" --arg reason "${reason:0:1000}" \
     --arg before "$before_sha" --arg after "$after_sha" \
-    --argjson added "${added:-0}" --argjson removed "${removed:-0}" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    --argjson added "${added:-0}" --argjson removed "${removed:-0}" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --argjson objections "$objections_json" \
     '{schema_version: "1", run_id: $run_id, invocation: $invocation, round: $round, reviewer_index: $index,
       provider: $provider, status: $status, reason: $reason, spec_before_sha: $before, spec_after_sha: $after,
-      changed: ($before != $after), lines_added: $added, lines_removed: $removed, recorded_at: $at}' \
+      changed: ($before != $after), lines_added: $added, lines_removed: $removed, recorded_at: $at,
+      objections: $objections, plain_language: (($objections | length) > 0)}' \
     >> "$run_dir/negotiation-objections.jsonl" 2>/dev/null || true
 }
 
