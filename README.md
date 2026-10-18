@@ -448,6 +448,8 @@ The fixed `provenance query` subcommands summarize idea-to-outcome `lineage`, re
 
 A separate, standalone script — `bin/e3d-provenance-agreement --repo /path/to/repository` (same not-wired-into-the-subcommand-tree pattern as `e3d-debate`) — aggregates provider agreement across that repo's historical negotiate and review rounds under `.e3d-pilot/runs/`, reusing the existing `lib/negotiate/parse-status` and `lib/review/parse-verdict` parsers as subprocesses rather than re-deriving their contract. It prints JSON on stdout: each provider's negotiate approval rate, each provider-pair's agreement rate, and the specific disagreements (run ID, round, both providers' status and stated reason). Response files that predate the current format or fail to parse are skipped and counted separately, never counted as either agreement or disagreement.
 
+Reviewer objections, defects that escaped review, and a backfill for history are described in [`docs/objection-capture.md`](docs/objection-capture.md).
+
 Implement approved ideas:
 
 ```bash

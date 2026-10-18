@@ -1,0 +1,149 @@
+#!/usr/bin/env node
+'use strict';
+
+// Rebuilds <run>/negotiation-objections.jsonl for HISTORICAL negotiate runs from their negotiation-log.md, with the same
+// record shape the negotiate stage now writes (lib/negotiate/objections.sh), plus "backfilled": true and one derived
+// field only knowable offline: survives_in_final, the share of the lines a turn added that are still in the final spec.
+//
+//   e3d-objections-backfill --repo <path> [--dry-run] [--force]
+//
+// Deterministic: no model, no network, never edits an existing log. Runs that already have an objections file are
+// skipped unless --force. Reviewer turns apply their replacement spec immediately, so reviewer k of a round saw the
+// previous revise turn's replacement (not only the round's opening draft); this tool replays that order.
+
+import fs from 'fs';
+import path from 'path';
+import crypto from 'crypto';
+import os from 'os';
+import { spawnSync } from 'child_process';
+
+const args = process.argv.slice(2);
+const opt = (name) => {
+  const i = args.indexOf(name);
+  if (i < 0) return undefined;
+  const v = args[i + 1];
+  if (v === undefined || v.startsWith('--')) { console.error(`${name} requires a value`); process.exit(2); }
+  return v;
+};
+const repo = path.resolve(opt('--repo') ?? process.cwd());
+const dryRun = args.includes('--dry-run');
+const force = args.includes('--force');
+const RUNS = path.join(repo, '.e3d-pilot', 'runs');
+
+const sha = (s) => crypto.createHash('sha256').update(s).digest('hex');
+const read = (p) => { try { return fs.readFileSync(p, 'utf8'); } catch { return null; } };
+
+// ideas_sha256 hashes the file bytes (draft plus a trailing newline); match that so backfilled and live shas agree.
+const draftSha = (text) => sha(`${text.replace(/\n+$/, '')}\n`);
+
+function counter(lines) {
+  const m = new Map();
+  for (const l of lines) m.set(l, (m.get(l) ?? 0) + 1);
+  return m;
+}
+
+// diff(1), exactly as the live capture counts: lines starting "<" are removed, ">" are added.
+const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'objbackfill-'));
+process.on('exit', () => { try { fs.rmSync(scratch, { recursive: true, force: true }); } catch { /* best effort */ } });
+function diffLines(before, after) {
+  if (before === after) return { added: [], removed: 0 };
+  fs.writeFileSync(path.join(scratch, 'a'), `${before}\n`);
+  fs.writeFileSync(path.join(scratch, 'b'), `${after}\n`);
+  const r = spawnSync('diff', [path.join(scratch, 'a'), path.join(scratch, 'b')], { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 });
+  const lines = (r.stdout ?? '').split('\n');
+  return { added: lines.filter((l) => l.startsWith('> ')).map((l) => l.slice(2)), removed: lines.filter((l) => l.startsWith('< ')).length };
+}
+
+function parseLog(text) {
+  const lines = text.split('\n');
+  const roundAt = [];
+  const nextNonBlank = (i) => { for (let k = i + 1; k < lines.length; k += 1) if (lines[k].trim() !== '') return lines[k]; return ''; };
+  const prevNonBlank = (arr, i) => { for (let k = i - 1; k >= 0; k -= 1) if (arr[k].trim() !== '') return arr[k]; return ''; };
+  // A spec embedded in the log can contain "## Round 2" or "### Reviewer 1: x"; require the pilot's own follow-on line.
+  lines.forEach((l, i) => { const m = /^## Round (\d+)\s*$/.exec(l); if (m && /^### Draft Before Round\s*$/.test(nextNonBlank(i))) roundAt.push({ n: Number(m[1]), i }); });
+  let invocation = 0;
+  return roundAt.map((r, k) => {
+    if (r.n === 1) invocation += 1;
+    const seg = lines.slice(r.i + 1, k + 1 < roundAt.length ? roundAt[k + 1].i : lines.length);
+    const draftAt = seg.findIndex((l) => /^### Draft Before Round\s*$/.test(l));
+    const heads = [];
+    const segNext = (i) => { for (let k = i + 1; k < seg.length; k += 1) if (seg[k].trim() !== '') return seg[k]; return ''; };
+    // Real reviewer headings follow a closing code fence (the draft's, or the previous reviewer's raw response) and are
+    // followed by "Status:". Best effort against specs that quote such headings; not a defence against crafted logs.
+    seg.forEach((l, i) => { const m = /^### Reviewer (\d+): (\S+)\s*$/.exec(l); if (m && /^status:\s*\w+/i.test(segNext(i)) && /^```\s*$/.test(prevNonBlank(seg, i))) heads.push({ index: Number(m[1]), provider: m[2], i }); });
+    if (draftAt < 0 || heads.length === 0) return { n: r.n, invocation, draft: null, reviewers: [] };
+    const draft = seg.slice(draftAt + 1, heads[0].i).join('\n').replace(/^\s*```[a-z]*\n/, '').replace(/\n```\s*$/, '');
+    const reviewers = heads.map((h, j) => {
+      const block = seg.slice(h.i + 1, j + 1 < heads.length ? heads[j + 1].i : seg.length).join('\n');
+      const head = block.split('\n').slice(0, 10).join('\n');
+      const status = (/^status:\s*(\w+)/mi.exec(head) ?? /^status:\s*(\w+)/mi.exec(block))?.[1]?.toLowerCase() ?? null;
+      const reason = (/^reason:\s*(.+)$/mi.exec(head) ?? /^reason:\s*(.+)$/mi.exec(block))?.[1] ?? '';
+      const rep = /Replacement Spec:\s*\n+```[a-z]*\n([\s\S]*?)\n```\s*\n+Raw Response:/.exec(block);
+      return { index: h.index, provider: h.provider, status, reason, replacement: rep ? rep[1] : null };
+    });
+    return { n: r.n, invocation, draft, reviewers };
+  });
+}
+
+function recordsFor(runDir) {
+  const logPath = path.join(runDir, 'negotiation-log.md');
+  const log = read(logPath);
+  if (log === null) return null;
+  const recordedAt = fs.statSync(logPath).mtime.toISOString().replace(/\.\d+Z$/, 'Z'); // deterministic across re-runs
+  const final = read(path.join(runDir, 'spec-final.md')) ?? read(path.join(runDir, 'spec-draft.md'));
+  const finalLines = final ? counter(final.split('\n')) : null;
+  const runId = path.basename(runDir);
+  const out = [];
+  let partial = false;
+  for (const round of parseLog(log)) {
+    if (round.draft === null) continue;
+    if (round.reviewers.length === 0) partial = true;
+    let current = round.draft;
+    for (const rv of round.reviewers) {
+      if (rv.status === null) partial = true;
+      const before = current;
+      const revised = rv.status === 'revise' && rv.replacement !== null;
+      const after = revised ? rv.replacement : before;
+      const { added, removed } = diffLines(before, after);
+      // survives_in_final: share of the lines this turn added that appear in the final spec. Membership only, not
+      // lineage: if a later turn removes a line and another re-adds the same text, this turn is still credited.
+      let survives = null;
+      if (revised && finalLines && added.length > 0) {
+        const f = new Map(finalLines);
+        let kept = 0;
+        for (const l of added) if ((f.get(l) ?? 0) > 0) { f.set(l, f.get(l) - 1); kept += 1; }
+        survives = Math.round((kept / added.length) * 1000) / 1000;
+      }
+      out.push({
+        schema_version: '1', run_id: runId, invocation: `backfill-log-${round.invocation}`, round: round.n, reviewer_index: rv.index,
+        provider: rv.provider, status: rv.status ?? 'unknown', reason: rv.reason.slice(0, 1000),
+        spec_before_sha: draftSha(before), spec_after_sha: draftSha(after), changed: before !== after,
+        lines_added: added.length, lines_removed: removed, recorded_at: recordedAt,
+        backfilled: true, survives_in_final: survives,
+      });
+      current = after;
+    }
+  }
+  return { records: out, partial };
+}
+
+if (!fs.existsSync(RUNS)) { console.error(`no runs directory: ${RUNS}`); process.exit(1); }
+const summary = { runsSeen: 0, written: 0, skippedExisting: 0, unparseable: 0, partial: 0, records: 0 };
+for (const run of fs.readdirSync(RUNS).sort()) {
+  const runDir = path.join(RUNS, run);
+  if (!fs.existsSync(path.join(runDir, 'negotiation-log.md'))) continue;
+  summary.runsSeen += 1;
+  const target = path.join(runDir, 'negotiation-objections.jsonl');
+  if (fs.existsSync(target) && !force) { summary.skippedExisting += 1; continue; }
+  const result = recordsFor(runDir);
+  if (!result || result.records.length === 0) { summary.unparseable += 1; continue; }
+  if (result.partial) summary.partial += 1;
+  summary.records += result.records.length;
+  summary.written += 1;
+  if (!dryRun) {
+    const tmp = `${target}.tmp-${process.pid}`; // same directory, then rename: an interrupted run never truncates an existing file
+    fs.writeFileSync(tmp, `${result.records.map((r) => JSON.stringify(r)).join('\n')}\n`);
+    fs.renameSync(tmp, target);
+  }
+}
+console.log(`${dryRun ? 'dry run: ' : ''}${JSON.stringify(summary)}`);

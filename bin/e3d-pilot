@@ -29,6 +29,8 @@ source "$REPO_ROOT/lib/ideas/ledger.sh"
 source "$REPO_ROOT/lib/ideas/materialize.sh"
 # shellcheck source=lib/ideas/jev_dedup.sh
 source "$REPO_ROOT/lib/ideas/jev_dedup.sh"
+# shellcheck source=lib/negotiate/objections.sh
+source "$REPO_ROOT/lib/negotiate/objections.sh"
 # shellcheck source=lib/ideas/brain_recall.sh
 source "$REPO_ROOT/lib/ideas/brain_recall.sh"
 # shellcheck source=lib/ideas/project_tracking.sh
@@ -59,6 +61,7 @@ Usage:
   e3d-pilot ideas list --repo <path> [--status <status>] [--pending-outcome] [--json]
   e3d-pilot ideas show --repo <path> <idea-id> [--json]
   e3d-pilot ideas note --repo <path> [--decision] [--evidence <path-or-url>] <idea-id> <text> [--actor <actor>]
+  e3d-pilot ideas defect --repo <path> --found-by <live-run|ci|human|review|production|other> [--stage-missed <stage>] [--severity <level>] [--evidence <path-or-url>] <idea-id> <text>
   e3d-pilot ideas context --repo <path> <idea-id> [--json]
   e3d-pilot ideas handoff --repo <path> <idea-id>
   e3d-pilot ideas approve --repo <path> <idea-id> [--actor <actor>] [--note <text>]
@@ -2091,6 +2094,7 @@ prepare_publish_audit() {
     source="$run_dir/$name"; [[ -f "$source" ]] || die "publish requires audit artifact: $source"
     cp "$source" "$dest/$name"
   done
+  if [[ -f "$run_dir/negotiation-objections.jsonl" ]]; then cp "$run_dir/negotiation-objections.jsonl" "$dest/negotiation-objections.jsonl" || true; fi
   manifest_source=""
   state_subdir="e3d-code-state"
   [[ -d "$run_dir/$state_subdir" ]] || state_subdir="s2c-state"  # runs created before the rename
@@ -2121,6 +2125,9 @@ build_publish_summary() {
       [[ -n "$rel" ]] || continue
       printf -- '- [%s](%s)\n' "$rel" "$rel"
     done < <(audit_artifact_relative_paths "$run_id" "$manifest_name")
+    if [[ -f "$run_dir/negotiation-objections.jsonl" ]]; then
+      printf -- '- [%s](%s)\n' ".e3d-pilot/runs/$run_id/negotiation-objections.jsonl" ".e3d-pilot/runs/$run_id/negotiation-objections.jsonl"
+    fi
   } > "$summary"
 }
 
@@ -2163,6 +2170,9 @@ publish_stage() {
     [[ -n "$rel" ]] || continue
     git -C "$worktree" add -f -- "$rel"
   done < <(audit_artifact_relative_paths "$run_id" "$manifest_name")
+  if [[ -f "$worktree/.e3d-pilot/runs/$run_id/negotiation-objections.jsonl" ]]; then
+    git -C "$worktree" add -f -- ".e3d-pilot/runs/$run_id/negotiation-objections.jsonl"
+  fi
   if [[ -n "$(git -C "$worktree" status --short)" ]]; then
     git -C "$worktree" commit -q -m "e3d-pilot: apply run $run_id"
   fi
@@ -2371,6 +2381,9 @@ negotiate_stage() {
   negotiation_log_file="$run_dir/negotiation-log.md"
   init_negotiation_log "$negotiation_log_file" "$run_id"
   max_rounds="${NEGOTIATE_MAX_ROUNDS:-2}"
+  local objections_invocation turn_before_file
+  objections_invocation="$(date -u +%Y-%m-%dT%H:%M:%SZ)-$$"
+  turn_before_file="$run_dir/.negotiation-turn-before.$$.md"
 
   providers=()
   while IFS= read -r __mapfile_line; do providers+=("$__mapfile_line"); done < <(jq -r '.providers.negotiate[]' "$config_file")
@@ -2405,6 +2418,7 @@ negotiate_stage() {
     for provider in "${providers[@]}"; do
       reviewer_index=$((reviewer_index + 1))
       provider_script="$REPO_ROOT/lib/providers/$provider"
+      cp "$spec_draft_file" "$turn_before_file" 2>/dev/null || true
 
       for attempt in 1 2; do
         attempt_suffix=""
@@ -2469,6 +2483,7 @@ negotiate_stage() {
       if [[ "$status" == "revise" ]]; then
         printf '%s\n' "$replacement_spec" > "$spec_draft_file"
       fi
+      negotiate_record_objection "$run_dir" "$run_id" "$objections_invocation" "$round" "$reviewer_index" "$provider" "$status" "$reason" "$turn_before_file" "$spec_draft_file"
       statuses+=("$status")
 
       {
@@ -2494,6 +2509,7 @@ negotiate_stage() {
       final_spec_sha="$(ideas_sha256 < "$spec_draft_file")"
       [[ "$final_spec_sha" != "$initial_spec_sha" ]] && spec_changed=true || spec_changed=false
       record_pipeline_signal "$repo" "$run_id" "pipeline_signal: negotiate_dissent stage=negotiate converged=true rounds_run=$round max_rounds=$max_rounds spec_changed=$spec_changed run_id=$run_id"
+      negotiate_objections_signal "$repo" "$run_id" "$run_dir" "$objections_invocation"
       return 0
     fi
 
@@ -2510,6 +2526,7 @@ negotiate_stage() {
   } >> "$negotiation_log_file"
   printf 'negotiate: needs human after %s rounds; spec-draft.md and negotiation-log.md left in place\n' "$max_rounds"
   record_pipeline_signal "$repo" "$run_id" "pipeline_signal: negotiate_dissent stage=negotiate converged=false rounds_run=$max_rounds max_rounds=$max_rounds spec_changed=true run_id=$run_id"
+  negotiate_objections_signal "$repo" "$run_id" "$run_dir" "$objections_invocation"
   return "$NEGOTIATE_EXIT_NEEDS_HUMAN"
 }
 
@@ -4796,6 +4813,35 @@ cmd_ideas() {
       repo="$(repo_abs_path "$repo")"
       actor="$(ideas_resolve_actor "$repo" "$actor")"
       ideas_do_note repo "$repo" "${positional[0]}" "${positional[1]}" "$note_kind" "$actor" "$evidence_ref"
+      ;;
+    defect)
+      local repo="" actor="" found_by="" stage_missed="unknown" severity="unknown" evidence_ref="" positional=()
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --repo) repo="${2:-}"; shift 2 ;;
+          --actor) actor="${2:-}"; shift 2 ;;
+          --found-by) found_by="${2:-}"; shift 2 ;;
+          --stage-missed) stage_missed="${2:-}"; shift 2 ;;
+          --severity) severity="${2:-}"; shift 2 ;;
+          --evidence)
+            [[ $# -ge 2 && -n "$2" ]] || die "ideas defect --evidence requires a non-empty path or URL"
+            evidence_ref="$2"
+            shift 2
+            ;;
+          -h|--help) usage; return 0 ;;
+          --*) die "unknown ideas defect argument: $1" ;;
+          *) positional+=("$1"); shift ;;
+        esac
+      done
+      [[ -n "$repo" ]] || die "ideas defect requires --repo"
+      [[ ${#positional[@]} -eq 2 ]] || die "usage: e3d-pilot ideas defect --repo <path> --found-by <live-run|ci|human|review|production|other> [--stage-missed <draft|negotiate|execute|review|publish|unknown>] [--severity <critical|high|medium|low|unknown>] [--evidence <path-or-url>] <idea-id> <text>"
+      case "$found_by" in live-run|ci|human|review|production|other) ;; *) die "ideas defect --found-by must be one of: live-run, ci, human, review, production, other" ;; esac
+      case "$stage_missed" in draft|negotiate|execute|review|publish|unknown) ;; *) die "ideas defect --stage-missed must be one of: draft, negotiate, execute, review, publish, unknown" ;; esac
+      case "$severity" in critical|high|medium|low|unknown) ;; *) die "ideas defect --severity must be one of: critical, high, medium, low, unknown" ;; esac
+      repo="$(repo_abs_path "$repo")"
+      actor="$(ideas_resolve_actor "$repo" "$actor")"
+      # A defect that got past review is the most valuable training signal: record it as a structured finding.
+      ideas_do_note repo "$repo" "${positional[0]}" "post_review_defect: found_by=$found_by stage_missed=$stage_missed severity=$severity :: ${positional[1]}" finding "$actor" "$evidence_ref"
       ;;
     context)
       local repo="" json_flag="0" positional=()
