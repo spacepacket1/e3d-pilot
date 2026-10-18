@@ -260,7 +260,7 @@ node examples/external-auth-conformance.js <that URL> <token>          # run aga
 | `E3D_MCP_TRUST_PROXY_HOPS` | 0 | Number of trusted reverse proxies in front of the server. With N, the failed-key limiter uses the Nth entry from the right of `X-Forwarded-For` as the client address instead of the proxy's address; 0 ignores the header. |
 | `E3D_MCP_OUTBOX_MAX_DEAD` | 1 | Dead-lettered settlements tolerated before new billed work is refused; retry or resolve them with `--outbox-status` and `--outbox-retry-dead`. |
 | `E3D_MCP_OUTBOX_CLAIM_SEC` | 300 | A delivery claim older than this belongs to a crashed process and is retried. |
-| `E3D_MCP_ORPHAN_POLICY` | `charge` | What a debate that was running when the server crashed costs on restart: `charge` (the reserved units, outcome `orphaned`) or `release`. |
+| `E3D_MCP_ORPHAN_POLICY` | `charge` | What a debate that was running when the server crashed costs on restart: `charge` (the reserved units, outcome `orphaned`) or `release`. A crash before the debate started (reservation made, models not yet called) always just releases the hold. |
 
 - **Fails closed.** If the service cannot be reached or answers badly, the request is refused (HTTP 503 `retry-after: 5`, or 401 for an inactive key) and no model runs. Settlements that cannot be delivered are written to a durable outbox in the state directory and retried; nothing is dropped.
 - **Local caps stay a second ceiling.** `E3D_MCP_DAILY_CALLS`, `E3D_MCP_DAILY_EST_TOKENS` and the rate limits still apply per principal, so a billing fault cannot make spend unbounded.

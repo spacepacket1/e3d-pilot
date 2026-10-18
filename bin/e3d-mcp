@@ -189,6 +189,7 @@ async function toolDebate(args, progress, ctx) {
     const usesSampling = providers.some(isSampling) || isSampling(synthesizer);
     const samplingEnv = usesSampling ? await sampling.env(ctx.session, { tag, maxTokens: Math.min(Math.max(maxWords * 3, 300), 4000) }) : {};
     const timeoutMs = usesSampling ? Math.min(LIMITS.timeoutMs, LIMITS.samplingTimeoutMs) : LIMITS.timeoutMs;
+    if (!(await metering.start(handle))) return text('error: billing: temporarily unavailable', true);
     ran = true;
     const r = await run(debateBin, cliArgs, {
       timeoutMs,

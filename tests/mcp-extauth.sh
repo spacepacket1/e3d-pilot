@@ -116,12 +116,12 @@ const cost = { calls: 3, tokens: 3000 };
 const spent = { calls: 2, inTokens: 400, outTokens: 100 };
 function fakeExternal({ reserve } = {}) {
   const calls = { reserve: [], settle: [], release: [] };
-  let settleOk = true;
+  let settleOk = true; let releaseOk = true;
   return {
-    calls, setSettleOk: (v) => { settleOk = v; },
+    calls, setSettleOk: (v) => { settleOk = v; }, setReleaseOk: (v) => { releaseOk = v; },
     async reserve(a) { calls.reserve.push(a); return reserve ? reserve(a, calls.reserve.length) : { ok: true, reservation_id: `res_${calls.reserve.length}`, expires_at: new Date().toISOString() }; },
     async settleDurable(p) { calls.settle.push(p); return { ok: settleOk }; },
-    async releaseDurable(p) { calls.release.push(p); return { ok: true }; },
+    async releaseDurable(p) { calls.release.push(p); return { ok: releaseOk }; },
   };
 }
 const intents = (d) => (existsSync(`${d}/metering-intents`) ? readdirSync(`${d}/metering-intents`).filter((f) => f.endsWith('.json')) : []);
@@ -157,7 +157,7 @@ const intents = (d) => (existsSync(`${d}/metering-intents`) ? readdirSync(`${d}/
   const [f] = intents(d); assert.equal(f, `${b.handle.request_id}.json`);
   assert.equal(statSync(`${d}/metering-intents/${f}`).mode & 0o777, 0o600); assert.equal(statSync(`${d}/metering-intents`).mode & 0o777, 0o700);
   const it = JSON.parse(readFileSync(`${d}/metering-intents/${f}`, 'utf8'));
-  assert.deepEqual(Object.keys(it).sort(), ['pid', 'principal', 'request_id', 'reservation_id', 'started_at', 'tool', 'units']);
+  assert.deepEqual(Object.keys(it).sort(), ['phase', 'pid', 'principal', 'request_id', 'reservation_id', 'started_at', 'tool', 'units']);
   assert.deepEqual(it.units, { calls: 3, est_tokens: 3000 }); assert.equal(it.principal, 'acct:one');
   const c = await m.commit(b.handle, spent, { outcome: 'timeout', duration_ms: 1234, models: [{ provider: 'claude', model: 'unspecified', calls: 2 }] });
   assert.deepEqual(c.billing, { principal: 'acct:one', reservation_id: 'res_1' });
@@ -223,7 +223,7 @@ const intents = (d) => (existsSync(`${d}/metering-intents`) ? readdirSync(`${d}/
 for (const policy of ['charge', 'release']) {
   const d = `${dir}/orphan-${policy}`; const u = createUsage({ env: { E3D_MCP_STATE_DIR: d } });
   const ext = fakeExternal();
-  await createMetering({ localUsage: u, external: ext, dir: d }).begin('acct', cost); // then "crash"
+  { const mm = createMetering({ localUsage: u, external: ext, dir: d }); const bb = await mm.begin('acct', cost); await mm.start(bb.handle); } // the debate started, then "crash"
   const rec = JSON.parse(readFileSync(`${d}/metering-intents/${intents(d)[0]}`, 'utf8'));
   rec.pid = 999999999; // a process that is gone
   (await import('node:fs')).writeFileSync(`${d}/metering-intents/${intents(d)[0]}`, JSON.stringify(rec));
@@ -250,10 +250,33 @@ for (const crashAfterLocal of [false, true]) {
   assert.equal(ext.calls.settle.length, 0, 'unrun work is never charged'); assert.equal(ext.calls.release.length, 1);
 }
 ok('crash boundaries of abort: released once, never charged');
+// a crash after begin() but before the debate started: nothing ran, so even the charge policy only gives the hold back
+{
+  const d = `${dir}/prepared-crash`; const u = createUsage({ env: { E3D_MCP_STATE_DIR: d } });
+  const ext = fakeExternal(); await createMetering({ localUsage: u, external: ext, dir: d }).begin('acct', cost); // "crash" before start()
+  const f = `${d}/metering-intents/${intents(d)[0]}`; const rec = JSON.parse(readFileSync(f, 'utf8')); assert.equal(rec.phase, 'prepared');
+  rec.pid = 999999999; (await import('node:fs')).writeFileSync(f, JSON.stringify(rec));
+  await createMetering({ localUsage: u, external: ext, dir: d, env: { E3D_MCP_ORPHAN_POLICY: 'charge' } }).recover();
+  assert.equal(ext.calls.settle.length, 0, 'work that never started is never charged'); assert.equal(ext.calls.release.length, 1);
+  assert.equal((await u.snapshot('acct')).calls_today, 0); assert.deepEqual(intents(d), []);
+  ok('a prepared intent (debate never started) is released, even under the charge policy');
+}
+// the local-cap refusal keeps its intent until the external release is confirmed
+{
+  const d = `${dir}/cap-release`; const u = createUsage({ env: { E3D_MCP_STATE_DIR: d, E3D_MCP_DAILY_CALLS: '1' } });
+  const ext = fakeExternal(); ext.setReleaseOk(false);
+  const m = createMetering({ localUsage: u, external: ext, dir: d });
+  const r = await m.begin('acct', cost); assert.equal(r.ok, false); assert.equal(r.kind, 'local');
+  assert.equal(intents(d).length, 1, 'the release was not confirmed, so the intent stays for recovery');
+  ext.setReleaseOk(true);
+  await createMetering({ localUsage: u, external: ext, dir: d }).recover();
+  assert.deepEqual(intents(d), [], 'recovery completes the release and removes the intent');
+  ok('a local-cap refusal does not drop its intent before the release is durable');
+}
 // two processes recovering one intent: it is reconciled exactly once (the loser sees the owner's lock or the removed file)
 {
   const d = `${dir}/orphan-race`; const u = createUsage({ env: { E3D_MCP_STATE_DIR: d } });
-  const ext = fakeExternal(); await createMetering({ localUsage: u, external: ext, dir: d }).begin('acct', cost);
+  const ext = fakeExternal(); { const mm = createMetering({ localUsage: u, external: ext, dir: d }); const bb = await mm.begin('acct', cost); await mm.start(bb.handle); }
   const f = `${d}/metering-intents/${intents(d)[0]}`; const rec = JSON.parse(readFileSync(f, 'utf8')); rec.pid = 999999999;
   (await import('node:fs')).writeFileSync(f, JSON.stringify(rec));
   const a = createMetering({ localUsage: u, external: ext, dir: d, env: { E3D_MCP_ORPHAN_POLICY: 'release' } });
