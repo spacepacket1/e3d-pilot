@@ -562,6 +562,21 @@ r="$(init S3B "$TOKEN_OK" -H "X-Forwarded-For: 203.0.113.9")"; assert_eq "$(stat
 r="$(init S3B "bad-x-$(openssl rand -hex 8)" -H "X-Forwarded-For: 203.0.113.9")"; assert_eq "$(status "$r")" "401" "and its own failures count separately"
 echo "ok - the failed-key limiter is per client address behind a trusted proxy"
 
+# --- S3c: a CONCURRENT storm cannot pass the per-IP check before any attempt has failed ---
+start_server S3C E3D_MCP_AUTH_IP_PER_MIN=3
+intro0="$(grep -c '"call":"introspect"' "$TMP/srv.log" || true)"
+inject '{"mode":"slow","calls":["introspect"],"ms":1500}'
+rm -rf "$TMP/storm"; mkdir -p "$TMP/storm"
+storm_pids=()
+for i in $(seq 1 12); do ( curl -s -m 30 -o /dev/null -w '%{http_code}' -X POST "${J[@]}" -H "Authorization: Bearer storm-c-$i-$(openssl rand -hex 8)" -d "$INIT" "http://127.0.0.1:$(sport S3C)/mcp" > "$TMP/storm/$i" ) & storm_pids+=($!); done
+wait "${storm_pids[@]}"
+inject '{"mode":null}'
+c429="$(for f in "$TMP"/storm/*; do cat "$f"; echo; done | grep -c '^429$')"
+intro1="$(grep -c '"call":"introspect"' "$TMP/srv.log" || true)"
+[[ "$c429" -ge 9 ]] || fail "a concurrent storm of 12 got only $c429 refusals with a limit of 3"
+[[ $((intro1 - intro0)) -le 3 ]] || fail "the concurrent storm reached the service $((intro1 - intro0)) times"
+echo "ok - a concurrent unknown-token storm is bounded by the per-IP limit ($((intro1 - intro0)) introspect calls reached the stub)"
+
 # --- S4: the outbox bound refuses new billed work ---
 start_server S4 E3D_MCP_OUTBOX_MAX=1
 r="$(init S4 "$TOKEN_OK")"; S4_OK="$(hdr mcp-session-id)"
