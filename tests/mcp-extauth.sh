@@ -273,6 +273,34 @@ ok('crash boundaries of abort: released once, never charged');
   assert.deepEqual(intents(d), [], 'recovery completes the release and removes the intent');
   ok('a local-cap refusal does not drop its intent before the release is durable');
 }
+// a long-running reservation keeps its marker however many others come and go; a replay after the adjustment is a no-op
+{
+  const d = `${dir}/markers`; const u = createUsage({ env: { E3D_MCP_STATE_DIR: d } });
+  await u.reserve('acct', { calls: 3, tokens: 30 }, 'debate', 'long-running');
+  for (let i = 0; i < 40; i++) { await u.reserve('acct', { calls: 1, tokens: 10 }, 'debate', `other-${i}`); await u.settle('acct', { calls: 1, tokens: 10 }, { calls: 1, inTokens: 5, outTokens: 5 }, `other-${i}`); }
+  assert.equal((await u.snapshot('acct')).calls_today, 3 + 40);
+  await u.settle('acct', { calls: 3, tokens: 30 }, { calls: 1, inTokens: 5, outTokens: 5 }, 'long-running');
+  assert.equal((await u.snapshot('acct')).calls_today, 1 + 40, 'the long-running reservation was still adjusted');
+  await u.settle('acct', { calls: 3, tokens: 30 }, { calls: 1, inTokens: 5, outTokens: 5 }, 'long-running');
+  await u.release('acct', { calls: 3, tokens: 30 }, 'debate', 'never-reserved');
+  assert.equal((await u.snapshot('acct')).calls_today, 1 + 40, 'a replay, or an adjustment for a reserve that never happened, changes nothing');
+  ok('idempotent local markers: open reservations keep theirs, replays and unreserved ids are no-ops');
+}
+// a failed local adjustment keeps the intent so recovery retries it (the external side may already be settled)
+{
+  const d = `${dir}/local-fail`; const real = createUsage({ env: { E3D_MCP_STATE_DIR: d } });
+  let failSettle = true;
+  const flaky = new Proxy(real, { get: (t, k) => (k === 'settle' ? (...a) => (failSettle ? Promise.reject(new Error('disk full')) : t.settle(...a)) : t[k]) });
+  const ext = fakeExternal(); const m = createMetering({ localUsage: flaky, external: ext, dir: d });
+  const b = await m.begin('acct', cost); await m.start(b.handle);
+  await m.commit(b.handle, spent, { outcome: 'ok', duration_ms: 5 });
+  assert.equal(ext.calls.settle.length, 1); assert.equal(intents(d).length, 1, 'the intent stays because the local side did not complete');
+  const f = `${d}/metering-intents/${intents(d)[0]}`; const rec = JSON.parse(readFileSync(f, 'utf8')); rec.pid = 999999999; (await import('node:fs')).writeFileSync(f, JSON.stringify(rec));
+  failSettle = false;
+  await createMetering({ localUsage: flaky, external: ext, dir: d }).recover();
+  assert.deepEqual(intents(d), []); assert.equal((await real.snapshot('acct')).calls_today, spent.calls, 'recovery finished the local settle');
+  ok('a failed local adjustment is retried by recovery');
+}
 // two processes recovering one intent: it is reconciled exactly once (the loser sees the owner's lock or the removed file)
 {
   const d = `${dir}/orphan-race`; const u = createUsage({ env: { E3D_MCP_STATE_DIR: d } });
