@@ -235,6 +235,39 @@ Add them to the server's `env` in `mcp.json`, e.g. `"env": { "E3D_MCP_REPOS": "/
 - **What is off over HTTP, and why:** the `e3d_pilot_*` pipeline tools, provenance and idea listing (they act on repositories on the server's disk) are hidden by default; sampling, elicitation and roots are disabled (they need server-to-client requests), so approvals stay read-only. A non-loopback bind refuses to start without tokens, and TLS is expected from a reverse proxy.
 - **Usage reporting also works locally:** `e3d_debate` results now include `usage` (model calls and estimated tokens) and `budget`, `e3d_usage` shows today's totals, and `E3D_MCP_DAILY_CALLS` / `E3D_MCP_DAILY_EST_TOKENS` set optional caps in stdio mode too (unlimited by default there).
 
+### Hosting with an external auth and metering service
+
+Use this when you host `e3d-mcp --http` for paying customers and a billing service (yours) owns the keys and the balances. The server then asks that service who a caller is (`introspect`), holds credits before a debate (`reserve`), and reports what really happened (`settle`, or `release` when nothing ran). Without it, the static `E3D_MCP_AUTH_TOKENS` and the local daily caps work exactly as before. The wire protocol, schemas, state machine and an implementer's checklist are in [docs/external-auth.md](docs/external-auth.md); a reference stub (`examples/external-auth-stub.js`, not production code) and a conformance runner (`examples/external-auth-conformance.js`) show and test a compatible service:
+
+```
+STUB_SERVICE_TOKEN=<24+ chars> STUB_RESERVATION_TTL_SEC=2 node examples/external-auth-stub.js   # prints its loopback URL; the runner's expiry vector needs a short hold lifetime
+node examples/external-auth-conformance.js <that URL> <token>          # run against any implementation
+```
+
+**The hook checks identity and spend. It does not make the code-writing tools safe to expose to customers**; keep the `e3d_pilot_*` pipeline tools off for them.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `E3D_MCP_AUTH_URL` | unset | Base URL of the service (https, or http on loopback). Setting it turns the hook on; `--http` only. |
+| `E3D_MCP_AUTH_SERVICE_TOKEN` | none | The server's own credential for the service (24+ printable characters). |
+| `E3D_MCP_AUTH_SERVICE_TOKEN_FILE` | none | Same, read from a file (mode 0600). Set one of the two, not both. |
+| `E3D_MCP_AUTH_CACHE_SEC` | 30 | How long an active `introspect` answer is cached (1 to 300). This is the maximum revocation latency. |
+| `E3D_MCP_AUTH_MAX_INFLIGHT` | 32 | Distinct `introspect` calls in flight at once (1 to 1024). |
+| `E3D_MCP_AUTH_IP_PER_MIN` | 30 | Rejected (unknown or malformed) keys one IP may present per minute before further unknown keys are refused without asking the service. Successful keys do not count. |
+| `E3D_MCP_AUTH_HEALTH_SEC` | 15 | Interval of the background `health` probe behind `/readyz`. |
+| `E3D_MCP_OUTBOX_MAX` | 5000 | Undelivered settlements allowed before new billed work is refused. |
+| `E3D_MCP_ORPHAN_MAX_AGE_SEC` | 21600 (positive whole seconds; anything else refuses to start) | Age after which an unfinished debate's metering intent is reconciled even if its process id looks alive (pids are reused after crashes). |
+| `E3D_MCP_TRUST_PROXY_HOPS` | 0 | Number of trusted reverse proxies in front of the server. With N, the failed-key limiter uses the Nth entry from the right of `X-Forwarded-For` as the client address instead of the proxy's address; 0 ignores the header. |
+| `E3D_MCP_AUTH_KNOWN_ACTIVE_MAX` | 10000 | How many recently-active keys the failed-key limiter remembers (oldest evicted first). |
+| `E3D_MCP_OUTBOX_MAX_DEAD` | 1 | Dead-lettered settlements tolerated before new billed work is refused; retry or resolve them with `--outbox-status` and `--outbox-retry-dead`. |
+| `E3D_MCP_OUTBOX_CLAIM_SEC` | 300 | A delivery claim older than this belongs to a crashed process and is retried. |
+| `E3D_MCP_ORPHAN_POLICY` | `charge` | What a debate that was running when the server crashed costs on restart: `charge` (the reserved units, outcome `orphaned`) or `release`. A crash before the debate started (reservation made, models not yet called) always just releases the hold. |
+
+- **Fails closed.** If the service cannot be reached or answers badly, the request is refused (HTTP 503 `retry-after: 5`, or 401 for an inactive key) and no model runs. Settlements that cannot be delivered are written to a durable outbox in the state directory and retried; nothing is dropped.
+- **Local caps stay a second ceiling.** `E3D_MCP_DAILY_CALLS`, `E3D_MCP_DAILY_EST_TOKENS` and the rate limits still apply per principal, so a billing fault cannot make spend unbounded.
+- **Operator commands** (print only record ids, call names, ages and counts): `e3d-mcp --outbox-status`; `e3d-mcp --outbox-export <file>` (new file, mode 0600, pending and dead records with payloads, no tokens, for reconciliation); `e3d-mcp --outbox-retry-dead <record_id>` (moves one dead record back to pending, exact id only; the only command that changes anything). `e3d-mcp --doctor` and `e3d_usage` report the hook, health and outbox counts. `/readyz` is 503 while the service or the outbox is unhealthy.
+- Dead-letter and outage procedures: [runbook in docs/external-auth.md](docs/external-auth.md#operator-runbook).
+
 ## Why we built this
 
 Autonomous coding agents solved the *execution* half of the problem: point a good model at a good spec, and it will faithfully implement it. What's still missing is everything **before** that — noticing what's worth building, making sure it isn't a rehash of a closed PR or last week's abandoned branch, and getting more than one model to actually agree the plan is safe and sound before anything touches a working tree. Skip that half and you get agents that happily reimplement existing features, argue with themselves in a PR nobody asked for, or quietly blow through a repo's real diff budget.

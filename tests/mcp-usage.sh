@@ -137,4 +137,29 @@ assert.throws(() => jobCost('nope'));
 console.log('usage unit ok');
 JS
 
+# principal-safe state file names: safe names keep their legacy file; others get <sanitized>~<8 hex of sha256>.json
+node --input-type=module - "$ROOT" "$TMP/names-state" <<'JS'
+import assert from 'node:assert/strict';
+import { readdirSync, statSync } from 'node:fs';
+const { createUsage, stateFileName } = await import(`${process.argv[2]}/lib/mcp/usage.js`);
+assert.equal(stateFileName('local'), 'local.json', 'the stdio counter keeps its file');
+assert.equal(stateFileName('alice'), 'alice.json', 'static-token counters keep their files');
+assert.equal(stateFileName('a_b'), 'a_b.json');
+assert.match(stateFileName('a:b'), /^a_b~[0-9a-f]{8}\.json$/);
+assert.notEqual(stateFileName('a:b'), stateFileName('a/b'), 'principals differing only in unsafe characters never share a file');
+assert.equal(stateFileName('x-0123abcd'), 'x-0123abcd.json', 'a safe name keeps its legacy file even when it looks hashed, so existing counters are not reset');
+assert.ok(!stateFileName('a:b').endsWith('a_b.json'));
+const { outboxRetryDead } = await import(`${process.argv[2]}/lib/mcp/outbox.js`);
+const longId = `release.request_id.${'r'.repeat(128)}`;
+await assert.rejects(outboxRetryDead(process.argv[3], longId), (e) => !/needs one exact record id/.test(e.message), 'a record id with a max-length id value passes validation (it is then simply not found)');
+await assert.rejects(outboxRetryDead(process.argv[3], `release.request_id.${'r'.repeat(129)}`), /needs one exact record id/);
+const dir = process.argv[3];
+const u = createUsage({ env: { E3D_MCP_STATE_DIR: dir, E3D_MCP_DAILY_CALLS: '10' } });
+await u.reserve('a:b', { calls: 3, tokens: 1 }, 'debate');
+await u.reserve('a_b', { calls: 5, tokens: 1 }, 'debate');
+assert.equal((await u.snapshot('a:b')).calls_today, 3); assert.equal((await u.snapshot('a_b')).calls_today, 5);
+for (const f of readdirSync(dir)) assert.equal(statSync(`${dir}/${f}`).mode & 0o777, 0o600, `${f} is 0600`);
+console.log('usage file names ok');
+JS
+
 echo "mcp-usage.sh: ok"

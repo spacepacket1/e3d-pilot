@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/spacepacket1/e3d-pilot/blob/main/docs/external-auth/reserve.request.schema.json",
+  "title": "reserve request",
+  "type": "object",
+  "required": [
+    "principal",
+    "request_id",
+    "kind",
+    "tool",
+    "units"
+  ],
+  "properties": {
+    "principal": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_.:-]{1,80}$"
+    },
+    "request_id": {
+      "type": "string",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+    },
+    "kind": {
+      "const": "debate"
+    },
+    "tool": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_.-]{1,64}$"
+    },
+    "units": {
+      "type": "object",
+      "required": [
+        "calls",
+        "est_tokens"
+      ],
+      "properties": {
+        "calls": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000
+        },
+        "est_tokens": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000000000
+        }
+      }
+    }
+  }
+}

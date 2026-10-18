@@ -33,8 +33,13 @@ import { listPrompts, getPrompt } from '../lib/mcp/prompts.js';
 import { chooseVoices, independence, isSampling } from '../lib/mcp/voices.js';
 import { startHttpServer } from '../lib/mcp/http.js';
 import { createUsage, usageFromTranscript, worstCase, usageTool, usageHandler } from '../lib/mcp/usage.js';
+import { createExternalAuth, validateConfig as validateAuthConfig } from '../lib/mcp/external-auth.js';
+import { createOutbox, outboxStatus, outboxExport, outboxRetryDead } from '../lib/mcp/outbox.js';
+import { createMetering, createReadiness, modelsFromTranscript, orphanPolicy } from '../lib/mcp/metering.js';
 
 const HTTP_MODE = process.argv.includes('--http');
+// External auth and metering hook (docs/external-auth.md): hosted --http mode only.
+const AUTH_HOOK = Boolean(process.env.E3D_MCP_AUTH_URL);
 // The version comes from package.json, so a development build (0.2.0-dev.N) reports itself correctly.
 const PKG_VERSION = (() => { try { return JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).version; } catch { return '0.0.0-unknown'; } })();
 const SERVER_INFO = { name: 'e3d-pilot', version: PKG_VERSION };
@@ -158,12 +163,21 @@ async function toolDebate(args, progress, ctx) {
   const principal = ctx?.principal ?? 'local';
   const worst = worstCase({ providers: providers.length, rounds, maxWords, questionChars: question.length });
   // Reserve the worst case first (atomically, so concurrent debates cannot overshoot the cap), then settle to actual use.
-  const rsv = await usage.reserve(principal, worst, 'debate');
-  if (!rsv.ok) return text(`error: daily budget: ${rsv.reason}`, true);
+  // With the external hook, metering.begin also reserves at the billing service and persists an intent before returning.
+  const rsv = await metering.begin(principal, worst, { tool: 'e3d_debate' });
+  if (!rsv.ok) {
+    if (rsv.kind === 'billing') return text(`error: billing: ${String(rsv.message || rsv.code).replace(/[\x00-\x1f\x7f]+/g, ' ').slice(0, 200)}`, true);
+    if (rsv.kind === 'unavailable') return text('error: billing: temporarily unavailable', true);
+    return text(`error: daily budget: ${rsv.reason}`, true);
+  }
+  const { handle } = rsv;
   let settled = false;
-  if (activeDebates >= LIMITS.concurrent) { await usage.release(principal, worst, 'debate').catch(() => {}); return text(`error: ${LIMITS.concurrent} debates already running; retry shortly`, true); }
+  let ran = false;
+  let lastRun = null;
+  if (activeDebates >= LIMITS.concurrent) { await metering.abort(handle, 'busy').catch(() => {}); return text(`error: ${LIMITS.concurrent} debates already running; retry shortly`, true); }
   activeDebates++;
   let dir = null;
+  const started = Date.now();
   try {
     dir = await mkdtemp(join(tmpdir(), 'e3d-mcp-'));
     const qfile = join(dir, 'question.md');
@@ -175,19 +189,24 @@ async function toolDebate(args, progress, ctx) {
     const usesSampling = providers.some(isSampling) || isSampling(synthesizer);
     const samplingEnv = usesSampling ? await sampling.env(ctx.session, { tag, maxTokens: Math.min(Math.max(maxWords * 3, 300), 4000) }) : {};
     const timeoutMs = usesSampling ? Math.min(LIMITS.timeoutMs, LIMITS.samplingTimeoutMs) : LIMITS.timeoutMs;
+    if (!(await metering.start(handle))) return text('error: billing: temporarily unavailable', true);
+    ran = true;
     const r = await run(debateBin, cliArgs, {
       timeoutMs,
       env: { ...process.env, ...samplingEnv },
       onStderr: (s) => { for (const m of s.matchAll(/^=== (.+?) ===$/gm)) progress?.(++step, m[1]); },
     });
+    lastRun = r;
     // Calls that actually ran are counted from the transcript, whether or not the debate succeeded.
     const transcript = await readFile(join(dir, 'out', 'transcript.md'), 'utf8').catch(() => '');
     // The synthesis call counts when the transcript shows it ran ("## Synthesis" heading), or when the debate was not stopped by the timeout (a failed debate is charged conservatively).
     const spent = usageFromTranscript(transcript, question, { synthesized: /\n## Synthesis/.test(transcript) || !r.timedOut });
-    const budget = await usage.settle(principal, { calls: worst.calls, tokens: worst.tokens }, spent);
-    settled = true;
-    if (r.timedOut) return text(`error: debate timed out after ${timeoutMs / 1000}s and was stopped. ${spent.calls} model call(s) had already answered and are counted against today's budget (${budget.remaining_calls ?? 'no limit'} calls left). Try mode "quick", fewer providers, or a shorter question.`, true);
     const verdict = parseVerdict(r.out);
+    // Every outcome settles what actually ran (no transcript = zero calls = release).
+    const outcome = r.timedOut ? 'timeout' : (r.code !== 0 || !verdict ? 'error' : 'ok');
+    const { budget, billing } = await metering.commit(handle, spent, { outcome, duration_ms: Date.now() - started, models: modelsFromTranscript(transcript, { synthesizer, calls: spent.calls }) });
+    settled = true;
+    if (r.timedOut) return text(`error: debate timed out after ${timeoutMs / 1000}s and was stopped. ${spent.calls} model call(s) had already answered and are counted against today's budget (${budget?.remaining_calls ?? 'no limit'} calls left). Try mode "quick", fewer providers, or a shorter question.`, true);
     if (r.code !== 0 || !verdict) return text(`error: debate failed (exit ${r.code})\n${redact(r.err.slice(-1500))}`, true);
 
     const { roundsRan, positions } = parsePositions(transcript);
@@ -208,13 +227,22 @@ async function toolDebate(args, progress, ctx) {
       ...(indep.families.length ? { families: indep.families } : {}),
       usage: { model_calls: spent.calls, est_input_tokens: spent.inTokens, est_output_tokens: spent.outTokens, estimate: true },
       budget,
+      ...(billing ? { billing } : {}),
       positions,
       ...(args.include_transcript ? { transcript: transcript.trim() } : {}),
     };
     return { content: [{ type: 'text', text: renderDebate(result) }], structuredContent: result };
   } finally {
     activeDebates--;
-    if (!settled) await usage.release(principal, worst, 'debate').catch(() => {});
+    // Not settled (an unexpected error): give the reservation back, as before. With the hook, once the debate binary
+    // has run the intent is kept instead, so the next start reconciles it per E3D_MCP_ORPHAN_POLICY (never free).
+    if (!settled && (!ran || !metering.hooked)) await metering.abort(handle, 'not_run').catch(() => {});
+    else if (!settled) {
+      // the process is still alive, so restart recovery would skip this intent: settle what the transcript shows now
+      const t = dir ? await readFile(join(dir, 'out', 'transcript.md'), 'utf8').catch(() => '') : '';
+      const spent = usageFromTranscript(t, question, { synthesized: /\n## Synthesis/.test(t) || (lastRun ? !lastRun.timedOut : false) });
+      await metering.commit(handle, spent, { outcome: 'error', duration_ms: Date.now() - started, models: modelsFromTranscript(t, { synthesizer, calls: spent.calls }) }).catch(() => {});
+    }
     if (dir) rm(dir, { recursive: true, force: true }).catch(() => {});
   }
 }
@@ -354,6 +382,9 @@ const jobs = createJobs();
 const pipeline = createPipelineTools({ guard, jobs });
 // stdio: unlimited unless E3D_MCP_DAILY_* are set; hosted (HTTP) mode ships with finite defaults.
 const usage = createUsage({ defaults: HTTP_MODE ? { calls: 100, tokens: 500000 } : { calls: 0, tokens: 0 } });
+// Without E3D_MCP_AUTH_URL this is the local usage object unchanged; the hook is attached at hosted startup below.
+let metering = createMetering({ localUsage: usage, log });
+let hookState = null; // { metering, outbox } once the external hook is running (read by e3d_usage)
 const sampling = createSampling({ rpc, log });
 // One connection object per client: stdio has exactly one; HTTP makes one per session. Hosted (HTTP) connections
 // never advertise sampling, elicitation or roots, so the server never needs to call back into the client.
@@ -378,7 +409,7 @@ const HANDLERS = {
   e3d_ideas_list: toolIdeasList,
   ...pipeline.handlers,
   ...actions.handlers,
-  e3d_usage: usageHandler(usage),
+  e3d_usage: usageHandler(usage, () => hookState),
 };
 
 async function handle(msg, conn = stdioConn) {
@@ -437,6 +468,16 @@ async function handle(msg, conn = stdioConn) {
 const CLIENT_ARGS = ['-y', '--no-update-notifier', '-p', 'e3d-pilot', 'e3d-mcp'];
 
 if (process.argv.includes('--doctor')) process.exit(await doctor());
+{
+  // Operator commands for the settlement outbox: ids, call names, ages and counts only.
+  const argv = process.argv;
+  const operand = (flag) => { const i = argv.indexOf(flag); return i > -1 ? argv[i + 1] : undefined; };
+  const opDir = () => createUsage({ env: process.env }).dir;
+  const op = async (fn) => { try { await fn(); process.exit(0); } catch (e) { process.stderr.write(`e3d-mcp: ${redact(e.message)}\n`); process.exit(1); } };
+  if (argv.includes('--outbox-status')) await op(async () => { console.log((await outboxStatus(opDir())).lines.join('\n')); });
+  if (argv.includes('--outbox-export')) await op(async () => { const r = await outboxExport(opDir(), operand('--outbox-export')); console.log(`exported ${r.count} record(s) (${r.dead} dead), mode 0600, no tokens`); });
+  if (argv.includes('--outbox-retry-dead')) await op(async () => { const r = await outboxRetryDead(opDir(), operand('--outbox-retry-dead')); console.log(`moved ${r.record_id} back to pending`); });
+}
 if (process.argv.includes('--print-config')) {
   const local = process.argv.includes('--local');
   const cmd = local ? { command: process.execPath, args: [fileURLToPath(import.meta.url)] } : { command: 'npx', args: CLIENT_ARGS };
@@ -450,18 +491,47 @@ if (process.argv.includes('--print-config')) {
   process.exit(0);
 }
 
+if (AUTH_HOOK && !HTTP_MODE) {
+  process.stderr.write('[e3d-mcp] E3D_MCP_AUTH_URL is only supported in hosted mode (--http); unset it for stdio.\n');
+  process.exit(2);
+}
+
+// The external hook: validate everything, then recover crashed work and start outbox delivery BEFORE listening.
+async function startAuthHook() {
+  const checked = validateAuthConfig(process.env);
+  const errors = [...checked.errors];
+  try { orphanPolicy(process.env); } catch (e) { errors.push(e.message); }
+  if (errors.length) throw new Error(`external auth hook: refusing to start: ${errors.join('; ')}`);
+  if (process.env.E3D_MCP_AUTH_TOKENS) log('warning: E3D_MCP_AUTH_TOKENS is ignored because E3D_MCP_AUTH_URL is set (keys are checked by the auth service)');
+  const external = createExternalAuth({ log });
+  const outbox = createOutbox({ dir: usage.dir, auth: external, log });
+  external.attachOutbox(outbox);
+  metering = createMetering({ localUsage: usage, external, outbox, log, dir: usage.dir });
+  const { recovered } = await metering.recover();
+  if (recovered) log(`metering: reconciled ${recovered} unfinished debate(s) from a previous run`);
+  await outbox.start();
+  const healthSec = Number.parseInt(process.env.E3D_MCP_AUTH_HEALTH_SEC ?? '', 10);
+  const readiness = createReadiness({ external, outbox, log, intervalMs: (Number.isSafeInteger(healthSec) && healthSec > 0 ? healthSec : 15) * 1000 });
+  await readiness.start();
+  hookState = { metering, outbox };
+  return { external, outbox, readiness };
+}
+
 // ---- HTTP (hosted) mode: `e3d-mcp --http [--port N] [--host H]` ----
 if (HTTP_MODE) {
   const arg = (name, dflt) => { const i = process.argv.indexOf(name); return i > -1 && process.argv[i + 1] ? process.argv[i + 1] : dflt; };
   const host = arg('--host', process.env.E3D_MCP_HOST || '127.0.0.1');
   const port = Number.parseInt(arg('--port', process.env.E3D_MCP_PORT || process.env.PORT || '8787'), 10);
   let server;
+  let hook = null;
   try {
-    server = await startHttpServer({ host, port, log, handle, newConn: newHttpConn, version: SERVER_INFO.version });
+    if (AUTH_HOOK) hook = await startAuthHook();
+    server = await startHttpServer({ host, port, log, handle, newConn: newHttpConn, version: SERVER_INFO.version,
+      ...(hook ? { auth: hook.external, readiness: hook.readiness.state } : {}) });
   } catch (e) { process.stderr.write(`[e3d-mcp] ${redact(e.message)}\n`); process.exit(2); }
   if (process.env.E3D_MCP_PORT_FILE) await writeFile(process.env.E3D_MCP_PORT_FILE, String(server.port));
   let stopping = false;
-  const stop = async () => { if (stopping) return; stopping = true; log('shutting down'); setTimeout(() => process.exit(0), 10000).unref(); await server.close(); await sampling.stop(); process.exit(0); };
+  const stop = async () => { if (stopping) return; stopping = true; log('shutting down'); setTimeout(() => process.exit(0), 10000).unref(); hook?.readiness.stop(); hook?.outbox.stop(); await server.close(); await sampling.stop(); process.exit(0); };
   process.on('SIGTERM', stop);
   process.on('SIGINT', stop);
   log(`ready (hosted; limits: ${JSON.stringify(LIMITS)})`);
