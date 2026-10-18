@@ -1,0 +1,292 @@
+# Debate
+
+**Prompt version:** v2
+
+**Question:** You are the e3d-debate committee reviewing a design proposal. Treat it as a hypothesis; seek consequential defects, risks, missing requirements and simpler alternatives. Do NOT optimize for consensus; attribute dissent. Favor reuse over reinvention, measurable value over theory, simplicity over new layers. The team is tiny and prioritizes user-facing products over tooling.
+
+BACKGROUND: E3D's Decision Layer paper defines a closed loop G -> S -> Theta -> A -> O -> W (observe, interpret, hypothesize, act, measure, learn). In E3D proper, a thesis carries direction, conviction, target and an invalidation condition; an Action has a score Q_A; an Outcome has a score Q_O and a thesis-confirmation score Phi = 1 - d(predicted, observed); defensive actions (an Avoid) are measurable (successful if the token later declines); learning starts as simple statistical tracking (expectancy by signal/source) before any gradient update.
+
+PROPOSAL: re-apply that loop to e3d-pilot, whose "tokens" are ideas. Current state (verified): ideas have scores (attraction, retention, revenue, effort, ensemble) but no predicted outcome, horizon or invalidation condition. `ideas outcome --window <7d|30d|custom> --metric key=value` and `ideas list --pending-outcome` exist, but only 9 of 37 ideas have any recorded outcome, those are free-form notes/booleans (e.g. "dissent_was_correct"), only 4 ideas are status implemented, 3 rejected. The provenance ledger already records each idea's events and debate evidence links.
+Proposed steps, cheapest first: (1) at approval, require a thesis: expected outcome metric, horizon, and a falsifier ("wrong if..."); (2) a small fixed standard outcome set (merged, reverted within N days, post-merge defects, review findings count, usage signal where measurable) with a scheduled prompt using --pending-outcome; (3) compute a thesis-confirmation score per idea; (4) score defensive calls: a rejected idea is a good call if it later proves unneeded/harmful; (5) a statistics-only report: do high-ensemble-score ideas do better, whose debate dissent turned out correct; (6) only later use outcomes as ground truth for learning (e.g. the Harness2-style guidance-overlay experiment from docs/debates/2026-10-18-harness2-recursive-optimization).
+
+QUESTIONS: (a) Is this worth building at this data volume (single-digit outcomes), or is it premature process overhead; what is the smallest slice that yields value now? (b) Which fields are genuinely required at approval vs optional, so approval friction stays low? (c) What outcome metrics are actually measurable and not gameable/Goodhartable, particularly for a solo operator? (d) How should defensive outcomes (rejections) be scored without fabricating ground truth? (e) Where does this duplicate existing ledger/outcome features and what is the simplest schema change (reuse `ideas outcome`)? (f) What should NOT be built?
+
+DELIVER: a concrete recommendation with a minimal first slice (schema fields, commands, report), explicit acceptance criteria, risks, and preserved dissent.
+
+**Jev pre-screen (shadow mode, informational only):** obviousness noul=0.13 (1.0 = clearly obvious, 0.0 = clearly needs debate) -- logged for calibration, does not affect whether this debate runs.
+
+## Round 1 -- claude
+
+**Recommendation: build a thin slice of steps 1, 2 and 5. Skip 3, 4 and 6 for now. The aim is to make the 9-of-37 outcome coverage problem go away before adding any scoring.**
+
+**(a) Worth it?**
+Full-loop scoring is premature. With single-digit outcomes, a Phi score or a correlation is noise. The real defect is coverage. Only 24% of ideas have an outcome, and those are free-form, so nothing can be aggregated. The smallest slice that pays off now is to capture a falsifiable prediction at approval and record a standard outcome at the horizon. That fixes the data going forward and costs minutes per idea. Statistics only become meaningful after about 20 to 30 structured outcomes, so the report can wait. It can be a throwaway script until then.
+
+**(b) Approval fields**
+Required (two):
+- `expected`: one sentence plus a metric key from the standard set.
+- `wrong_if`: a falsifier in one line.
+
+Optional:
+- `horizon`, which defaults to 30d.
+- `conviction`, which I would skip. The ensemble score already exists, and a second subjective number is Goodhart bait.
+- `target` as a numeric value. Free text is fine for now.
+
+Store these in a `thesis` object on the idea (`{expected, metric, horizon, wrong_if}`). Log it through the existing ledger event mechanism. Don't create a new table.
+
+**(c) Measurable, hard-to-game metrics**
+For a solo operator, anything self-reported is gameable, because the operator is both the predictor and the judge. Prefer facts that come from git or the ledger:
+- `merged`: yes or no, from git.
+- `reverted_within_30d`: from git.
+- `post_merge_defects`: a count, but only if defects are tied to issues or commits. This is already captured by PR #8.
+- `review_findings_count`: already captured.
+- `usage_signal`: only for ideas with a real counter, such as npm downloads or MCP calls. Otherwise leave it `n/a`. Never invent one.
+
+Caveats:
+- Findings count punishes careful reviewers and rewards a lax one, so report it but never target it.
+- `merged` rewards shipping easy things. It measures execution, not whether the idea was good.
+- The metric that matters is user-facing value, and that is rarely measurable at this scale. Say so openly and don't pretend a proxy is value.
+
+**(d) Defensive outcomes**
+Don't score them automatically. Fabricated ground truth is the largest risk in this proposal. A rejected idea never ships, so "later proved unneeded" is a counterfactual we can't observe.
+
+What can be observed:
+- A rejected idea that someone later re-proposes or ships anyway, which is a *wrong rejection* signal.
+- A rejection with a `wrong_if` falsifier, such as "reject unless X appears". Revisit it when the falsifier fires.
+- Debate dissent that is later marked correct. This is already recorded as `dissent_was_correct`.
+
+So score a rejection only on explicit evidence, with three states: `confirmed_by_event`, `contradicted_by_event`, `unknown`. Default to `unknown`. With 3 rejected ideas there is nothing to compute yet.
+
+**(e) Duplication and schema**
+- Reuse `ideas outcome` and `--pending-outcome`. Change nothing there except an optional `--metric` key allowlist, with a warning (not an error) on unknown keys. That turns free-form notes into structured ones without breaking history.
+- Add `ideas approve --expected ... --wrong-if ... [--horizon 30d]`, or make the existing approve command prompt for these.
+- Backfill the 9 existing outcomes by hand as `legacy`. Don't compute scores for them.
+- `Phi = 1 - d(predicted, observed)` is not meaningful for binary or categorical outcomes. Use `hit / miss / partial / n/a`, set by a human, citing the falsifier.
+
+**(f) Do NOT build**
+- Phi, Q_A and Q_O numeric scores.
+- Automatic defensive scoring.
+- A scheduled-prompt system. Use a weekly `--pending-outcome` listing in the existing cron or ops email, via e3d-ops alerting.
+- Any learning or overlay loop (step 6). A tiny team with about 4 implemented ideas has no training signal.
+- A dashboard in the web UI.
+- A conviction field.
+
+**Acceptance criteria**
+1. An approval with no `expected` or `wrong_if` is rejected, and `--skip-thesis "reason"` is logged as an escape hatch.
+2. 100% of ideas approved after the ship date have a thesis.
+3. `ideas list --pending-outcome` surfaces ideas past their horizon, and the weekly email lists them.
+4. After 8 weeks, at least 80% of due ideas have a structured outcome.
+5. `ideas report` prints hit and miss counts by ensemble-score tercile and a dissent-correct count. It reports n and refuses to show percentages below n=10.
+
+**Risks**
+- Approval friction leads to junk theses ("it will work"). Mitigation: require a metric key from the standard set.
+- Outcomes never get recorded, since the operator is the only enforcer. Mitigation: the weekly email.
+- Survivorship bias: only implemented ideas get measured.
+- A hit rate computed on the operator's own judgments creates false confidence.
+
+**Preserved dissent**
+- A skeptic would say even this slice is process for process's sake, and that the tiny team should ship products instead. The counter is that it costs two fields and one email, and it is the only way the ensemble score can ever be validated.
+- A defender of the full loop would say to build Phi now so the schema doesn't change later. I reject that because the schema will change anyway once real data shows what matters.
+
+**Load-bearing assumptions**
+- The idea volume continues at roughly 37 ideas per few months.
+- The operator will treat the weekly email as a real prompt.
+- If idea throughput is below about 5 a month, drop even this slice and keep only `wrong_if` in the approval note.
+
+## Round 1 -- codex
+
+Recommendation: build only a thin measurement discipline, not a recursive learning system. At nine outcomes, automation and statistical conclusions are premature; structured prospective claims are valuable now because they prevent hindsight bias.
+
+### Minimal first slice
+
+Reuse the provenance ledger and `ideas outcome`. Add one structured `thesis` payload to the existing approval event:
+
+```text
+metric: string
+baseline: number|string|null
+success_threshold: operator + value
+due_at: date
+```
+
+The threshold doubles as the falsifier: for example, `weekly_active_users >= 5`; failure by `due_at` disconfirms the thesis. Allow `baseline=null` only for binary events.
+
+At approval:
+
+- Require `metric`, `success_threshold`, and `due_at` only for ideas entering an implementation/experiment commitment.
+- Do not require them for backlog, exploratory, deferred, or rejected ideas.
+- Make rationale, confidence, secondary metrics, attribution source, and narrative falsifier optional.
+- Permit an explicit `not_measurable` classification, but report its frequency.
+
+Extend the existing command rather than creating another subsystem:
+
+```bash
+ideas approve ID --metric weekly_active_users --baseline 0 --success ">=5" --by 2026-11-30
+ideas outcome ID --metric weekly_active_users=7 --observed-at 2026-11-30
+ideas list --pending-outcome
+ideas report outcomes
+```
+
+`ideas report outcomes` should show:
+
+- due/overdue measurement coverage;
+- confirmed, disconfirmed, inconclusive, and unmeasured counts;
+- a chronological table linking thesis, recorded outcome, and ledger evidence;
+- score-versus-result listings—not correlations or model updates yet;
+- dissent cases with the original dissent evidence and eventual classification.
+
+Do not calculate a continuous `Phi` yet. Heterogeneous metrics, tiny samples, and arbitrary distance functions would manufacture precision. Start with the four-state classification above.
+
+### Metrics
+
+Prefer metrics already emitted by the product or repository:
+
+1. Direct behavior: usage, repeat usage, completion, retention, or time saved.
+2. Reliability: attributable regression, rollback/revert, support incident.
+3. Delivery proxies: merged and shipped.
+
+“Review findings count” is process-dependent and highly gameable. “Merged” measures completion, not value. Post-merge defects need a fixed attribution window and a written linkage rule. Never introduce telemetry solely to evaluate a low-value idea unless instrumentation itself has product value.
+
+### Rejections and defensive calls
+
+Do not score rejection as successful because nothing bad happened. That is an unobserved counterfactual.
+
+A rejected idea remains `unknown` unless later evidence exists: the same change was tried elsewhere, an underlying assumption was falsified, the predicted need failed to appear by a predeclared review date, or a comparable implementation caused the specified harm. Report “avoided exposure” separately from “validated rejection.” No numeric defensive score is justified yet.
+
+### Acceptance criteria
+
+The slice is done when:
+
+- every newly committed idea has a machine-readable metric, threshold, and due date;
+- missing and overdue outcomes are queryable through the existing pending workflow;
+- outcomes retain links to their approval thesis and evidence;
+- classification is deterministic and manually overridable with a recorded reason;
+- legacy ideas remain valid without migration;
+- after 20 completed, comparable outcomes, the team explicitly decides whether statistical analysis is warranted.
+
+### Risks and preserved dissent
+
+The main risks are optimizing for easy-to-measure work, confusing shipping with impact, retroactively changing thresholds, and adding ceremony that discourages ideas. Approval fields must become immutable; amendments should be new ledger events.
+
+Minority dissent: build no schema yet—use a monthly Markdown review until 20 outcomes. This is defensible for a solo operator. I reject it because prospective, immutable thresholds provide immediate value and cost only three fields.
+
+Do not build gradient learning, score recalibration, dashboards, schedulers beyond an existing cron/reminder, a metric ontology, or Harness2 integration now.
+
+## Round 2 -- claude
+
+**Position held, with two adoptions from codex.**
+
+**Where codex improves on my answer**
+
+1. **Threshold as falsifier.** Codex folds my `wrong_if` and `expected` into one machine-checkable field, `metric` plus `success_threshold` plus `due_at`. That is better than my free-text `wrong_if`, because classification becomes deterministic and a solo operator can't retroactively reinterpret "wrong if...". I adopt it. Keep a one-line free-text `wrong_if` only for ideas where the metric is `not_measurable`.
+2. **Immutability.** Approval thesis fields should be immutable, and amendments should be new ledger events. I missed this. Without it, the operator can edit the falsifier after seeing results, and the whole exercise is worthless. I adopt it.
+3. **Scope the requirement.** Require a thesis only for ideas entering implementation or an experiment, not for backlog, deferred or rejected ones. That lowers friction further than my "all approvals" rule. I adopt it.
+
+**Where I still differ from codex**
+
+1. **Metric key allowlist.** Codex leaves `metric` as a free string. That reproduces the current problem of free-form outcomes, so aggregation fails again. I keep a small standard key set (`merged`, `reverted_30d`, `post_merge_defects`, `usage:<counter>`, `not_measurable`). Unknown keys get a warning, not an error.
+2. **Baseline.** Codex adds `baseline` as a field. It is only useful for usage metrics. I would make it optional, because most of our metrics are binary or counts from zero.
+3. **Phi.** We agree on this. Use four states (confirmed, disconfirmed, inconclusive, unmeasured) and compute no continuous score.
+4. **Report and review gate.** Codex defers the statistics decision to 20 outcomes. I would add a hard rule that `ideas report` refuses percentages below n=10 and lists cases only. The two positions are compatible: show lists now, and decide on statistics at about 20.
+5. **Review findings count.** Codex calls it gameable. I called it report-only, never a target. I'll concede that point and drop it from the standard set. PR #8 already stores it, so it can sit in the ledger without being a thesis metric.
+6. **Escape hatch.** Codex has `not_measurable`, and I had `--skip-thesis "reason"`. These are the same thing. Use one mechanism, and report how often it is used. If `not_measurable` exceeds about 40%, the discipline is not working.
+
+**On codex's dissent (monthly Markdown review, no schema)**
+
+I side with codex's rejection of that dissent, but it is the strongest competing option, and I would revisit it. The test is cost. If implementation takes more than about a day, the Markdown review is the right choice, because the team should be shipping products. Reusing `ideas approve` and `ideas outcome` should keep it under a day. If it doesn't, fall back to the Markdown review.
+
+**Defensive scoring**
+
+Codex and I agree. A rejection stays `unknown` unless there is explicit later evidence. Codex's "avoided exposure" versus "validated rejection" split is a good label, and I adopt it. The three evidence states I proposed (`confirmed_by_event`, `contradicted_by_event`, `unknown`) should map onto those labels.
+
+**Merged first slice**
+
+- Schema: `thesis {metric, threshold, due_at, baseline?, wrong_if?}`, immutable, written as an approval ledger event. Required only for implementation or experiment commitments, with `not_measurable --reason` as the logged escape.
+- Commands: extend `ideas approve` and `ideas outcome --metric` (key allowlist, warning only). Reuse `ideas list --pending-outcome`. Add a weekly `--pending-outcome` line to the existing ops email.
+- Report: `ideas report outcomes` with coverage, the four states, and score-versus-result as a list. Add dissent cases and `not_measurable` frequency. No percentages below n=10.
+- Backfill the 9 legacy outcomes as `legacy`, unscored.
+
+**Acceptance criteria**
+
+1. New implementation approvals without a thesis or `not_measurable` reason are refused.
+2. Thesis fields cannot be edited. Amendments are new events.
+3. The weekly email lists overdue ideas.
+4. After 8 weeks, at least 80% of due ideas have a structured outcome.
+5. `not_measurable` stays below about 40%.
+6. Total implementation takes about a day or less.
+
+**Not built**
+
+Phi, Q_A and Q_O, automatic defensive scoring, a scheduler, a dashboard, a conviction field, Harness2 integration, and a metric ontology.
+
+**Remaining risks**
+
+Survivorship bias, since only shipped ideas get measured. Operator-as-judge bias on the usage and defect metrics. Easy-to-measure work crowding out the valuable work.
+
+POSITION: Build a thin, immutable approval thesis (metric from a small allowlist, threshold, due date, optional free-text falsifier) for implementation commitments, reusing `ideas outcome` and `--pending-outcome` with a weekly reminder and a list-style report that shows no percentages below n=10, and skip Phi, automatic defensive scoring, learning loops and dashboards.
+status: approved
+
+## Round 2 -- codex
+
+I keep the core position but revise two details: a numeric baseline should not be generally required, and “expected” plus “wrong_if” should not be separate mandatory prose when one testable predicate can express both.
+
+Claude is right that coverage—not scoring—is the immediate defect, and right to reject Phi, defensive scoring, dashboards, and learning. Its three-state defensive treatment is materially sound. However, requiring theses for every approval risks ceremony around ideas that are merely queued or explored. Measurement should become mandatory only when approval commits implementation or an experiment. Otherwise the predictable result is low-quality placeholder theses.
+
+The smallest useful slice is:
+
+```text
+approval event:
+  metric: string
+  success_condition: string
+  due_at: date
+  baseline: optional
+  measurement_source: optional
+```
+
+Example: `metric=weekly_active_users`, `success_condition=>=5`, `due_at=2026-11-30`. This condition is simultaneously the prediction and falsifier. Allow binary and categorical conditions, not only numeric targets. Permit `not_measurable` with a required short reason; track its frequency rather than blocking valuable work.
+
+Reuse existing commands and ledger events:
+
+```bash
+ideas approve ID --metric weekly_active_users --success ">=5" --by 2026-11-30
+ideas outcome ID --metric weekly_active_users=7 --observed-at 2026-11-30
+ideas list --pending-outcome
+ideas report outcomes
+```
+
+Theses must be immutable; corrections are amendment events. Existing ideas and free-form outcomes remain valid and should not be force-fit or manually “backfilled” into apparent prospective evidence. That would blur prediction with hindsight.
+
+Claude’s proposed metric allowlist is too restrictive at this stage. With four implemented ideas, the team does not know its stable metric vocabulary. Validate syntax, recommend a tiny canonical set, and warn on new keys. An allowlist can come later if synonyms actually impair aggregation.
+
+The report should initially emphasize operational integrity:
+
+- due, measured, overdue, and `not_measurable` counts;
+- confirmed, disconfirmed, inconclusive, and unmeasured cases;
+- thesis/outcome/evidence chronology;
+- raw score-versus-result rows and dissent outcomes.
+
+Do not show ensemble terciles yet. Even with percentages suppressed below ten, terciles over roughly 20–30 heterogeneous cases encourage conclusions the data cannot support. Add grouped statistics only after at least 20 comparable completed outcomes—not merely 20 outcomes overall.
+
+Prefer externally emitted usage, repeat usage, task completion, attributable regressions, and reversions. “Merged” is delivery, not success. Review findings are reviewer-dependent and should remain diagnostic only. Defects require a fixed window and explicit issue/commit attribution.
+
+Rejections default to `unknown`. A rejection becomes contradicted or supported only through a cited later event or predeclared observable condition. “Need did not appear” is weak evidence, not proof that rejection was correct; report it separately from validated harm avoidance.
+
+Acceptance criteria:
+
+- Every implementation/experiment commitment records metric, condition, and due date, or an explicit `not_measurable` reason.
+- Pending-outcome finds all overdue commitments.
+- Outcomes link to immutable thesis and evidence events.
+- Classification follows the stored predicate, with reasoned overrides logged.
+- At least 80% of due commitments receive outcomes after eight weeks.
+- No Phi, correlation, terciles, defensive score, scheduler, dashboard, ontology, or learning overlay ships in this slice.
+
+Preserved dissent: Claude would impose thesis fields on every approval and introduce a warning allowlist immediately; a stronger minimalist would use only ledger notes and a weekly manual review. My recommendation sits between them because prospective structure prevents hindsight bias without turning idea intake into an evaluation bureaucracy.
+
+POSITION: Add one immutable, predicate-based thesis to implementation commitments and reuse the existing outcome workflow, while deferring scoring, defensive judgments, and learning until comparable evidence exists.
+status: revise
+
+
+## Synthesis (claude)
+
+FINAL ANSWER: Build a thin slice, and skip Phi, defensive scoring, learning loops and dashboards. When an idea is approved for implementation or an experiment, record one immutable thesis on the approval ledger event. It has a metric, a machine-checkable success condition that doubles as the falsifier, and a due date. Baseline and a free-text `wrong_if` are optional, and `not_measurable` is allowed with a required reason. Reuse `ideas outcome` and `ideas list --pending-outcome`, with a weekly overdue line in the existing ops email. `ideas report outcomes` shows coverage, four states (confirmed, disconfirmed, inconclusive, unmeasured) and score-versus-result rows as lists, with no percentages below n=10. Rejections stay `unknown` unless a cited later event exists. Cap the work at about a day, and fall back to a monthly Markdown review if it runs over.
+CONSENSUS: majority
+DISSENT: Claude wanted a warn-only metric-key allowlist and ensemble terciles in the report. Codex argued the vocabulary is too immature for an allowlist and terciles would invite unsupported conclusions. Codex also said legacy outcomes should not be backfilled as if they were prospective. A stronger minimalist would skip the schema and use a monthly Markdown review until about 20 outcomes.
