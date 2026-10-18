@@ -32,7 +32,7 @@ import { createSampling } from '../lib/mcp/sampling.js';
 import { listPrompts, getPrompt } from '../lib/mcp/prompts.js';
 import { chooseVoices, independence, isSampling } from '../lib/mcp/voices.js';
 import { startHttpServer } from '../lib/mcp/http.js';
-import { createUsage, usageFromTranscript, estTokens, worstCase, usageTool, usageHandler } from '../lib/mcp/usage.js';
+import { createUsage, usageFromTranscript, worstCase, usageTool, usageHandler } from '../lib/mcp/usage.js';
 import { createExternalAuth, validateConfig as validateAuthConfig } from '../lib/mcp/external-auth.js';
 import { createOutbox, outboxStatus, outboxExport, outboxRetryDead } from '../lib/mcp/outbox.js';
 import { createMetering, createReadiness, modelsFromTranscript, orphanPolicy } from '../lib/mcp/metering.js';
@@ -200,8 +200,6 @@ async function toolDebate(args, progress, ctx) {
     const transcript = await readFile(join(dir, 'out', 'transcript.md'), 'utf8').catch(() => '');
     // The synthesis call counts when the transcript shows it ran ("## Synthesis" heading), or when the debate was not stopped by the timeout (a failed debate is charged conservatively).
     const spent = usageFromTranscript(transcript, question, { synthesized: /\n## Synthesis/.test(transcript) || !r.timedOut });
-    // A run that was stopped by the timeout with no readable transcript still reached the models: never free.
-    if (r.timedOut && spent.calls === 0) Object.assign(spent, { calls: 1, inTokens: estTokens(question.length) });
     const verdict = parseVerdict(r.out);
     // Every outcome settles what actually ran (no transcript = zero calls = release).
     const outcome = r.timedOut ? 'timeout' : (r.code !== 0 || !verdict ? 'error' : 'ok');
@@ -242,7 +240,6 @@ async function toolDebate(args, progress, ctx) {
       // the process is still alive, so restart recovery would skip this intent: settle what the transcript shows now
       const t = dir ? await readFile(join(dir, 'out', 'transcript.md'), 'utf8').catch(() => '') : '';
       const spent = usageFromTranscript(t, question, { synthesized: /\n## Synthesis/.test(t) || (lastRun ? !lastRun.timedOut : false) });
-      if (spent.calls === 0) Object.assign(spent, { calls: 1, inTokens: estTokens(question.length) }); // it ran and then failed: never free
       await metering.commit(handle, spent, { outcome: 'error', duration_ms: Date.now() - started, models: modelsFromTranscript(t, { synthesizer, calls: spent.calls }) }).catch(() => {});
     }
     if (dir) rm(dir, { recursive: true, force: true }).catch(() => {});

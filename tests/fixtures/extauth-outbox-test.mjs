@@ -8,7 +8,7 @@ import { appendFileSync, mkdirSync, readdirSync, readFileSync, renameSync, statS
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createExternalAuth } from '../../lib/mcp/external-auth.js';
-import { backoffMs, createOutbox, recordIdFor } from '../../lib/mcp/outbox.js';
+import { backoffMs, createOutbox, outboxRetryDead, recordIdFor } from '../../lib/mcp/outbox.js';
 
 const E = process.env;
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -89,6 +89,16 @@ await test('record ids are the idempotency key; backoff is 30 s doubling to 15 m
     assert.ok(b3 >= 96000 && b3 <= 144000, `attempt 3: ${b3}`);
     assert.ok(backoffMs(20, {}, () => r) <= 15 * MIN && backoffMs(20, {}, () => r) >= 12 * MIN, 'capped at 15 minutes');
   }
+});
+
+await test('a dead-lettered conflict record can be retried with the documented operator command', async () => {
+  const { outbox, dirs } = setup('conflict-retry');
+  await outbox.enqueue('settle', settleArgs('res_conflict_retry'));
+  const c = await outbox.enqueue('settle', settleArgs('res_conflict_retry', 5));
+  assert.equal(c.conflict, true);
+  const conflictId = c.record_id; assert.match(conflictId, /^conflict-[0-9a-f]{8}\.settle\.reservation_id\.res_conflict_retry$/);
+  assert.deepEqual(await outboxRetryDead(dirname(dirname(dirs.pending)), conflictId), { record_id: conflictId });
+  assert.equal(files(dirs.dead).length, 0, 'moved out of dead/'); assert.equal(files(dirs.pending).length, 2);
 });
 
 await test('enqueue is durable, mode 0600 in 0700 dirs, and the same record_id twice is a no-op', async () => {
