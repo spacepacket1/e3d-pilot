@@ -508,6 +508,10 @@ echo "ok - startup warning, static tokens ignored, readyz ready"
 
 # a valid key runs a debate; the ledger is charged the actual use
 r="$(init S1 "$TOKEN_OK")"; assert_eq "$(status "$r")" "200"; SID_OK="$(hdr mcp-session-id)"
+# hook mode accepts the same key in X-Auth-Token (connector UIs that reserve Authorization), with the same checks
+r="$(http S1 /mcp -X POST "${J[@]}" -H "X-Auth-Token: $TOKEN_OK" -d "$INIT")"; assert_eq "$(status "$r")" "200" "X-Auth-Token with a valid key"
+r="$(http S1 /mcp -X POST "${J[@]}" -H "X-Auth-Token: wrong-key-0123456789abcdef" -d "$INIT")"; assert_eq "$(status "$r")" "401" "a wrong X-Auth-Token key"
+r="$(http S1 /mcp -X POST "${J[@]}" -H "Authorization: Bearer wrong-key-0123456789abcdef" -H "X-Auth-Token: $TOKEN_OK" -d "$INIT")"; assert_eq "$(status "$r")" "401" "a wrong Authorization is not rescued by X-Auth-Token"
 r="$(rpc S1 "$TOKEN_OK" "$SID_OK" '{"jsonrpc":"2.0","id":2,"method":"tools/list"}')"
 assert_eq "$(body "$r" | jq -r '.result.tools | map(.name) | sort | join(",")')" "e3d_debate,e3d_usage" "the service narrows the operator's tools"
 r="$(tool S1 "$TOKEN_OK" "$SID_OK" e3d_list_providers)"; assert_contains "$(body "$r" | jq -r .error.message)" "unknown tool" "a narrowed-away tool is refused"
