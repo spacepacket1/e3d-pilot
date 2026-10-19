@@ -1,0 +1,5 @@
+debate-contract 1
+5fd35e6168ebd6a012546cbdcb6a7d3c58b27b711fc35733a036f37f0fc6429c  authorize-run.schema.json
+7bd10fa0fe7a44c99ca809c8c8fd6f4d037c53805929c16ba0c704bcfde1e890  debate-fixtures.json
+1442d41965368f707eb84b8d4c1025458636b9033ee93410dd72bd67aa8a41d1  fetch.schema.json
+7d69709dde836f4c1833318d39d1a2153dd87996377ae99d5f714aec3b923119  finalize.schema.json

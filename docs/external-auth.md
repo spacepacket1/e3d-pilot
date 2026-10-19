@@ -8,7 +8,10 @@ complete contract. Any billing backend can implement it; nothing in it is specif
 Machine-readable parts:
 
 - JSON Schemas, one request and one response schema per call: [`docs/external-auth/`](external-auth/)
-  (`<call>.request.schema.json`, `<call>.response.schema.json`).
+  (`<call>.request.schema.json`, `<call>.response.schema.json`). The optional [Debate contract v1](#debate-contract-v1)
+  calls have one file each holding both (`finalize.schema.json`, `fetch.schema.json`, `authorize-run.schema.json`,
+  under `$defs.request` and `$defs.response`), plus the shared fixtures `debate-fixtures.json`, all pinned by
+  `CONTRACT-VERSION`.
 - A reference implementation (example and test fixture, not production code): `examples/external-auth-stub.js`.
 - Conformance vectors you can run against your implementation:
   `node examples/external-auth-conformance.js <base-url> <service-token>`.
@@ -17,13 +20,13 @@ Machine-readable parts:
 
 | | |
 |---|---|
-| Calls | `POST <E3D_MCP_AUTH_URL>/<call>` with a JSON body, for `introspect`, `reserve`, `settle`, `release`; `GET <E3D_MCP_AUTH_URL>/health` |
+| Calls | `POST <E3D_MCP_AUTH_URL>/<call>` with a JSON body, for `introspect`, `reserve`, `settle`, `release` (and, only when advertised, `finalize`, `fetch`, `authorize-run`); `GET <E3D_MCP_AUTH_URL>/health` |
 | URL joining | trailing slashes of the base are stripped, then `/<call>` is appended. A base with credentials, a query or a fragment is rejected at startup |
 | Scheme | `https:` is required; `http:` only to loopback hosts. Certificate verification is never disabled. Redirects are never followed |
 | Authentication | `Authorization: Bearer <service token>`; the token comes from `E3D_MCP_AUTH_SERVICE_TOKEN` or the file named by `E3D_MCP_AUTH_SERVICE_TOKEN_FILE` (which must not be group- or world-readable), at least 24 printable ASCII characters |
 | Version | every request carries `X-E3D-Auth-Version: 1` |
-| Limits | request body at most 16 KB, response body at most 64 KB |
-| Timeouts | 3000 ms for `introspect`, `reserve` and `health`; 10000 ms for `settle` and `release` |
+| Limits | request body at most 16 KB, response body at most 64 KB (a `finalize` request at most 512 KB, a `fetch` response at most 2 MB) |
+| Timeouts | 3000 ms for `introspect`, `reserve`, `health` and `authorize-run`; 10000 ms for `settle` and `release`; 15000 ms for `finalize`; 5000 ms for `fetch` |
 | Types | numbers are non-negative safe integers within the bounds in the schemas; timestamps are RFC 3339 and compared with a clock-skew allowance of 60 seconds; principal ids match `^[A-Za-z0-9_.:-]{1,80}$`; `request_id` is a UUID |
 
 ## Calls
@@ -34,8 +37,10 @@ Request `{ "token": "<the caller's bearer token>" }`.
 
 Response, either:
 
-- `{ "active": true, "principal": "<id>", "tools"?: ["e3d_debate", ...], "limits"?: { "rate_per_min"?, "max_inflight"? }, "expires_at"?: "<RFC 3339>" }`
+- `{ "active": true, "principal": "<id>", "tools"?: ["e3d_debate", ...], "limits"?: { "rate_per_min"?, "max_inflight"? }, "expires_at"?: "<RFC 3339>", "features"?: ["finalize", "fetch", "authorize-run"] }`
 - `{ "active": false }`
+
+`features` advertises the optional [Debate contract v1](#debate-contract-v1) calls the service supports.
 
 `tools` can only narrow the operator's `E3D_MCP_HTTP_TOOLS` allowlist, never widen it. `limits` can only lower the
 server's own limits. `expires_at` caps how long the server caches the answer. Unknown, revoked and expired keys are
@@ -182,6 +187,148 @@ request already in flight** when the key was revoked (that request completes and
 - New refusal codes require a new protocol version (the server treats an unknown code as a malformed response, and
   fails closed).
 
+## Debate contract v1
+
+Optional calls for hosted debates: a finished debate is settled **and** stored by the service in one operation
+(`finalize`), its owner can read it back later (`fetch`), and the server can run a debate the service reserved itself
+(`authorize-run`, used by the internal run listener for web runs). This section is normative for e3d-pilot and for the
+billing service; both carry the same schemas and fixtures, pinned by `docs/external-auth/CONTRACT-VERSION` (the line
+`debate-contract 1`, then the SHA-256 of each pinned file in `sha256sum` format; `shasum -a 256 -c` checks it).
+
+### Capability gating
+
+`introspect` may answer `features`, an array of call names. Version 1 defines exactly `finalize`, `fetch` and
+`authorize-run`; any other value is ignored by the server (a newer service never breaks an older server), and a missing
+`features` means the original protocol exactly: the server sends none of these calls. The server uses only what is
+advertised (the latest active `introspect` answer wins):
+
+| Advertised | The server |
+|---|---|
+| nothing | settles debates with `settle`/`release`, exactly as before |
+| `finalize` | finalizes every synchronous `e3d_debate` with `finalize` instead of `settle` (never both) |
+| `finalize` and `fetch` | additionally offers the async debate tools (start, check on, and get the result of a debate) |
+| all three | additionally enables the internal run listener for pre-reserved (web) runs |
+
+### Ids
+
+`request_id` is the UUID reserve idempotency key; `reservation_id` is assigned by the service (for example `rsv_...`);
+`debate_id` is `dbt_` followed by 24 lowercase hexadecimal characters, assigned by the server for connector runs or by the
+service for web runs. The service keeps both `debate_id` and `reservation_id` unique and their binding immutable. A
+principal reads only its own debates; unknown ids and ids owned by someone else answer identically (`not_found`).
+
+### `finalize`
+
+Request (all fields required):
+`{ "reservation_id", "debate_id", "source": "connector" | "web", "outcome": "ok" | "error" | "timeout", "actual": { "calls", "est_input_tokens", "est_output_tokens" }, "models": [ { "provider", "model", "calls" } ], "duration_ms", "question", "providers": [...], "rounds", "result": { "final_answer", "consensus", "dissent", "positions": [ { "provider", "model", "position" } ] } | null, "transcript": "<markdown>" | null, "truncated", "started_at", "finished_at" }`.
+
+An `ok` outcome carries a result; `error` and `timeout` carry `"result": null`. `question` is 1 to 8000 Unicode scalar
+values without control characters other than tab, LF and CR. `actual`, `duration_ms` and `rounds` are non-negative integers.
+
+Response `{ "ok": true, "stored": <boolean>, "charged": <credits> }` or `{ "ok": false, "code" }`; `stored: false` requires
+`charged: 0`.
+
+- **Never charge without a durable result.** For `ok`, the service charges the held price only if it atomically stores
+  the result, answering `stored: true`. If it cannot or must not store it (the debate was deleted or the account closed
+  while it ran), it answers `stored: false`, charges zero and releases the hold. `error` and `timeout` charge the
+  service's configured failed price (default zero) and store the terminal record when permitted. Zero model calls always
+  charge zero.
+- **One immutable intent per reservation.** The server builds exactly one body per reservation and may deliver it many
+  times. The effect is idempotent per `reservation_id`: the same canonical body again returns the original answer; a
+  different body (or a `debate_id` already bound to another reservation) is `conflict`.
+- **Limits.** The whole UTF-8 JSON body is at most 512 KB and the transcript at most 480 KB, so the metadata always has
+  room. The server cuts only the transcript, at a section boundary (the longest prefix of whole sections, a section
+  starting at a line that begins `## `), and sets `truncated: true`. A body that does not fit even without its transcript
+  is never sent as a result: the server finalizes it as `error` without one. A question that cannot fit is refused before
+  anything is reserved.
+- **Delivery.** `finalize` goes through the durable outbox as its own record type (`finalize.reservation_id.<id>`).
+  `unavailable`, `not_ready` (and rate limits or transport failures) are retried with bounded exponential backoff and
+  jitter. `conflict`, `not_found`, `invalid` and `too_large` are terminal: the record is dead-lettered keeping ids, usage
+  and the code only (the question, result and transcript are removed). The server never sends `settle` for a debate it
+  finalizes.
+- **Restart.** A debate whose models started but which has no recorded outcome (the process was killed) is finalized on
+  restart as `outcome: "error"` with no result and the reserved units as usage; a recorded outcome is replayed as the
+  identical body. The orphan policy (`E3D_MCP_ORPHAN_POLICY`) applies only when `finalize` is not advertised.
+
+### `fetch`
+
+Request `{ "debate_id", "principal", "include_transcript": <boolean> }`. `principal` is a claim: the service compares it
+with the owner it derives through the reservation, and never treats it as proof of ownership.
+
+Response `{ "ok": true, "debate": { "debate_id", "status": "queued" | "running" | "done" | "failed", "outcome": "ok" | "error" | "timeout" | null, "question", "providers", "rounds", "result": {...} | null, "usage", "credits_charged", "created_at", "finished_at": "<RFC 3339>" | null, "truncated", "transcript"? } }`
+or `{ "ok": false, "code": "not_found" }` (identical for unknown and foreign debates). `transcript` is present only when
+`include_transcript` is true. The server adds a 60 second negative cache and a per-principal rate limit.
+
+### `authorize-run`
+
+Request `{ "reservation_id", "debate_id" }`, sent only by the internal run listener. Response
+`{ "ok": true, "principal", "price_credits", "status": "reserved" | "bound" }` or `{ "ok": false, "code" }`. The listener
+takes the owner only from this answer, never from the run request, and refuses before any model work if it is not `ok`.
+The same pair gets the same answer while the reservation is held; reusing either id with a different counterpart is
+`conflict`. Once the reservation is finalized (or no longer held) every `authorize-run` for it is `conflict`, **even for the
+same pair**, so a repeated run request for a finished debate can never start a second run.
+
+### The internal run listener (web runs)
+
+The service calls this listener, not the reverse. It is enabled by `E3D_MCP_RUN_PORT` and `E3D_MCP_RUN_TOKEN` (32+
+characters), binds to `127.0.0.1` only, and accepts new runs only while all three features are advertised (otherwise
+`503 not_ready`). Every request carries `Authorization: Bearer <E3D_MCP_RUN_TOKEN>`; failed authentication answers 401
+and is rate-limited.
+
+- `POST /internal/runs` `{reservation_id, debate_id, question, providers?, rounds?, max_words?}` (no other fields). The
+  server calls `authorize-run` before any model work, meters the run from that reservation (never a new `reserve`), and
+  finalizes it once with `source: "web"`. Answers carry `accepted`: `202` new run or `200` identical repeat, both
+  `{ok:true, accepted:true, existing, debate_id, status, run_token}`; definitive refusals `400 invalid`,
+  `403 not_authorized` (with the `authorize-run` code as `reason`), `409 conflict`, `429 busy`; `503 unavailable` or
+  `not_ready` means nothing was accepted, so retry later. A refusal leaves the reservation with the service.
+- `GET` and `DELETE /internal/runs/{debate_id}` also need `X-E3D-Run-Token: <run_token>`; an unknown id and a wrong run
+  token both answer 401. GET returns `{ok:true, run:{debate_id, status, outcome, progress?, result?, usage,
+  credits_charged, created_at, started_at, finished_at, cancelled?}}`. DELETE cancels: the run is finalized with
+  `outcome:"error"` and no result (a finished run is returned unchanged).
+
+### Errors and HTTP statuses
+
+The debate calls answer success with HTTP 200 and errors with `{ "ok": false, "code" }` and the code's status. Of these
+answers only 503 (`unavailable`, `not_ready`) is retryable; the server also backs off and retries a 429 for `finalize`
+rather than dead-letter a paid result. A response that is not a contract answer (a status without its matching
+`{ "ok": false, "code" }` body, a timeout, a redirect) is a service failure: a `finalize` stays in the outbox and is retried.
+
+<!-- conformance:debate-codes -->
+| Call | Code | HTTP | Meaning |
+|---|---|---|---|
+| `finalize` | `invalid` | 400 | the body does not match the schema |
+| `finalize` | `not_found` | 404 | no such reservation |
+| `finalize` | `conflict` | 409 | a different body for a finalized reservation, or an id bound elsewhere |
+| `finalize` | `too_large` | 413 | the body is over 512 KB |
+| `finalize` | `rate_limited` | 429 | slow down (retried) |
+| `finalize` | `unavailable` | 503 | try again later (retried) |
+| `finalize` | `not_ready` | 503 | the service cannot take it yet (retried) |
+| `fetch` | `invalid` | 400 | the request does not match the schema |
+| `fetch` | `not_found` | 404 | no such debate for this principal |
+| `fetch` | `rate_limited` | 429 | slow down |
+| `fetch` | `unavailable` | 503 | try again later |
+| `fetch` | `not_ready` | 503 | try again later |
+| `authorize-run` | `invalid` | 400 | the request does not match the schema |
+| `authorize-run` | `not_found` | 404 | no such reservation |
+| `authorize-run` | `conflict` | 409 | an id is bound to another counterpart, or the reservation is not held |
+| `authorize-run` | `rate_limited` | 429 | slow down |
+| `authorize-run` | `unavailable` | 503 | try again later |
+| `authorize-run` | `not_ready` | 503 | try again later |
+<!-- /conformance:debate-codes -->
+
+### Canonical bodies and fixtures
+
+Bodies are compared in canonical form: object keys sorted recursively by UTF-16 code unit (so `"10"` sorts before `"9"`),
+array order kept, standard JSON string escaping, no insignificant whitespace. `docs/external-auth/debate-fixtures.json`
+pins the canonicalization, the section-boundary truncation and valid and invalid examples of every request and response;
+the conformance runner checks them and the hashes in `CONTRACT-VERSION`. The schemas are the wire-format source of truth;
+the rules above about ownership, charging, durability and gating stay normative where a schema cannot express them.
+
+### Privacy
+
+Questions, answers and transcripts never appear in logs, stats, `--outbox-status`, `--outbox-export` (finalize records
+are exported without them) or dead-letter records. They exist only in the mode-0600 metering intent and outbox record
+until delivery, and in the service.
+
 ## Implementer's security checklist
 
 Before putting a service in front of real money, confirm each item (the conformance runner covers the protocol, not these):
@@ -204,7 +351,8 @@ Check state with `e3d-mcp --doctor`, the `e3d_usage` tool, `e3d-mcp --outbox-sta
 - `auth service health check failed`: the last background `GET /health` did not answer. New requests fail with 503 until it does; running debates still settle (into the outbox if needed). Check the service, then `E3D_MCP_AUTH_URL` and the service token.
 - `dead-letter records need an operator`: a settle or release was refused permanently (a `conflict`, or a 401/403 that means a wrong service token). Reconcile below.
 - `dead-lettered settlements`: `E3D_MCP_OUTBOX_MAX_DEAD` (default 1) dead records stop new billed work until an operator retries them with `--outbox-retry-dead`.
-- `outbox is at its bound`: `E3D_MCP_OUTBOX_MAX` undelivered records. New billed work is refused until delivery drains it; usage already run is never discarded.
+- `outbox is at its bound`: `E3D_MCP_OUTBOX_MAX` undelivered records, or `E3D_MCP_OUTBOX_MAX_BYTES` (default 64 MB) of them. New billed work is refused until delivery drains it; usage already run is never discarded.
+- A dead `finalize.reservation_id.<id>` record: the service gave a terminal answer (the reason shows the code). The record keeps ids and usage only, so it cannot be retried; reconcile the reservation with the service by its id.
 
 **Reconciling dead records**
 

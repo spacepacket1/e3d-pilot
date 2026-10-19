@@ -64,6 +64,9 @@ mkdir -p "$TMP/schemas" && cp "$ROOT"/docs/external-auth/*.json "$TMP/schemas/"
 jq '.properties.units.properties.calls.maximum = 5' "$ROOT/docs/external-auth/reserve.request.schema.json" > "$TMP/schemas/reserve.request.schema.json"
 if node "$ROOT/tests/fixtures/extauth-drift.mjs" --schemas "$TMP/schemas" > "$TMP/drift3.out" 2>&1; then fail "drift check must fail when a schema file differs from the client"; fi
 assert_contains "$(cat "$TMP/drift3.out")" "reserve.request.schema.json differs"
+grep -v '^| `fetch` | `not_found` |' "$ROOT/docs/external-auth.md" > "$TMP/doc-missing-debate-code.md"
+if node "$ROOT/tests/fixtures/extauth-drift.mjs" --doc "$TMP/doc-missing-debate-code.md" > "$TMP/drift4.out" 2>&1; then fail "drift check must fail when a debate code is undocumented"; fi
+assert_contains "$(cat "$TMP/drift4.out")" "fetch codes in the document"
 echo "ok - drift check detects drift"
 
 # --- conformance: the reference stub passes every vector ---
@@ -76,6 +79,15 @@ curl -fsS -X POST -H "authorization: Bearer $SVC" -H 'content-type: application/
 if E3D_CONFORMANCE_FIXTURES="$TMP/fixtures.json" node "$CONF" "$STUB_URL" "$SVC" > "$TMP/conformance-bad.out" 2>&1; then fail "conformance must fail against a non-conforming service"; fi
 assert_contains "$(cat "$TMP/conformance-bad.out")" "not ok"
 echo "ok - conformance fails on a violation"
+# with the Debate contract v1 calls advertised, every debate vector runs (none skipped), and a violation fails the run
+start_stub conf-fin STUB_RESERVATION_TTL_SEC=2 STUB_FEATURES=finalize,fetch,authorize-run
+E3D_CONFORMANCE_FIXTURES="$TMP/fixtures.json" node "$CONF" "$STUB_URL" "$SVC" > "$TMP/conformance-fin.out" 2>&1 || { cat "$TMP/conformance-fin.out"; fail "conformance run against the stub with features"; }
+assert_contains "$(cat "$TMP/conformance-fin.out")" "vectors passed"; ! grep -q SKIP "$TMP/conformance-fin.out" || fail "no debate vector may be skipped when the calls are advertised"
+grep -q "skipped: not advertised" "$TMP/conformance.out" || fail "against a stub without features the debate vectors are skipped"
+curl -fsS -X POST -H "authorization: Bearer $SVC" -H 'content-type: application/json' -d '{"mode":"invalid","calls":["finalize"]}' "$STUB_URL/_stub/inject" > /dev/null
+if E3D_CONFORMANCE_FIXTURES="$TMP/fixtures.json" node "$CONF" "$STUB_URL" "$SVC" > "$TMP/conformance-fin-bad.out" 2>&1; then fail "conformance must fail when finalize answers off-contract"; fi
+assert_contains "$(cat "$TMP/conformance-fin-bad.out")" "not ok"
+echo "ok - Debate contract v1 conformance: all vectors pass with features; skipped without; a violation fails"
 
 # --- the client against a fresh stub (default reservation lifetime) ---
 start_stub client
@@ -103,6 +115,21 @@ for secret in "$SVC" "$TOKEN_OK" "$TOKEN_REVOKED" "$TOKEN_REVOCABLE" "$TOKEN_SHO
 done
 if grep -rl "MARKER" "$TMP/outbox-state"; then fail "a planted marker leaked into the outbox files above"; fi
 echo "ok - outbox files are 0600 and contain no token ($n_records files)"
+
+# --- Debate contract v1: contract pins, finalize/fetch/authorize-run, the finalize outbox record and metering, against two
+#     fresh stubs: one advertising the three calls, one advertising nothing (version skew in both directions) ---
+start_stub fin-unit STUB_FEATURES=finalize,fetch,authorize-run; FIN_UNIT_URL="$STUB_URL"
+start_stub legacy-unit; LEGACY_UNIT_URL="$STUB_URL"
+mkdir -p "$TMP/finalize-state"
+STUB_URL="$FIN_UNIT_URL" LEGACY_URL="$LEGACY_UNIT_URL" STATE_ROOT="$TMP/finalize-state" CLIENT_LOG="$TMP/finalize-client.log" \
+  node "$ROOT/tests/fixtures/extauth-finalize-test.mjs" | tee "$TMP/finalize.out"
+assert_contains "$(cat "$TMP/finalize.out")" "finalize tests:"
+while IFS= read -r -d '' f; do
+  mode="$(stat -f '%Lp' "$f" 2>/dev/null || stat -c '%a' "$f")"
+  [[ "$mode" == "600" ]] || fail "finalize state file $f has mode $mode, expected 600"
+done < <(find "$TMP/finalize-state" \( -path '*auth-outbox*' -o -path '*metering-intents*' \) -type f -name '*.json' -print0)
+if grep -lE 'QCONTENT|ACONTENT|TCONTENT' "$TMP/finalize-client.log" "$TMP/fin-unit.log" "$TMP/legacy-unit.log"; then fail "debate content leaked into the logs above"; fi
+echo "ok - Debate contract v1 unit tests; state files 0600; no debate content in any log"
 
 # --- lib/mcp/metering.js at the unit level (fake service, real local usage) ---
 node --input-type=module - "$ROOT" "$TMP/metering-unit" <<'JS'
@@ -783,12 +810,131 @@ done
 echo "ok - --doctor reports the hook, health and dead records without credentials or URL paths"
 
 # the README documents every hook variable and the docs carry the checklist and the runbook
-for v in E3D_MCP_AUTH_URL E3D_MCP_AUTH_SERVICE_TOKEN E3D_MCP_AUTH_SERVICE_TOKEN_FILE E3D_MCP_AUTH_CACHE_SEC E3D_MCP_AUTH_MAX_INFLIGHT E3D_MCP_AUTH_IP_PER_MIN E3D_MCP_AUTH_HEALTH_SEC E3D_MCP_OUTBOX_MAX E3D_MCP_OUTBOX_CLAIM_SEC E3D_MCP_ORPHAN_POLICY; do
+for v in E3D_MCP_AUTH_URL E3D_MCP_AUTH_SERVICE_TOKEN E3D_MCP_AUTH_SERVICE_TOKEN_FILE E3D_MCP_AUTH_CACHE_SEC E3D_MCP_AUTH_MAX_INFLIGHT E3D_MCP_AUTH_IP_PER_MIN E3D_MCP_AUTH_HEALTH_SEC E3D_MCP_OUTBOX_MAX E3D_MCP_OUTBOX_MAX_BYTES E3D_MCP_OUTBOX_CLAIM_SEC E3D_MCP_ORPHAN_POLICY; do
   grep -q "| \`$v\` |" "$ROOT/README.md" || fail "README table is missing $v"
 done
 grep -q "^### Hosting with an external auth and metering service" "$ROOT/README.md" || fail "README section missing"
 grep -q "^## Implementer's security checklist" "$ROOT/docs/external-auth.md" && grep -q "^## Operator runbook" "$ROOT/docs/external-auth.md" || fail "docs checklist/runbook missing"
 echo "ok - README variables table and docs sections present"
+
+# ================= Debate contract v1 on the real server: synchronous debates finalize instead of settling =================
+# The S servers above talk to a stub that advertises nothing: not one finalize, fetch or authorize-run was sent to it.
+assert_eq "$(grep -cE '"call":"(finalize|fetch|authorize-run)"' "$TMP/srv.log" || true)" "0" "a service without features receives no new calls"
+start_stub fin STUB_SEED="$TMP/seed-server.json" STUB_FEATURES=finalize,fetch,authorize-run
+FIN_URL="$STUB_URL"; FIN_PID="${PIDS[${#PIDS[@]}-1]}"
+fledger() { curl -fsS -H "authorization: Bearer $SVC" "$FIN_URL/_stub/state"; }
+finject() { curl -fsS -X POST -H "authorization: Bearer $SVC" -H 'content-type: application/json' -d "$1" "$FIN_URL/_stub/inject" > /dev/null; }
+ffetch() { curl -sS -X POST -H "authorization: Bearer $SVC" -H 'x-e3d-auth-version: 1' -H 'content-type: application/json' -d "$(jq -nc --arg d "$1" --arg p "$2" '{debate_id:$d,principal:$p,include_transcript:true}')" "$FIN_URL/fetch"; }
+MARK="$(openssl rand -hex 4)"
+FQ="QCONTENT-$MARK: a JSON file or SQLite?"
+FDEBATE="$TMP/stub-debate-fin"; FMODE="$TMP/debate-fin.mode"; FSTARTED="$TMP/debate-fin.started"; echo ok > "$FMODE"
+cat > "$FDEBATE" <<STUBEOF
+#!/usr/bin/env bash
+out=""
+while [[ \$# -gt 0 ]]; do case "\$1" in --out-dir) out="\$2"; shift 2 ;; *) shift ;; esac; done
+mode="\$(cat "$FMODE")"
+mkdir -p "\$out"
+printf '# Debate\n\n## Round 1 -- claude\n\nTCONTENT-$MARK JSON file.\n\n## Round 1 -- codex\n\nSQLite.\n' > "\$out/transcript.md"
+case "\$mode" in
+  fail-early) rm -f "\$out/transcript.md"; echo "provider exploded" >&2; exit 1 ;;
+  partial) exec sleep 8 ;;
+  hang) touch "$FSTARTED"; exec sleep 8 ;;
+esac
+printf 'FINAL ANSWER: ACONTENT-$MARK use a JSON file.\nCONSENSUS: split\nDISSENT: Codex prefers SQLite.\n'
+STUBEOF
+chmod +x "$FDEBATE"
+fserver() { start_server "$1" E3D_MCP_AUTH_URL="$FIN_URL" E3D_MCP_DEBATE_BIN="$FDEBATE"; }
+fdebate() { tool "$1" "$TOKEN_OK" "$2" e3d_debate "$(jq -nc --arg q "$FQ" '{question:$q,providers:["claude","codex"]}')"; }
+effects_of() { fledger | jq -c --arg r "$1" '[.effects[] | select(.reservation_id == $r)]'; }
+last_rid() { fledger | jq -r '.reservations[-1].reservation_id'; }
+
+fserver F1; FS1="$(sid_of F1 "$TOKEN_OK")"
+# ok: one finalize, stored and charged; the owner can fetch the result; no settle is ever sent
+bal0="$(fledger | jq .accounts.acct_ok.balance)"
+r="$(fdebate F1 "$FS1")"; assert_eq "$(rerr "$r")" "false" "a debate finalizes"
+sc="$(res "$r")"; FRID="$(jq -r .billing.reservation_id <<< "$sc")"; FDID="$(jq -r .billing.debate_id <<< "$sc")"
+[[ "$FDID" =~ ^dbt_[0-9a-f]{24}$ ]] || fail "billing carries the debate id: $sc"
+assert_eq "$(jq -r .billing.stored <<< "$sc")" "true"; charged="$(jq -r .billing.charged <<< "$sc")"; [[ "$charged" -gt 0 ]] || fail "an ok debate is charged"
+assert_eq "$(effects_of "$FRID" | jq -c 'map([.stored, .charged])')" "[[true,$charged]]" "one effect"
+assert_eq "$(fledger | jq .accounts.acct_ok.balance)" "$((bal0 - charged))"
+assert_eq "$(fledger | jq '[.settlements[] | select(.call != "finalize")] | length')" "0" "no settle is sent when finalize is advertised"
+fr="$(ffetch "$FDID" acct_ok)"; assert_contains "$(jq -r .debate.result.final_answer <<< "$fr")" "ACONTENT-$MARK"; assert_eq "$(jq -r .debate.question <<< "$fr")" "$FQ"
+assert_contains "$(jq -r .debate.transcript <<< "$fr")" "TCONTENT-$MARK"
+assert_eq "$(jq -r '.debate.result.positions | map(.provider) | join(",")' <<< "$fr")" "claude,codex"
+assert_eq "$(ffetch "$FDID" acct_broke)" "$(ffetch "dbt_$(openssl rand -hex 12)" acct_ok)" "a foreign debate is not_found like an unknown one"
+[[ -z "$(ls -A "$TMP/state-F1/metering-intents")" ]] || fail "the intent is removed once finalized"
+echo "ok - finalize advertised: a synchronous debate is finalized once (stored, charged $charged), never settled"
+
+# a timeout: finalized with outcome timeout and no result (the failed price, 0); a failure before any answer: zero calls, one finalize
+echo partial > "$FMODE"
+r="$(fdebate F1 "$FS1")"; assert_contains "$(rtext "$r")" "timed out"; rid="$(last_rid)"
+assert_eq "$(effects_of "$rid" | jq -c 'map(.charged)')" "[0]"; assert_eq "$(fledger | jq -r --arg r "$rid" '.debates[] | select(.reservation_id==$r) | [.outcome, .has_result] | join(",")')" "timeout,false"
+echo fail-early > "$FMODE"
+r="$(fdebate F1 "$FS1")"; assert_contains "$(rtext "$r")" "debate failed"; rid="$(last_rid)"
+assert_eq "$(fledger | jq -r --arg r "$rid" '.finalize_requests[$r]')" "1" "zero calls are still one finalize, not a release"
+assert_eq "$(effects_of "$rid" | jq -c 'map(.charged)')" "[0]"
+echo ok > "$FMODE"
+echo "ok - timeout and failure finalize without a result and charge zero"
+
+# an outage: the finalize waits in the outbox (0600), the listing and e3d_usage show no content; delivered once later
+finject '{"mode":"5xx","calls":["finalize"]}'
+r="$(fdebate F1 "$FS1")"; assert_eq "$(rerr "$r")" "false" "the result is returned during an outage"
+ORID="$(res "$r" | jq -r .billing.reservation_id)"; assert_eq "$(res "$r" | jq -r .billing.queued)" "true"
+[[ -f "$TMP/state-F1/auth-outbox/pending/finalize.reservation_id.$ORID.json" ]] || fail "the finalize is in the outbox"
+st="$(env E3D_MCP_STATE_DIR="$TMP/state-F1" "$SERVER" --outbox-status 2>&1)"; assert_contains "$st" "call=finalize"; echo "$st" > "$TMP/fin-status.out"
+r="$(tool F1 "$TOKEN_OK" "$FS1" e3d_usage)"; rtext "$r" > "$TMP/fin-usage.out"
+finject '{"mode":null}'
+E3D_MCP_AUTH_URL="$FIN_URL" E3D_MCP_AUTH_SERVICE_TOKEN="$SVC" node --input-type=module - "$ROOT" "$TMP/state-F1" <<'JS'
+const [root, dir] = process.argv.slice(2);
+const { createExternalAuth } = await import(`${root}/lib/mcp/external-auth.js`);
+const { createOutbox } = await import(`${root}/lib/mcp/outbox.js`);
+const r = await createOutbox({ dir, auth: createExternalAuth({}), now: () => Date.now() + 3600e3 }).flush();
+if (r.delivered.length !== 1) { console.error(JSON.stringify(r)); process.exit(1); }
+JS
+assert_eq "$(effects_of "$ORID" | jq -c 'map(.stored)')" "[true]" "delivered once after the outage"
+echo "ok - outage: the finalize is queued and delivered once afterwards"
+
+# the process killed between debate completion and delivery: the restart replays the journaled finalize; one effect
+finject '{"mode":"slow","calls":["finalize"],"count":1,"ms":3000}'
+recv0="$(fledger | jq '.received.finalize // 0')"
+( fdebate F1 "$FS1" > /dev/null 2>&1 || true ) &
+# wait until the finalize is at the service (held there by the slow injection), then kill
+for _ in $(seq 1 200); do [[ "$(fledger | jq '.received.finalize // 0')" -gt "$recv0" ]] && break; sleep 0.05; done
+[[ "$(fledger | jq '.received.finalize // 0')" -gt "$recv0" ]] || fail "the finalize did not reach the service"
+grep -lq '"call":"finalize"' "$TMP/state-F1/metering-intents/"*.json || fail "the outcome is journaled before delivery"
+KRID="$(jq -r .reservation_id "$TMP/state-F1/metering-intents/"*.json)"; [[ "$KRID" == res_* ]] || fail "the journaled intent names the reservation"
+kill -9 "$PID_F1"; wait "$PID_F1" 2>/dev/null || true
+fserver F1
+for _ in $(seq 1 100); do [[ "$(fledger | jq -r --arg r "$KRID" '.finalize_requests[$r] // 0')" == "2" ]] && break; sleep 0.1; done
+assert_eq "$(fledger | jq -r --arg r "$KRID" '.finalize_requests[$r]')" "2" "the in-flight delivery and the replay both arrived"
+assert_eq "$(effects_of "$KRID" | jq -c 'map(.stored)')" "[true]" "one effect"
+assert_eq "$(fledger | jq --arg r "$KRID" '[.settlements[] | select(.reservation_id == $r)] | length')" "1" "charged once"
+[[ -z "$(ls -A "$TMP/state-F1/metering-intents")" ]] || fail "the intent is reconciled"
+echo "ok - a kill between completion and delivery: replayed on restart, one effect, charged once"
+
+# the process killed while the models run: the restart finalizes it as error without a result (not the orphan policy)
+rm -f "$FSTARTED"; echo hang > "$FMODE"; FS1="$(sid_of F1 "$TOKEN_OK")"
+( fdebate F1 "$FS1" > /dev/null 2>&1 || true ) &
+for _ in $(seq 1 100); do [[ -e "$FSTARTED" ]] && break; sleep 0.05; done
+[[ -e "$FSTARTED" ]] || fail "the debate did not start on F1"
+HRID="$(jq -r .reservation_id "$TMP/state-F1/metering-intents/"*.json)"
+kill -9 "$PID_F1"; wait "$PID_F1" 2>/dev/null || true; echo ok > "$FMODE"
+fserver F1
+assert_eq "$(fledger | jq -r --arg r "$HRID" '.debates[] | select(.reservation_id==$r) | [.outcome, .has_result, .credits_charged] | join(",")')" "error,false,0" "an interrupted debate is finalized as error"
+assert_contains "$(cat "$TMP/F1.log")" "interrupted debate finalized as error"; assert_not_contains "$(cat "$TMP/F1.log")" "orphaned debate charged"
+echo "ok - a kill while the models run: finalized as error on restart, no result, nothing charged"
+
+# no debate content in the server or stub logs, the outbox listing or e3d_usage; the hook state files are 0600
+for f in "$TMP"/F1.log "$TMP/fin.log" "$TMP/fin-status.out" "$TMP/fin-usage.out"; do
+  if grep -lE "QCONTENT-$MARK|ACONTENT-$MARK|TCONTENT-$MARK" "$f"; then fail "debate content leaked into $f"; fi
+done
+while IFS= read -r -d '' f; do
+  mode="$(stat -f '%Lp' "$f" 2>/dev/null || stat -c '%a' "$f")"; [[ "$mode" == "600" ]] || fail "$f has mode $mode, expected 600"
+done < <(find "$TMP/state-F1" \( -path '*metering-intents*' -o -path '*auth-outbox*' \) -type f -print0)
+fledger > "$TMP/fin-ledger.json"
+jq -e '[.effects[].reservation_id] | (length == (unique | length))' "$TMP/fin-ledger.json" > /dev/null || fail "a reservation was finalized twice"
+jq -e '[.reservations[] | select(.state == "held")] | length == 0' "$TMP/fin-ledger.json" > /dev/null || fail "a hold is left behind"
+echo "ok - no debate content in logs, listings or e3d_usage; one effect per reservation; no hold left"
 
 # --- the ledger: never free, never double ---
 ledger > "$TMP/ledger-final.json"

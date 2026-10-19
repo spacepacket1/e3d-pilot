@@ -1,0 +1,240 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/spacepacket1/e3d-pilot/blob/main/docs/external-auth/fetch.schema.json",
+  "title": "fetch request and response (Debate contract v1)",
+  "$defs": {
+    "request": {
+      "type": "object",
+      "required": [
+        "debate_id",
+        "principal",
+        "include_transcript"
+      ],
+      "properties": {
+        "debate_id": {
+          "type": "string",
+          "pattern": "^dbt_[0-9a-f]{24}$"
+        },
+        "principal": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.:-]{1,80}$"
+        },
+        "include_transcript": {
+          "type": "boolean"
+        }
+      }
+    },
+    "response": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "ok",
+            "debate"
+          ],
+          "properties": {
+            "ok": {
+              "const": true
+            },
+            "debate": {
+              "type": "object",
+              "required": [
+                "debate_id",
+                "status",
+                "outcome",
+                "question",
+                "providers",
+                "rounds",
+                "result",
+                "usage",
+                "credits_charged",
+                "created_at",
+                "finished_at",
+                "truncated"
+              ],
+              "properties": {
+                "debate_id": {
+                  "type": "string",
+                  "pattern": "^dbt_[0-9a-f]{24}$"
+                },
+                "status": {
+                  "enum": [
+                    "queued",
+                    "running",
+                    "done",
+                    "failed"
+                  ]
+                },
+                "outcome": {
+                  "enum": [
+                    "ok",
+                    "error",
+                    "timeout",
+                    null
+                  ]
+                },
+                "question": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 8000,
+                  "pattern": "^[^\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F\\u007F]*$"
+                },
+                "providers": {
+                  "type": "array",
+                  "maxItems": 16,
+                  "items": {
+                    "type": "string",
+                    "pattern": "^[!-~]{1,64}$"
+                  }
+                },
+                "rounds": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 100
+                },
+                "result": {
+                  "oneOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "type": "object",
+                      "required": [
+                        "final_answer",
+                        "consensus",
+                        "dissent",
+                        "positions"
+                      ],
+                      "properties": {
+                        "final_answer": {
+                          "type": "string",
+                          "maxLength": 20000
+                        },
+                        "consensus": {
+                          "enum": [
+                            "full",
+                            "majority",
+                            "split",
+                            "unknown"
+                          ]
+                        },
+                        "dissent": {
+                          "type": "string",
+                          "maxLength": 20000
+                        },
+                        "positions": {
+                          "type": "array",
+                          "maxItems": 16,
+                          "items": {
+                            "type": "object",
+                            "required": [
+                              "provider",
+                              "model",
+                              "position"
+                            ],
+                            "properties": {
+                              "provider": {
+                                "type": "string",
+                                "pattern": "^[!-~]{1,64}$"
+                              },
+                              "model": {
+                                "type": "string",
+                                "pattern": "^[!-~]{1,128}$"
+                              },
+                              "position": {
+                                "type": "string",
+                                "maxLength": 20000
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                },
+                "usage": {
+                  "type": "object",
+                  "required": [
+                    "calls",
+                    "est_input_tokens",
+                    "est_output_tokens"
+                  ],
+                  "properties": {
+                    "calls": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 10000
+                    },
+                    "est_input_tokens": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 1000000000
+                    },
+                    "est_output_tokens": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 1000000000
+                    }
+                  }
+                },
+                "credits_charged": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 1000000000000
+                },
+                "created_at": {
+                  "type": "string",
+                  "format": "date-time",
+                  "maxLength": 64
+                },
+                "finished_at": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time",
+                  "maxLength": 64
+                },
+                "truncated": {
+                  "type": "boolean"
+                },
+                "transcript": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "maxLength": 491520
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "ok",
+            "code"
+          ],
+          "properties": {
+            "ok": {
+              "const": false
+            },
+            "code": {
+              "enum": [
+                "invalid",
+                "not_found",
+                "rate_limited",
+                "unavailable",
+                "not_ready"
+              ]
+            },
+            "message": {
+              "type": "string",
+              "maxLength": 500
+            }
+          }
+        }
+      ]
+    }
+  }
+}
