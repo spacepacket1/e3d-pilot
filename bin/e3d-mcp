@@ -36,6 +36,8 @@ import { createUsage, usageFromTranscript, worstCase, usageTool, usageHandler } 
 import { createExternalAuth, validateConfig as validateAuthConfig } from '../lib/mcp/external-auth.js';
 import { createOutbox, outboxStatus, outboxExport, outboxRetryDead } from '../lib/mcp/outbox.js';
 import { createMetering, createReadiness, modelsFromTranscript, orphanPolicy } from '../lib/mcp/metering.js';
+import { createRuns, validateRunsConfig } from '../lib/mcp/runs.js';
+import { startRunServer, validateRunServerConfig } from '../lib/mcp/run-server.js';
 
 const HTTP_MODE = process.argv.includes('--http');
 // External auth and metering hook (docs/external-auth.md): hosted --http mode only.
@@ -116,21 +118,23 @@ function renderDebate(d) {
   return lines.join('\n');
 }
 
-async function toolDebate(args, progress, ctx) {
+// Validates and resolves the arguments shared by e3d_debate and e3d_debate_start. Returns { error } or the plan.
+// clamp (customer async runs only): caller values are lowered to these maxima instead of refused.
+async function planDebate(args, ctx, { clamp = null } = {}) {
   const question = typeof args.question === 'string' ? args.question.trim() : '';
-  if (!question) return text('error: `question` is required', true);
-  if (question.length > LIMITS.questionChars) return text(`error: question exceeds ${LIMITS.questionChars} characters`, true);
+  if (!question) return { error: 'error: `question` is required' };
+  if (question.length > LIMITS.questionChars) return { error: `error: question exceeds ${LIMITS.questionChars} characters` };
 
   const mode = args.mode ?? 'quick';
-  if (!MODES[mode]) return text('error: mode must be "quick" or "thorough"', true);
-  const rounds = args.rounds ?? MODES[mode].rounds;
-  if (!Number.isInteger(rounds) || rounds < 1 || rounds > LIMITS.rounds) return text(`error: rounds must be an integer 1..${LIMITS.rounds}`, true);
-  const maxWords = args.max_words ?? MODES[mode].maxWords;
-  if (!Number.isInteger(maxWords) || maxWords < 20 || maxWords > LIMITS.maxWords) return text(`error: max_words must be an integer 20..${LIMITS.maxWords}`, true);
-  if (args.include_transcript !== undefined && typeof args.include_transcript !== 'boolean') return text('error: include_transcript must be a boolean', true);
+  if (!MODES[mode]) return { error: 'error: mode must be "quick" or "thorough"' };
+  const lower = (v, max) => (clamp && Number.isInteger(v) ? Math.min(v, max) : v);
+  const rounds = lower(args.rounds ?? MODES[mode].rounds, clamp?.rounds);
+  if (!Number.isInteger(rounds) || rounds < 1 || rounds > LIMITS.rounds) return { error: `error: rounds must be an integer 1..${LIMITS.rounds}` };
+  const maxWords = lower(args.max_words ?? MODES[mode].maxWords, clamp?.max_words);
+  if (!Number.isInteger(maxWords) || maxWords < 20 || maxWords > LIMITS.maxWords) return { error: `error: max_words must be an integer 20..${LIMITS.maxWords}` };
+  if (args.include_transcript !== undefined && typeof args.include_transcript !== 'boolean') return { error: 'error: include_transcript must be a boolean' };
 
   // E3D_MCP_DEBATE_BIN swaps in another debate executable (used by tests); provider checks are then that binary's job.
-  const debateBin = process.env.E3D_MCP_DEBATE_BIN || join(ROOT, 'bin/e3d-debate');
   const stubbed = Boolean(process.env.E3D_MCP_DEBATE_BIN);
   const known = stubbed ? [] : await configuredProviders();
   const samplingOn = sampling.available(ctx?.session);
@@ -147,35 +151,40 @@ async function toolDebate(args, progress, ctx) {
       selectionNote = pick.note;
     }
   }
-  if (!Array.isArray(providers) || providers.some((p) => typeof p !== 'string' || !NAME_RE.test(p))) return text('error: providers must be an array of provider names', true);
+  if (!Array.isArray(providers) || providers.some((p) => typeof p !== 'string' || !NAME_RE.test(p))) return { error: 'error: providers must be an array of provider names' };
   providers = [...new Set(providers)];
-  if (providers.length < 2) return text('error: need at least 2 available providers to debate (call e3d_list_providers); only found: ' + (providers.join(', ') || 'none'), true);
-  if (providers.length > LIMITS.providers) return text(`error: at most ${LIMITS.providers} providers per debate`, true);
+  if (clamp) providers = providers.slice(0, clamp.providers);
+  if (providers.length < 2) return { error: 'error: need at least 2 available providers to debate (call e3d_list_providers); only found: ' + (providers.join(', ') || 'none') };
+  if (providers.length > LIMITS.providers) return { error: `error: at most ${LIMITS.providers} providers per debate` };
   const unavailable = stubbed ? [] : providers.filter((p) => (isSampling(p) ? !samplingOn : !known.find((k) => k.name === p && k.available)));
   if (unavailable.length) {
     const sampled = unavailable.filter(isSampling);
-    return text(`error: provider(s) not available here: ${unavailable.join(', ')}${sampled.length ? ' (mcp-sampling needs an MCP client that supports sampling, such as Copilot in VS Code)' : ''}`, true);
+    return { error: `error: provider(s) not available here: ${unavailable.join(', ')}${sampled.length ? ' (mcp-sampling needs an MCP client that supports sampling, such as Copilot in VS Code)' : ''}` };
   }
   const claudeUp = stubbed || known.some((k) => k.name === 'claude' && k.available);
   if (synthesizer === undefined) synthesizer = samplingOn && providers.includes('mcp-sampling') ? 'mcp-sampling' : (claudeUp ? 'claude' : providers[0]);
+  return { question, mode, rounds, maxWords, providers, synthesizer, selection, selectionNote };
+}
 
-  // Refuse BEFORE spending if the worst case for this request would break today's cap.
-  const principal = ctx?.principal ?? 'local';
-  const worst = worstCase({ providers: providers.length, rounds, maxWords, questionChars: question.length });
-  // Reserve the worst case first (atomically, so concurrent debates cannot overshoot the cap), then settle to actual use.
-  // With the external hook, metering.begin also reserves at the billing service and persists an intent before returning.
-  const rsv = await metering.begin(principal, worst, { tool: 'e3d_debate' });
-  if (!rsv.ok) {
-    if (rsv.kind === 'billing') return text(`error: billing: ${String(rsv.message || rsv.code).replace(/[\x00-\x1f\x7f]+/g, ' ').slice(0, 200)}`, true);
-    if (rsv.kind === 'unavailable') return text('error: billing: temporarily unavailable', true);
-    return text(`error: daily budget: ${rsv.reason}`, true);
-  }
-  const { handle } = rsv;
+// The tool error for a refused metering.begin().
+function beginError(rsv) {
+  if (rsv.kind === 'billing') return text(`error: billing: ${String(rsv.message || rsv.code).replace(/[\x00-\x1f\x7f]+/g, ' ').slice(0, 200)}`, true);
+  if (rsv.kind === 'unavailable') return text('error: billing: temporarily unavailable', true);
+  if (rsv.kind === 'invalid') return text(`error: ${rsv.reason}`, true);
+  return text(`error: daily budget: ${rsv.reason}`, true);
+}
+
+// Runs one reserved debate to its end and commits what actually happened (shared by e3d_debate and the async runner). The
+// caller holds an execution slot (activeDebates). onStarted runs after the durable "models started" marker
+// (metering.start) and before any model is invoked. signal (async runs) stops the debate: a cancelled debate is an error
+// without a result. Returns { startFailed } or the outcome, with `stored` holding the result in the shape the service
+// stores (ok outcomes only).
+async function executeDebate(plan, handle, ctx, { progress, onStarted, signal } = {}) {
+  const { question, providers, rounds, maxWords, synthesizer } = plan;
+  const debateBin = process.env.E3D_MCP_DEBATE_BIN || join(ROOT, 'bin/e3d-debate');
   let settled = false;
   let ran = false;
   let lastRun = null;
-  if (activeDebates >= LIMITS.concurrent) { await metering.abort(handle, 'busy').catch(() => {}); return text(`error: ${LIMITS.concurrent} debates already running; retry shortly`, true); }
-  activeDebates++;
   let dir = null;
   const started = Date.now();
   try {
@@ -189,10 +198,11 @@ async function toolDebate(args, progress, ctx) {
     const usesSampling = providers.some(isSampling) || isSampling(synthesizer);
     const samplingEnv = usesSampling ? await sampling.env(ctx.session, { tag, maxTokens: Math.min(Math.max(maxWords * 3, 300), 4000) }) : {};
     const timeoutMs = usesSampling ? Math.min(LIMITS.timeoutMs, LIMITS.samplingTimeoutMs) : LIMITS.timeoutMs;
-    if (!(await metering.start(handle))) return text('error: billing: temporarily unavailable', true);
+    if (!(await metering.start(handle))) return { startFailed: true };
     ran = true;
+    await onStarted?.();
     const r = await run(debateBin, cliArgs, {
-      timeoutMs,
+      timeoutMs, signal,
       env: { ...process.env, ...samplingEnv },
       onStderr: (s) => { for (const m of s.matchAll(/^=== (.+?) ===$/gm)) progress?.(++step, m[1]); },
     });
@@ -200,15 +210,10 @@ async function toolDebate(args, progress, ctx) {
     // Calls that actually ran are counted from the transcript, whether or not the debate succeeded.
     const transcript = await readFile(join(dir, 'out', 'transcript.md'), 'utf8').catch(() => '');
     // The synthesis call counts when the transcript shows it ran ("## Synthesis" heading), or when the debate was not stopped by the timeout (a failed debate is charged conservatively).
-    const spent = usageFromTranscript(transcript, question, { synthesized: /\n## Synthesis/.test(transcript) || !r.timedOut });
+    const spent = usageFromTranscript(transcript, question, { synthesized: /\n## Synthesis/.test(transcript) || !(r.timedOut || r.cancelled) });
     const verdict = parseVerdict(r.out);
     // Every outcome settles what actually ran (no transcript = zero calls = release).
-    const outcome = r.timedOut ? 'timeout' : (r.code !== 0 || !verdict ? 'error' : 'ok');
-    const { budget, billing } = await metering.commit(handle, spent, { outcome, duration_ms: Date.now() - started, models: modelsFromTranscript(transcript, { synthesizer, calls: spent.calls }) });
-    settled = true;
-    if (r.timedOut) return text(`error: debate timed out after ${timeoutMs / 1000}s and was stopped. ${spent.calls} model call(s) had already answered and are counted against today's budget (${budget?.remaining_calls ?? 'no limit'} calls left). Try mode "quick", fewer providers, or a shorter question.`, true);
-    if (r.code !== 0 || !verdict) return text(`error: debate failed (exit ${r.code})\n${redact(r.err.slice(-1500))}`, true);
-
+    const outcome = r.cancelled ? 'error' : r.timedOut ? 'timeout' : (r.code !== 0 || !verdict ? 'error' : 'ok');
     const { roundsRan, positions } = parsePositions(transcript);
     const samplingCalls = sampling.drain(tag).map((m) => ({ provider: m.voice === 'b' ? 'mcp-sampling-b' : 'mcp-sampling', model: m.model, hint: m.hint }));
     // One entry per provider+model, with how many calls it answered (a voice that also wrote the verdict made two).
@@ -217,23 +222,21 @@ async function toolDebate(args, progress, ctx) {
       acc.set(k, { ...m, calls: (acc.get(k)?.calls ?? 0) + 1 });
       return acc;
     }, new Map()).values()];
-    const indep = independence(providers, samplingModels);
-    const result = {
-      ...verdict,
-      mode, providers, rounds_requested: rounds, rounds_ran: roundsRan || rounds,
-      selection, selection_note: selectionNote, synthesizer,
-      ...(samplingModels.length ? { models: samplingModels } : {}),
-      independent: indep.independent, warnings: indep.warnings,
-      ...(indep.families.length ? { families: indep.families } : {}),
-      usage: { model_calls: spent.calls, est_input_tokens: spent.inTokens, est_output_tokens: spent.outTokens, estimate: true },
-      budget,
-      ...(billing ? { billing } : {}),
-      positions,
-      ...(args.include_transcript ? { transcript: transcript.trim() } : {}),
-    };
-    return { content: [{ type: 'text', text: renderDebate(result) }], structuredContent: result };
+    // The result as the service stores it (only an ok outcome carries one).
+    const stored = outcome === 'ok' ? {
+      final_answer: verdict.final_answer, consensus: verdict.consensus,
+      dissent: verdict.dissent.present === false ? 'none' : verdict.dissent.summary,
+      positions: positions.map((p) => {
+        const model = samplingModels.find((m) => m.provider === p.provider)?.model;
+        return { provider: p.provider, model: typeof model === 'string' && /^[!-~]{1,128}$/.test(model) ? model : 'unspecified', position: p.text };
+      }),
+    } : null;
+    // With finalize, the service stores the result with the charge.
+    const finalizeMeta = handle.finalize ? { transcript: transcript || null, finished_at: Date.now(), result: stored } : {};
+    const { budget, billing } = await metering.commit(handle, spent, { outcome, duration_ms: Date.now() - started, models: modelsFromTranscript(transcript, { synthesizer, calls: spent.calls }), ...finalizeMeta });
+    settled = true;
+    return { r, timeoutMs, transcript, spent, verdict, outcome, roundsRan, positions, samplingModels, stored, budget, billing };
   } finally {
-    activeDebates--;
     // Not settled (an unexpected error): give the reservation back, as before. With the hook, once the debate binary
     // has run the intent is kept instead, so the next start reconciles it per E3D_MCP_ORPHAN_POLICY (never free).
     if (!settled && (!ran || !metering.hooked)) await metering.abort(handle, 'not_run').catch(() => {});
@@ -241,10 +244,122 @@ async function toolDebate(args, progress, ctx) {
       // the process is still alive, so restart recovery would skip this intent: settle what the transcript shows now
       const t = dir ? await readFile(join(dir, 'out', 'transcript.md'), 'utf8').catch(() => '') : '';
       const spent = usageFromTranscript(t, question, { synthesized: /\n## Synthesis/.test(t) || (lastRun ? !lastRun.timedOut : false) });
-      await metering.commit(handle, spent, { outcome: 'error', duration_ms: Date.now() - started, models: modelsFromTranscript(t, { synthesizer, calls: spent.calls }) }).catch(() => {});
+      await metering.commit(handle, spent, { outcome: 'error', duration_ms: Date.now() - started, models: modelsFromTranscript(t, { synthesizer, calls: spent.calls }), ...(handle.finalize ? { transcript: t || null } : {}) }).catch(() => {});
     }
     if (dir) rm(dir, { recursive: true, force: true }).catch(() => {});
   }
+}
+
+async function toolDebate(args, progress, ctx) {
+  const plan = await planDebate(args, ctx);
+  if (plan.error) return text(plan.error, true);
+  const { question, mode, rounds, maxWords, providers, synthesizer, selection, selectionNote } = plan;
+
+  // Refuse BEFORE spending if the worst case for this request would break today's cap.
+  const principal = ctx?.principal ?? 'local';
+  const worst = worstCase({ providers: providers.length, rounds, maxWords, questionChars: question.length });
+  // Reserve the worst case first (atomically, so concurrent debates cannot overshoot the cap), then settle to actual use.
+  // With the external hook, metering.begin also reserves at the billing service and persists an intent before returning.
+  // When the service advertises finalize, the debate (question, providers, rounds) is finalized and stored there at the end.
+  const rsv = await metering.begin(principal, worst, { tool: 'e3d_debate', debate: { question, providers, rounds } });
+  if (!rsv.ok) return beginError(rsv);
+  const { handle } = rsv;
+  if (activeDebates >= LIMITS.concurrent) { await metering.abort(handle, 'busy').catch(() => {}); return text(`error: ${LIMITS.concurrent} debates already running; retry shortly`, true); }
+  activeDebates++;
+  let x;
+  try { x = await executeDebate(plan, handle, ctx, { progress }); } finally { activeDebates--; runs?.pump(); }
+  if (x.startFailed) return text('error: billing: temporarily unavailable', true);
+  const { r, timeoutMs, transcript, spent, verdict, roundsRan, positions, samplingModels, budget, billing } = x;
+  if (r.timedOut) return text(`error: debate timed out after ${timeoutMs / 1000}s and was stopped. ${spent.calls} model call(s) had already answered and are counted against today's budget (${budget?.remaining_calls ?? 'no limit'} calls left). Try mode "quick", fewer providers, or a shorter question.`, true);
+  if (r.code !== 0 || !verdict) return text(`error: debate failed (exit ${r.code})\n${redact(r.err.slice(-1500))}`, true);
+
+  const indep = independence(providers, samplingModels);
+  const result = {
+    ...verdict,
+    mode, providers, rounds_requested: rounds, rounds_ran: roundsRan || rounds,
+    selection, selection_note: selectionNote, synthesizer,
+    ...(samplingModels.length ? { models: samplingModels } : {}),
+    independent: indep.independent, warnings: indep.warnings,
+    ...(indep.families.length ? { families: indep.families } : {}),
+    usage: { model_calls: spent.calls, est_input_tokens: spent.inTokens, est_output_tokens: spent.outTokens, estimate: true },
+    budget,
+    ...(billing ? { billing } : {}),
+    positions,
+    ...(args.include_transcript ? { transcript: transcript.trim() } : {}),
+  };
+  return { content: [{ type: 'text', text: renderDebate(result) }], structuredContent: result };
+}
+
+// ---- async debates (hosted, external hook only; lib/mcp/runs.js): start, check on, and get the result later ----
+let runs = null; // the run store, once the external hook is running
+let runsConfig = null;
+const ASYNC_TOOLS = new Set(['e3d_debate_start', 'e3d_debate_status', 'e3d_debate_result']);
+// Exposed only when the service advertises both finalize (the result is stored with the charge) and fetch (it can be read
+// back after the local copy expires): otherwise a paid async result could become unreachable.
+const asyncEnabled = () => Boolean(runs) && Boolean(hookState?.external?.hasFeature('finalize')) && Boolean(hookState?.external?.hasFeature('fetch'));
+const lookupError = (r) => (r.code === 'rate_limited'
+  ? text(`error: rate_limited: too many checks on debates; retry in ${r.retry_after} s`, true)
+  : r.code === 'unavailable' ? text('error: temporarily unavailable; retry shortly', true)
+    : text('error: not_found: no debate with that id', true));
+const debateIdOf = (args) => (typeof args.debate_id === 'string' ? args.debate_id : '');
+
+async function toolDebateStart(args, _progress, ctx) {
+  // A run continues after the client's request has ended, so it can never use the client's own models through MCP sampling
+  // (that needs the live client session). Refuse that before anything is reserved, and never pick it by default.
+  const asked = [...(Array.isArray(args?.providers) ? args.providers : []), args?.synthesizer].filter((p) => typeof p === 'string');
+  if (asked.some(isSampling)) return text('error: invalid: a started debate runs on the server\'s own models and cannot use your client\'s models (mcp-sampling). Use e3d_debate for that, or leave the providers unset.', true);
+  const plan = await planDebate(args, { ...ctx, session: null }, { clamp: runsConfig.customer });
+  if (plan.error) return text(plan.error, true);
+  const principal = ctx?.principal ?? 'local';
+  const worst = worstCase({ providers: plan.providers.length, rounds: plan.rounds, maxWords: plan.maxWords, questionChars: plan.question.length });
+  const r = await runs.start({ principal, plan, worst });
+  if (!r.ok) return r.kind === 'begin' ? beginError(r.rsv) : text(`error: ${r.kind === 'busy' ? 'busy: ' : ''}${r.message}`, true);
+  const out = { debate_id: r.debate_id, status: r.status, poll_after_sec: r.poll_after_sec };
+  return { content: [{ type: 'text', text: `Debate started (id ${r.debate_id}, ${r.status}). It runs on the server even if you stop waiting. Check on it with e3d_debate_status in about ${r.poll_after_sec} seconds, then get the answer with e3d_debate_result.` }], structuredContent: out };
+}
+
+async function toolDebateStatus(args, _progress, ctx) {
+  const r = await runs.status(ctx?.principal ?? 'local', debateIdOf(args));
+  if (!r.ok) return lookupError(r);
+  const s = r.status;
+  const line = s.status === 'done' ? 'The debate is finished: get the answer with e3d_debate_result.'
+    : s.status === 'failed' ? `The debate did not finish (${s.outcome ?? 'error'}). e3d_debate_result shows what is known.`
+      : `The debate is ${s.status}${s.progress ? ` (step ${s.progress.step}: ${s.progress.message})` : ''}. Check again in about ${s.poll_after_sec} seconds.`;
+  return { content: [{ type: 'text', text: line }], structuredContent: s };
+}
+
+function renderStored(d) {
+  const res = d.result;
+  const label = res?.consensus === 'full' ? 'FULL CONSENSUS' : res?.consensus === 'majority' ? 'MAJORITY (some dissent)' : res?.consensus === 'split' ? 'SPLIT' : 'CONSENSUS UNKNOWN';
+  const lines = [
+    `REPORT THIS TO THE USER (do not drop any of it when summarizing): consensus is ${label}; dissent: ${res.dissent}.`, '',
+    `# Debate verdict: ${label}`, `_${d.providers.join(', ')} | ${d.rounds} round${d.rounds === 1 ? '' : 's'}_`, '',
+    `**Answer:** ${res.final_answer}`, '',
+    res.dissent === 'none' ? '**Dissent:** none' : `**Dissent (report this to the user, do not drop it when summarizing):** ${res.dissent}`, '',
+  ];
+  if (res.positions?.length) {
+    lines.push('**Each model\'s final position:**');
+    for (const p of res.positions) lines.push('', `**${p.provider}:**`, ...String(p.position).split('\n').map((l) => `> ${l}`));
+  }
+  if (typeof d.transcript === 'string') lines.push('', '<details><summary>Full transcript</summary>', '', d.transcript, '', '</details>');
+  return lines.join('\n');
+}
+
+async function toolDebateResult(args, _progress, ctx) {
+  if (args.include_transcript !== undefined && typeof args.include_transcript !== 'boolean') return text('error: include_transcript must be a boolean', true);
+  const r = await runs.result(ctx?.principal ?? 'local', debateIdOf(args), args.include_transcript === true);
+  if (!r.ok) return lookupError(r);
+  const d = r.debate;
+  const out = {
+    debate_id: d.debate_id, status: d.status, outcome: d.outcome,
+    ...(d.result ? { final_answer: d.result.final_answer, consensus: d.result.consensus, dissent: d.result.dissent, positions: d.result.positions } : {}),
+    providers: d.providers, rounds: d.rounds, usage: d.usage, credits_charged: d.credits_charged, created_at: d.created_at, finished_at: d.finished_at,
+    truncated: d.truncated, source: d.source, ...(d.poll_after_sec ? { poll_after_sec: d.poll_after_sec } : {}),
+    ...(args.include_transcript === true && 'transcript' in d ? { transcript: d.transcript } : {}),
+  };
+  if (d.status === 'queued' || d.status === 'running') return { content: [{ type: 'text', text: `The debate is still ${d.status}. Check again in about ${d.poll_after_sec} seconds.` }], structuredContent: out };
+  if (!d.result) return { content: [{ type: 'text', text: `The debate did not finish (${d.outcome ?? 'error'}), so there is no answer. ${d.credits_charged ? `${d.credits_charged} credit(s) were charged for the model calls that ran.` : 'Nothing was charged for an answer.'}` }], structuredContent: out };
+  return { content: [{ type: 'text', text: renderStored(d) }], structuredContent: out };
 }
 
 async function toolListProviders(_args, _progress, ctx) {
@@ -340,6 +455,65 @@ const TOOLS = [
     annotations: { title: 'Multi-model debate', readOnlyHint: true, openWorldHint: true, idempotentHint: false },
   },
   {
+    name: 'e3d_debate_start',
+    description: 'Start a debate that keeps running on the server, so a slow debate is never lost when you stop waiting. Same question and options as e3d_debate. Returns a debate_id right away; check on the debate with e3d_debate_status and get the answer with e3d_debate_result (both work later too, even after a disconnect). Use instead of e3d_debate for "thorough" debates or when your client gives up on long tool calls. Spends the account\'s credits once, when the debate finishes.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        question: { type: 'string', description: 'The decision or question, with enough context for models that cannot see your code.' },
+        mode: { type: 'string', enum: ['quick', 'thorough'], description: 'quick (default): 1 round, short answers. thorough: models also see and rebut each other.' },
+        providers: { type: 'array', items: { type: 'string' }, description: 'Provider names (see e3d_list_providers). The server may use fewer than you ask for.' },
+        rounds: { type: 'integer', minimum: 1, maximum: LIMITS.rounds, description: 'Override the mode\'s round count (the server may lower it).' },
+        max_words: { type: 'integer', minimum: 20, maximum: LIMITS.maxWords, description: 'Override the per-answer word cap (the server may lower it).' },
+        include_transcript: { type: 'boolean', description: 'Accepted for compatibility with e3d_debate; ask e3d_debate_result for the transcript instead.' },
+      },
+      required: ['question'],
+      additionalProperties: false,
+    },
+    outputSchema: {
+      type: 'object',
+      properties: { debate_id: { type: 'string' }, status: { type: 'string', enum: ['queued', 'running'] }, poll_after_sec: { type: 'integer' } },
+      required: ['debate_id', 'status', 'poll_after_sec'],
+    },
+    annotations: { title: 'Start a debate', readOnlyHint: false, openWorldHint: true, idempotentHint: false },
+  },
+  {
+    name: 'e3d_debate_status',
+    description: 'Check on a debate started with e3d_debate_start: queued, running, done or failed, and when to check again. Free.',
+    inputSchema: { type: 'object', properties: { debate_id: { type: 'string', description: 'The id e3d_debate_start returned (dbt_...).' } }, required: ['debate_id'], additionalProperties: false },
+    outputSchema: {
+      type: 'object',
+      properties: { debate_id: { type: 'string' }, status: { type: 'string', enum: ['queued', 'running', 'done', 'failed'] }, outcome: { type: ['string', 'null'] }, created_at: { type: 'string' }, finished_at: { type: ['string', 'null'] }, poll_after_sec: { type: 'integer' } },
+      required: ['debate_id', 'status'],
+    },
+    annotations: { title: 'Check on a debate', readOnlyHint: true, openWorldHint: false, idempotentHint: true },
+  },
+  {
+    name: 'e3d_debate_result',
+    description: 'Get the result of a debate started with e3d_debate_start: the final answer, the consensus level (full/majority/split), the dissent, and each model\'s final position. ALWAYS report the dissent and consensus level to the user. If the debate is still running, says when to check again. Free.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        debate_id: { type: 'string', description: 'The id e3d_debate_start returned (dbt_...).' },
+        include_transcript: { type: 'boolean', description: 'Also return the full transcript (large). Default false.' },
+      },
+      required: ['debate_id'],
+      additionalProperties: false,
+    },
+    outputSchema: {
+      type: 'object',
+      properties: {
+        debate_id: { type: 'string' }, status: { type: 'string', enum: ['queued', 'running', 'done', 'failed'] }, outcome: { type: ['string', 'null'] },
+        final_answer: { type: 'string' }, consensus: { type: 'string', enum: ['full', 'majority', 'split', 'unknown'] }, dissent: { type: 'string', description: '"none" when there is no dissent.' },
+        positions: { type: 'array', items: { type: 'object', properties: { provider: { type: 'string' }, model: { type: 'string' }, position: { type: 'string' } }, required: ['provider', 'position'] } },
+        providers: { type: 'array', items: { type: 'string' } }, rounds: { type: 'integer' }, credits_charged: { type: ['integer', 'null'] },
+        source: { type: 'string', enum: ['local', 'service'] }, transcript: { type: ['string', 'null'] }, poll_after_sec: { type: 'integer' },
+      },
+      required: ['debate_id', 'status'],
+    },
+    annotations: { title: 'Get a debate result', readOnlyHint: true, openWorldHint: false, idempotentHint: true },
+  },
+  {
     name: 'e3d_list_providers',
     description: 'List the model providers configured on this machine and whether each is available to join a debate.',
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
@@ -404,6 +578,9 @@ async function refreshRoots(session = stdioConn.session) {
 
 const HANDLERS = {
   e3d_debate: toolDebate,
+  e3d_debate_start: toolDebateStart,
+  e3d_debate_status: toolDebateStatus,
+  e3d_debate_result: toolDebateResult,
   e3d_list_providers: toolListProviders,
   e3d_provenance_trace: toolProvenanceTrace,
   e3d_ideas_list: toolIdeasList,
@@ -442,11 +619,15 @@ async function handle(msg, conn = stdioConn) {
       if (got?.error) return fail(-32602, got.error);
       return got ? reply(got) : fail(-32602, `unknown prompt: ${params?.name}`);
     }
-    case 'tools/list': return reply({ tools: conn.allowed ? TOOLS.filter((t) => conn.allowed.has(t.name)) : TOOLS });
+    case 'tools/list': {
+      // the async debate tools exist only while the service advertises finalize and fetch
+      const gated = asyncEnabled() ? TOOLS : TOOLS.filter((t) => !ASYNC_TOOLS.has(t.name));
+      return reply({ tools: conn.allowed ? gated.filter((t) => conn.allowed.has(t.name)) : gated });
+    }
     case 'tools/call': {
       const handler = HANDLERS[params?.name];
-      // A tool outside this connection's allowlist is reported exactly like one that does not exist.
-      if (!handler || (conn.allowed && !conn.allowed.has(params.name))) return fail(-32602, `unknown tool: ${params?.name}`);
+      // A tool outside this connection's allowlist (or a gated one) is reported exactly like one that does not exist.
+      if (!handler || (conn.allowed && !conn.allowed.has(params.name)) || (ASYNC_TOOLS.has(params.name) && !asyncEnabled())) return fail(-32602, `unknown tool: ${params?.name}`);
       const token = params?._meta?.progressToken;
       const progress = token === undefined || conn.hosted ? undefined : (n, message) =>
         conn.send({ jsonrpc: '2.0', method: 'notifications/progress', params: { progressToken: token, progress: n, message } });
@@ -495,25 +676,63 @@ if (AUTH_HOOK && !HTTP_MODE) {
   process.stderr.write('[e3d-mcp] E3D_MCP_AUTH_URL is only supported in hosted mode (--http); unset it for stdio.\n');
   process.exit(2);
 }
+// The internal run listener (lib/mcp/run-server.js): hosted mode with the external hook only.
+const RUN_SERVER = validateRunServerConfig(process.env);
+delete process.env.E3D_MCP_RUN_TOKEN; // read once; never inherited by the debate processes
+if (RUN_SERVER.enabled && !HTTP_MODE) {
+  process.stderr.write('[e3d-mcp] E3D_MCP_RUN_PORT is only supported in hosted mode (--http) with E3D_MCP_AUTH_URL; unset it for stdio.\n');
+  process.exit(2);
+}
+
+// The async runner's executor: a hosted run never has sampling (no client to call back), so the plan is run as is.
+async function runAsyncDebate({ plan, handle, principal, onStarted, progress, signal }) {
+  const ctx = { session: { clientInfo: null, capabilities: {}, rootsReady: null }, principal };
+  const x = await executeDebate(plan, handle, ctx, { progress, onStarted, signal });
+  if (x.startFailed) return { startFailed: true };
+  return { outcome: x.outcome, result: x.stored, transcript: x.transcript || null,
+    usage: { calls: x.spent.calls, est_input_tokens: x.spent.inTokens, est_output_tokens: x.spent.outTokens }, billing: x.billing };
+}
+
+// A web run's plan: the same validation and customer maxima as e3d_debate_start; no client, so no sampling.
+async function planWebRun(fields) {
+  const ctx = { session: { clientInfo: null, capabilities: {}, rootsReady: null }, principal: null };
+  const plan = await planDebate({ question: fields.question, providers: fields.providers, rounds: fields.rounds, max_words: fields.max_words }, ctx, { clamp: runsConfig.customer });
+  if (plan.error) return plan;
+  return { plan, worst: worstCase({ providers: plan.providers.length, rounds: plan.rounds, maxWords: plan.maxWords, questionChars: plan.question.length }) };
+}
 
 // The external hook: validate everything, then recover crashed work and start outbox delivery BEFORE listening.
 async function startAuthHook() {
   const checked = validateAuthConfig(process.env);
-  const errors = [...checked.errors];
+  const errors = [...checked.errors, ...RUN_SERVER.errors];
   try { orphanPolicy(process.env); } catch (e) { errors.push(e.message); }
+  const runsChecked = validateRunsConfig(process.env);
+  errors.push(...runsChecked.errors);
   if (errors.length) throw new Error(`external auth hook: refusing to start: ${errors.join('; ')}`);
   if (process.env.E3D_MCP_AUTH_TOKENS) log('warning: E3D_MCP_AUTH_TOKENS is ignored because E3D_MCP_AUTH_URL is set (keys are checked by the auth service)');
   const external = createExternalAuth({ log });
   const outbox = createOutbox({ dir: usage.dir, auth: external, log });
   external.attachOutbox(outbox);
   metering = createMetering({ localUsage: usage, external, outbox, log, dir: usage.dir });
-  const { recovered } = await metering.recover();
+  // Async runs share the debate execution slots (LIMITS.concurrent) with e3d_debate.
+  runsConfig = runsChecked.config;
+  const store = createRuns({ dir: usage.dir, config: runsConfig, metering, outbox, external, log,
+    execute: runAsyncDebate,
+    acquireExec: () => { if (activeDebates >= LIMITS.concurrent) return false; activeDebates++; return true; },
+    releaseExec: () => { activeDebates--; } });
+  outbox.setFinalizeHook?.(({ debate_id }) => store.purgeUnstored(debate_id));
+  await store.load();
+  // queued runs that never started their models keep their intents (resumed below); every other intent is reconciled here
+  const { recovered } = await metering.recover({ claim: store.claimIntent });
   if (recovered) log(`metering: reconciled ${recovered} unfinished debate(s) from a previous run`);
   await outbox.start();
+  runs = store;
+  await runs.recover();
+  runs.startTimers();
   const healthSec = Number.parseInt(process.env.E3D_MCP_AUTH_HEALTH_SEC ?? '', 10);
   const readiness = createReadiness({ external, outbox, log, intervalMs: (Number.isSafeInteger(healthSec) && healthSec > 0 ? healthSec : 15) * 1000 });
   await readiness.start();
-  hookState = { metering, outbox };
+  hookState = { metering, outbox, external, runs };
   return { external, outbox, readiness };
 }
 
@@ -524,14 +743,22 @@ if (HTTP_MODE) {
   const port = Number.parseInt(arg('--port', process.env.E3D_MCP_PORT || process.env.PORT || '8787'), 10);
   let server;
   let hook = null;
+  let runServer = null;
   try {
+    if (RUN_SERVER.enabled && !AUTH_HOOK) throw new Error(`refusing to start: ${RUN_SERVER.errors.join('; ') || 'the internal run listener needs E3D_MCP_AUTH_URL'}`);
     if (AUTH_HOOK) hook = await startAuthHook();
     server = await startHttpServer({ host, port, log, handle, newConn: newHttpConn, version: SERVER_INFO.version,
       ...(hook ? { auth: hook.external, readiness: hook.readiness.state } : {}) });
+    // a separate loopback-only listener; the public one above never serves /internal/*
+    if (hook && RUN_SERVER.enabled) {
+      runServer = await startRunServer({ port: RUN_SERVER.config.port, token: RUN_SERVER.config.token, failsPerMin: RUN_SERVER.config.failsPerMin,
+        runs, external: hook.external, plan: planWebRun, log });
+    }
   } catch (e) { process.stderr.write(`[e3d-mcp] ${redact(e.message)}\n`); process.exit(2); }
   if (process.env.E3D_MCP_PORT_FILE) await writeFile(process.env.E3D_MCP_PORT_FILE, String(server.port));
+  if (runServer && process.env.E3D_MCP_RUN_PORT_FILE) await writeFile(process.env.E3D_MCP_RUN_PORT_FILE, String(runServer.port));
   let stopping = false;
-  const stop = async () => { if (stopping) return; stopping = true; log('shutting down'); setTimeout(() => process.exit(0), 10000).unref(); hook?.readiness.stop(); hook?.outbox.stop(); await server.close(); await sampling.stop(); process.exit(0); };
+  const stop = async () => { if (stopping) return; stopping = true; log('shutting down'); setTimeout(() => process.exit(0), 10000).unref(); hook?.readiness.stop(); hook?.outbox.stop(); runs?.stop(); await runServer?.close(); await server.close(); await sampling.stop(); process.exit(0); };
   process.on('SIGTERM', stop);
   process.on('SIGINT', stop);
   log(`ready (hosted; limits: ${JSON.stringify(LIMITS)})`);

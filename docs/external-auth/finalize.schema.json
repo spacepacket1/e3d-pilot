@@ -1,0 +1,298 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/spacepacket1/e3d-pilot/blob/main/docs/external-auth/finalize.schema.json",
+  "title": "finalize request and response (Debate contract v1)",
+  "$defs": {
+    "request": {
+      "type": "object",
+      "required": [
+        "reservation_id",
+        "debate_id",
+        "source",
+        "outcome",
+        "actual",
+        "models",
+        "duration_ms",
+        "question",
+        "providers",
+        "rounds",
+        "result",
+        "transcript",
+        "truncated",
+        "started_at",
+        "finished_at"
+      ],
+      "properties": {
+        "reservation_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.:-]{1,128}$"
+        },
+        "debate_id": {
+          "type": "string",
+          "pattern": "^dbt_[0-9a-f]{24}$"
+        },
+        "source": {
+          "enum": [
+            "connector",
+            "web"
+          ]
+        },
+        "outcome": {
+          "enum": [
+            "ok",
+            "error",
+            "timeout"
+          ]
+        },
+        "actual": {
+          "type": "object",
+          "required": [
+            "calls",
+            "est_input_tokens",
+            "est_output_tokens"
+          ],
+          "properties": {
+            "calls": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 10000
+            },
+            "est_input_tokens": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1000000000
+            },
+            "est_output_tokens": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1000000000
+            }
+          }
+        },
+        "models": {
+          "type": "array",
+          "maxItems": 32,
+          "items": {
+            "type": "object",
+            "required": [
+              "provider",
+              "model",
+              "calls"
+            ],
+            "properties": {
+              "provider": {
+                "type": "string",
+                "pattern": "^[!-~]{1,64}$"
+              },
+              "model": {
+                "type": "string",
+                "pattern": "^[!-~]{1,128}$"
+              },
+              "calls": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 10000
+              }
+            }
+          }
+        },
+        "duration_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 86400000
+        },
+        "question": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 8000,
+          "pattern": "^[^\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F\\u007F]*$"
+        },
+        "providers": {
+          "type": "array",
+          "maxItems": 16,
+          "items": {
+            "type": "string",
+            "pattern": "^[!-~]{1,64}$"
+          }
+        },
+        "rounds": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "result": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "transcript": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 491520
+        },
+        "truncated": {
+          "type": "boolean"
+        },
+        "started_at": {
+          "type": "string",
+          "format": "date-time",
+          "maxLength": 64
+        },
+        "finished_at": {
+          "type": "string",
+          "format": "date-time",
+          "maxLength": 64
+        }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "outcome": {
+              "const": "ok"
+            },
+            "result": {
+              "type": "object",
+              "required": [
+                "final_answer",
+                "consensus",
+                "dissent",
+                "positions"
+              ],
+              "properties": {
+                "final_answer": {
+                  "type": "string",
+                  "maxLength": 20000
+                },
+                "consensus": {
+                  "enum": [
+                    "full",
+                    "majority",
+                    "split",
+                    "unknown"
+                  ]
+                },
+                "dissent": {
+                  "type": "string",
+                  "maxLength": 20000
+                },
+                "positions": {
+                  "type": "array",
+                  "maxItems": 16,
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "provider",
+                      "model",
+                      "position"
+                    ],
+                    "properties": {
+                      "provider": {
+                        "type": "string",
+                        "pattern": "^[!-~]{1,64}$"
+                      },
+                      "model": {
+                        "type": "string",
+                        "pattern": "^[!-~]{1,128}$"
+                      },
+                      "position": {
+                        "type": "string",
+                        "maxLength": 20000
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "properties": {
+            "outcome": {
+              "enum": [
+                "error",
+                "timeout"
+              ]
+            },
+            "result": {
+              "type": "null"
+            }
+          }
+        }
+      ]
+    },
+    "response": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "ok",
+            "stored",
+            "charged"
+          ],
+          "properties": {
+            "ok": {
+              "const": true
+            },
+            "stored": {
+              "const": true
+            },
+            "charged": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1000000000000
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "ok",
+            "stored",
+            "charged"
+          ],
+          "properties": {
+            "ok": {
+              "const": true
+            },
+            "stored": {
+              "const": false
+            },
+            "charged": {
+              "const": 0
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "ok",
+            "code"
+          ],
+          "properties": {
+            "ok": {
+              "const": false
+            },
+            "code": {
+              "enum": [
+                "invalid",
+                "not_found",
+                "conflict",
+                "too_large",
+                "rate_limited",
+                "unavailable",
+                "not_ready"
+              ]
+            },
+            "message": {
+              "type": "string",
+              "maxLength": 500
+            }
+          }
+        }
+      ]
+    }
+  }
+}

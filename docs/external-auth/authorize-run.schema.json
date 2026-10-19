@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/spacepacket1/e3d-pilot/blob/main/docs/external-auth/authorize-run.schema.json",
+  "title": "authorize-run request and response (Debate contract v1)",
+  "$defs": {
+    "request": {
+      "type": "object",
+      "required": [
+        "reservation_id",
+        "debate_id"
+      ],
+      "properties": {
+        "reservation_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.:-]{1,128}$"
+        },
+        "debate_id": {
+          "type": "string",
+          "pattern": "^dbt_[0-9a-f]{24}$"
+        }
+      }
+    },
+    "response": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "ok",
+            "principal",
+            "price_credits",
+            "status"
+          ],
+          "properties": {
+            "ok": {
+              "const": true
+            },
+            "principal": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_.:-]{1,80}$"
+            },
+            "price_credits": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1000000000000
+            },
+            "status": {
+              "enum": [
+                "reserved",
+                "bound"
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "ok",
+            "code"
+          ],
+          "properties": {
+            "ok": {
+              "const": false
+            },
+            "code": {
+              "enum": [
+                "invalid",
+                "not_found",
+                "conflict",
+                "rate_limited",
+                "unavailable",
+                "not_ready"
+              ]
+            },
+            "message": {
+              "type": "string",
+              "maxLength": 500
+            }
+          }
+        }
+      ]
+    }
+  }
+}

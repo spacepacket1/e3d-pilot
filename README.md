@@ -256,6 +256,7 @@ node examples/external-auth-conformance.js <that URL> <token>          # run aga
 | `E3D_MCP_AUTH_IP_PER_MIN` | 30 | Rejected (unknown or malformed) keys one IP may present per minute before further unknown keys are refused without asking the service. Successful keys do not count. |
 | `E3D_MCP_AUTH_HEALTH_SEC` | 15 | Interval of the background `health` probe behind `/readyz`. |
 | `E3D_MCP_OUTBOX_MAX` | 5000 | Undelivered settlements allowed before new billed work is refused. |
+| `E3D_MCP_OUTBOX_MAX_BYTES` | 67108864 (64 MB) | Total size of undelivered records (finalize records carry the debate result) allowed before new billed work is refused. |
 | `E3D_MCP_ORPHAN_MAX_AGE_SEC` | 21600 (positive whole seconds; anything else refuses to start) | Age after which an unfinished debate's metering intent is reconciled even if its process id looks alive (pids are reused after crashes). |
 | `E3D_MCP_TRUST_PROXY_HOPS` | 0 | Number of trusted reverse proxies in front of the server. With N, the failed-key limiter uses the Nth entry from the right of `X-Forwarded-For` as the client address instead of the proxy's address; 0 ignores the header. |
 | `E3D_MCP_AUTH_KNOWN_ACTIVE_MAX` | 10000 | How many recently-active keys the failed-key limiter remembers (oldest evicted first). |
@@ -267,6 +268,46 @@ node examples/external-auth-conformance.js <that URL> <token>          # run aga
 - **Local caps stay a second ceiling.** `E3D_MCP_DAILY_CALLS`, `E3D_MCP_DAILY_EST_TOKENS` and the rate limits still apply per principal, so a billing fault cannot make spend unbounded.
 - **Operator commands** (print only record ids, call names, ages and counts): `e3d-mcp --outbox-status`; `e3d-mcp --outbox-export <file>` (new file, mode 0600, pending and dead records with payloads, no tokens, for reconciliation); `e3d-mcp --outbox-retry-dead <record_id>` (moves one dead record back to pending, exact id only; the only command that changes anything). `e3d-mcp --doctor` and `e3d_usage` report the hook, health and outbox counts. `/readyz` is 503 while the service or the outbox is unhealthy.
 - Dead-letter and outage procedures: [runbook in docs/external-auth.md](docs/external-auth.md#operator-runbook).
+
+#### Async debates (start now, get the result later)
+
+A debate can take minutes, and many clients stop waiting on a tool call long before that (Claude Code after about a minute). When the service advertises **both** `finalize` and `fetch` in its `introspect` answers (Debate contract v1, [docs/external-auth.md](docs/external-auth.md)), customers also get three tools:
+
+- `e3d_debate_start` starts a debate and returns a `debate_id` at once. It takes the same arguments as `e3d_debate`, but rounds, words per answer and providers are lowered to the customer maxima (`E3D_MCP_CUSTOMER_LIMITS`) instead of refused.
+- `e3d_debate_status` reports whether a debate is queued, running, done or failed, and when to check again.
+- `e3d_debate_result` returns the answer, the consensus level, the dissent and each model's position. It includes the transcript only with `include_transcript: true`.
+
+The debate runs on the server whether or not anyone checks on it. When it ends, the server finalizes it: the service charges and stores the result in one step, and never charges for an answer it could not store. A finished run is kept locally for `E3D_MCP_RUNS_TTL_SEC`. After that, status and result requests are answered from the service's stored copy (`fetch`). Callers can only read their own debates: an id that belongs to another account gets the same `not_found` as an id that does not exist. A `not_found` from the service is cached for 60 seconds.
+
+If only one of the two features is advertised, the async tools are not listed and calls to them fail as unknown tools. `e3d_debate`, stdio mode and static-token mode work as before.
+
+Every limit refuses a new start before anything is reserved: the admission slots (queued runs count), the number of runs kept per account, the run store's byte bound, and the outbox's own bounds. If the server restarts, a run whose models had started is finalized as an error with no result. A run that was still queued is resumed, or is finalized with zero charge if it is older than `E3D_MCP_RUN_TIMEOUT_SEC`. Runs are stored as `<state dir>/runs/<hash of the account>/<debate_id>/` (directories 0700, files 0600). Questions and answers never appear in logs. `e3d-mcp --doctor` checks these settings and shows the run store's size.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `E3D_MCP_RUNS_PER_PRINCIPAL` | 3 | Async debates one account may have queued or running at once. Beyond that, a start is refused as busy and nothing is reserved. |
+| `E3D_MCP_RUNS_GLOBAL` | 8 | Async debates queued or running on this server at once, across all accounts. Debates also share the `E3D_MCP_MAX_CONCURRENT` execution slots with `e3d_debate`. |
+| `E3D_MCP_RUNS_KEEP_PER_PRINCIPAL` | 50 | Runs kept per account. The oldest finished runs are removed first; a run whose finalize has not been delivered is never removed. |
+| `E3D_MCP_RUNS_TTL_SEC` | 86400 (24 h) | How long a finished run is kept locally. The service holds the durable copy. |
+| `E3D_MCP_RUNS_MAX_BYTES` | 67108864 (64 MB) | Total size of the local run store. At this bound, new starts are refused. |
+| `E3D_MCP_RUNS_POLL_PER_MIN` | 60 | Status and result requests per account per minute. |
+| `E3D_MCP_RUN_TIMEOUT_SEC` | 1800 | A queued run older than this is ended with zero charge instead of being started. This also applies after a restart. |
+| `E3D_MCP_CUSTOMER_LIMITS` | `rounds=2,max_words=300,providers=3` | The highest values a customer's async debate may use. Larger values from the caller are lowered to these. |
+
+#### Web runs (the internal run listener)
+
+The billing service's web "Ask" page can have this server run a debate that the service has already reserved. Set `E3D_MCP_RUN_PORT` and `E3D_MCP_RUN_TOKEN` to start a second listener for this. It needs the external hook, binds to `127.0.0.1` only, and its paths are never served on the public listener. The server refuses to start if the token is shorter than 32 characters.
+
+- `POST /internal/runs` with `{reservation_id, debate_id, question, providers?, rounds?, max_words?}`. The server first calls the service's `authorize-run`. The account comes only from that answer, never from the request, and nothing runs unless the service authorizes it. The run is metered from the service's reservation (no new reserve) and finalized once with `source: "web"`. An accepted run gets `202` with a random `run_token`. Repeating the same request returns `200` with the same run and the same token. Changed fields, or either id used with a different counterpart, get `409 conflict`. Definitive refusals are `400 invalid`, `403 not_authorized`, `409 conflict` and `429 busy`. A `503` (`unavailable` or `not_ready`) means nothing was accepted, so retry later.
+- `GET /internal/runs/{debate_id}` returns the status, the progress and, once done, the result. `DELETE /internal/runs/{debate_id}` cancels the run: it is finalized with `outcome: "error"` and no result. Both need the service token and the run's own token, sent in the `X-E3D-Run-Token` header.
+
+Every request carries `Authorization: Bearer <E3D_MCP_RUN_TOKEN>`. Tokens are compared in constant time. After `E3D_MCP_RUN_AUTH_FAILS_PER_MIN` failed authentications in a minute, every request is refused with `429` for up to a minute. Web runs use the same slots, limits, customer maxima, run store and restart recovery as async debates. New runs are accepted only while the service advertises `finalize`, `fetch` and `authorize-run`. The server learns these from `introspect` answers, so until a customer request has been checked after a start, the listener answers `503 not_ready`. Bodies, questions and tokens never appear in logs. The run token is stored only in the run's state file (mode 0600). `e3d-mcp --doctor` checks these settings.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `E3D_MCP_RUN_PORT` | unset (off) | Port of the internal run listener on `127.0.0.1`. |
+| `E3D_MCP_RUN_TOKEN` | unset | Service token for the listener, at least 32 characters. Debate processes do not inherit it. |
+| `E3D_MCP_RUN_AUTH_FAILS_PER_MIN` | 20 | Failed authentications per minute before the listener refuses every request for up to a minute. |
 
 ## Why we built this
 

@@ -17,12 +17,20 @@
 //   STUB_CREDITS_PER_CALL / STUB_CREDITS_PER_KTOKEN   price (default 1 and 1)
 //   STUB_INTROSPECT_PER_MIN / STUB_HEALTH_PER_MIN      rate limits (default 600 and 120); 429 beyond
 //   STUB_FAIL_MODE            failure injection: slow | 5xx | malformed | oversized | redirect | invalid | drop | drop-after-commit
+//                             | unavailable | not_ready (the debate calls' coded 503 answers)
 //   STUB_FAIL_CALLS           comma list of calls the injection applies to (default: all)
 //   STUB_FAIL_COUNT           how many requests to affect (default: unlimited)
 //   STUB_SLOW_MS              delay for "slow" (default 5000)
+//   STUB_FEATURES             Debate contract v1 calls to advertise in introspect `features` (comma list of finalize, fetch,
+//                             authorize-run; default none = the original protocol only, and those calls answer 404)
+//   STUB_DEBATE_CREDITS       flat price of an ok, stored debate with calls (default: the per-call price of its usage)
+//   STUB_DEBATE_FAILED_CREDITS  price of an error or timeout debate with calls (default 0; never above the hold)
+//   STUB_FETCH_PER_MIN        fetch rate limit per principal (default 120)
 //
 // Test-only admin endpoints (service token required): GET /_stub/state, POST /_stub/inject {mode,calls,count,ms},
-// POST /_stub/revoke {key_id}. A real service has no such thing.
+// POST /_stub/revoke {key_id}, POST /_stub/features {features}, POST /_stub/tombstone {debate_id?, principal?},
+// POST /_stub/web-debate {reservation_id, debate_id, question} (a web debate created before its run). A real service has
+// no such thing.
 import http from 'node:http';
 import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
@@ -40,6 +48,9 @@ if (!(HOST === 'localhost' || HOST === '::1' || /^127\.\d+\.\d+\.\d+$/.test(HOST
 const TTL_MS = int(env.STUB_RESERVATION_TTL_SEC, 900) * 1000;
 const PER_CALL = int(env.STUB_CREDITS_PER_CALL, 1);
 const PER_KTOKEN = int(env.STUB_CREDITS_PER_KTOKEN, 1);
+const DEBATE_CREDITS = env.STUB_DEBATE_CREDITS ? int(env.STUB_DEBATE_CREDITS, null) : null;
+const FAILED_CREDITS = int(env.STUB_DEBATE_FAILED_CREDITS, 0);
+let FEATURES = (env.STUB_FEATURES ?? '').split(',').map((f) => f.trim()).filter(Boolean);
 
 // Matches the default fixtures of examples/external-auth-conformance.js.
 const DEFAULT_SEED = {
@@ -69,6 +80,24 @@ const reservations = new Map(); // reservation_id -> { id, request_id, principal
 const byRequest = new Map();    // request_id -> reservation_id
 const settlements = [];         // every accepted charge, in order: { reservation_id, principal, charge, outcome }
 const cost = (calls, tokens) => calls * PER_CALL + Math.ceil(tokens / 1000) * PER_KTOKEN;
+// Debate contract v1: stored debates, one finalize effect per reservation, immutable run bindings, tombstones.
+const debates = new Map();       // debate_id -> { debate_id, reservation_id, principal, status, outcome, question, providers, rounds, result, usage, credits_charged, created_at, finished_at, truncated, transcript }
+const finalizations = new Map(); // reservation_id -> { key: sha256 of the canonical body, answer }
+const bindings = new Map();      // reservation_id -> { debate_id, answer }   (authorize-run)
+const finalizeRequests = {};     // reservation_id -> every finalize request received (replays included)
+const received = {};             // call -> requests that arrived (counted before any failure injection)
+const effects = [];              // one entry per applied finalize: { reservation_id, debate_id, stored, charged }
+const tombstones = new Set();    // deleted debate ids
+const closed = new Set();        // closed accounts (principals)
+// Canonical JSON (contract fixtures): keys sorted recursively by UTF-16 code unit, arrays in order, no whitespace.
+// (by hand: JSON.stringify would order integer-like keys numerically)
+const canon = (v) => {
+  if (Array.isArray(v)) return `[${v.map((x) => (x === undefined ? 'null' : canon(x))).join(',')}]`;
+  if (v !== null && typeof v === 'object') return `{${Object.keys(v).filter((k) => v[k] !== undefined).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)).map((k) => `${JSON.stringify(k)}:${canon(v[k])}`).join(',')}}`;
+  return JSON.stringify(v);
+};
+const DEBATE_STATUS = { invalid: 400, not_found: 404, conflict: 409, too_large: 413, rate_limited: 429, unavailable: 503, not_ready: 503 };
+const refuse = (code) => ({ ok: false, code });
 
 // held -> expired once its time passes: the funds are released, the liability for a later settle is kept.
 function sweep() {
@@ -80,7 +109,7 @@ const available = (a) => a.balance - holds(a.principal).reduce((s, r) => s + r.h
 const view = (r) => ({ ok: true, reservation_id: r.id, expires_at: r.expires_at });
 
 // ---- request validation (the same rules as docs/external-auth/*.request.schema.json) ----
-const re = { principal: /^[A-Za-z0-9_.:-]{1,80}$/, uuid: /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/, rid: /^[A-Za-z0-9_.:-]{1,128}$/, tool: /^[A-Za-z0-9_.-]{1,64}$/, token: /^[!-~]{1,512}$/, reason: /^[a-z0-9_]{1,40}$/, word64: /^[!-~]{1,64}$/, word128: /^[!-~]{1,128}$/ };
+const re = { debate: /^dbt_[0-9a-f]{24}$/, principal: /^[A-Za-z0-9_.:-]{1,80}$/, uuid: /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/, rid: /^[A-Za-z0-9_.:-]{1,128}$/, tool: /^[A-Za-z0-9_.-]{1,64}$/, token: /^[!-~]{1,512}$/, reason: /^[a-z0-9_]{1,40}$/, word64: /^[!-~]{1,64}$/, word128: /^[!-~]{1,128}$/ };
 const n = (v, max, min = 0) => Number.isSafeInteger(v) && v >= min && v <= max;
 const obj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 const valid = {
@@ -92,7 +121,24 @@ const valid = {
     && ['ok', 'error', 'timeout', 'orphaned'].includes(b.outcome) && n(b.duration_ms, 86400000),
   release: (b) => re.reason.test(b.reason ?? '') && (('reservation_id' in b) !== ('request_id' in b))
     && ('reservation_id' in b ? re.rid.test(String(b.reservation_id)) : re.uuid.test(String(b.request_id))),
+  // Debate contract v1 (docs/external-auth/finalize.schema.json, fetch.schema.json, authorize-run.schema.json)
+  finalize: (b) => re.rid.test(b.reservation_id ?? '') && re.debate.test(b.debate_id ?? '') && ['connector', 'web'].includes(b.source)
+    && ['ok', 'error', 'timeout'].includes(b.outcome) && obj(b.actual) && n(b.actual.calls, 10000) && n(b.actual.est_input_tokens, 1e9) && n(b.actual.est_output_tokens, 1e9)
+    && Array.isArray(b.models) && b.models.length <= 32 && b.models.every((m) => obj(m) && re.word64.test(m.provider ?? '') && re.word128.test(m.model ?? '') && n(m.calls, 10000))
+    && n(b.duration_ms, 86400000) && question(b.question) && Array.isArray(b.providers) && b.providers.length <= 16 && b.providers.every((p) => re.word64.test(p ?? ''))
+    && n(b.rounds, 100) && (b.outcome === 'ok' ? result(b.result) : b.result === null)
+    && (b.transcript === null || (typeof b.transcript === 'string' && [...b.transcript].length <= 480 * 1024)) && typeof b.truncated === 'boolean' && ts(b.started_at) && ts(b.finished_at),
+  fetch: (b) => re.debate.test(b.debate_id ?? '') && re.principal.test(b.principal ?? '') && typeof b.include_transcript === 'boolean',
+  'authorize-run': (b) => re.rid.test(b.reservation_id ?? '') && re.debate.test(b.debate_id ?? ''),
 };
+function question(q) { return typeof q === 'string' && q.length > 0 && [...q].length <= 8000 && !/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/.test(q); }
+function text(t) { return typeof t === 'string' && [...t].length <= 20000; }
+function result(r) {
+  return obj(r) && text(r.final_answer) && ['full', 'majority', 'split', 'unknown'].includes(r.consensus) && text(r.dissent)
+    && Array.isArray(r.positions) && r.positions.length <= 16 && r.positions.every((p) => obj(p) && re.word64.test(p.provider ?? '') && re.word128.test(p.model ?? '') && text(p.position));
+}
+function ts(t) { return typeof t === 'string' && t.length <= 64 && /^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(\.\d{1,9})?([Zz]|[+-]\d{2}:\d{2})$/.test(t) && Number.isFinite(Date.parse(t)); }
+const DEBATE_CALLS = new Set(['finalize', 'fetch', 'authorize-run']);
 // Settle payloads are compared on their known fields only (unknown fields are ignored).
 const settleKey = (b) => JSON.stringify([b.actual.calls, b.actual.est_input_tokens, b.actual.est_output_tokens, b.models.map((m) => [m.provider, m.model, m.calls]), b.outcome, b.duration_ms]);
 
@@ -101,7 +147,7 @@ const ops = {
   introspect(b) {
     const k = keys.get(hex(b.token));
     if (!k || k.revoked || (k.expires_at && Date.parse(k.expires_at) <= Date.now())) return { active: false };
-    return { active: true, principal: k.principal, ...(k.tools ? { tools: k.tools } : {}), ...(k.limits ? { limits: k.limits } : {}), ...(k.expires_at ? { expires_at: k.expires_at } : {}) };
+    return { active: true, principal: k.principal, ...(k.tools ? { tools: k.tools } : {}), ...(k.limits ? { limits: k.limits } : {}), ...(k.expires_at ? { expires_at: k.expires_at } : {}), ...(FEATURES.length ? { features: FEATURES } : {}) };
   },
   reserve(b) {
     const a = accounts.get(b.principal);
@@ -115,7 +161,7 @@ const ops = {
     if (holds(a.principal).length >= a.max_holds) return { ok: false, code: 'limit_reached', message: 'too many reservations in progress' };
     const hold = cost(b.units.calls, b.units.est_tokens);
     if (available(a) < hold) return { ok: false, code: 'insufficient_credits', message: `this debate needs up to ${hold} credits; ${Math.max(available(a), 0)} available` };
-    const r = { id: `res_${randomUUID()}`, request_id: b.request_id, principal: a.principal, units: { ...b.units }, hold, state: 'held', expires_at: new Date(Date.now() + TTL_MS).toISOString(), settlement: null };
+    const r = { id: `res_${randomUUID()}`, request_id: b.request_id, principal: a.principal, units: { ...b.units }, hold, price: hold, state: 'held', expires_at: new Date(Date.now() + TTL_MS).toISOString(), settlement: null };
     reservations.set(r.id, r); byRequest.set(b.request_id, r.id);
     return view(r);
   },
@@ -136,6 +182,66 @@ const ops = {
     const r = reservations.get(b.reservation_id ?? byRequest.get(b.request_id));
     if (r && r.state === 'held') { r.state = 'released'; r.hold = 0; }
     return { ok: true }; // settled, released, expired or unknown: nothing to do
+  },
+  // Settle and store in one step, idempotent per reservation: the same canonical body returns the original answer, a
+  // different one is a conflict. Ownership comes from the reservation, never from the body. A tombstoned debate or a closed
+  // account settles nothing and stores nothing (stored:false, charged 0, the hold released).
+  finalize(b) {
+    const r = reservations.get(b.reservation_id);
+    if (!r) return refuse('not_found');
+    const key = hex(canon(b));
+    const prior = finalizations.get(r.id);
+    if (prior) return prior.key === key ? prior.answer : refuse('conflict');
+    const other = debates.get(b.debate_id);
+    if (other && other.reservation_id !== r.id) return refuse('conflict');
+    const bound = bindings.get(r.id);
+    if (bound && bound.debate_id !== b.debate_id) return refuse('conflict');
+    if (r.state === 'settled') return refuse('conflict'); // already charged through settle
+    const stored = !(tombstones.has(b.debate_id) || closed.has(r.principal));
+    let charged = 0;
+    if (stored && b.actual.calls > 0) {
+      charged = b.outcome === 'ok' ? (DEBATE_CREDITS ?? cost(b.actual.calls, b.actual.est_input_tokens + b.actual.est_output_tokens)) : Math.min(FAILED_CREDITS, r.price);
+    }
+    accounts.get(r.principal).balance -= charged;
+    r.state = charged > 0 ? 'settled' : 'released'; r.hold = 0; r.settlement = { key: `finalize:${key}`, charge: charged, outcome: b.outcome };
+    if (charged > 0) settlements.push({ reservation_id: r.id, principal: r.principal, charge: charged, outcome: b.outcome, call: 'finalize' });
+    if (stored) {
+      debates.set(b.debate_id, {
+        debate_id: b.debate_id, reservation_id: r.id, principal: r.principal, source: b.source, status: b.outcome === 'ok' ? 'done' : 'failed', outcome: b.outcome,
+        question: b.question, providers: [...b.providers], rounds: b.rounds, result: b.result, usage: { ...b.actual }, credits_charged: charged,
+        created_at: other?.created_at ?? b.started_at, finished_at: b.finished_at, truncated: b.truncated, transcript: b.transcript,
+      });
+    }
+    effects.push({ reservation_id: r.id, debate_id: b.debate_id, stored, charged });
+    const answer = { ok: true, stored, charged };
+    finalizations.set(r.id, { key, answer });
+    return answer;
+  },
+  // The principal is a claim, compared with the owner; unknown and foreign debates answer identically.
+  fetch(b) {
+    if (limited(`fetch:${b.principal}`, int(env.STUB_FETCH_PER_MIN, 120))) return refuse('rate_limited');
+    const d = debates.get(b.debate_id);
+    if (!d || d.principal !== b.principal) return refuse('not_found');
+    const debate = { debate_id: d.debate_id, status: d.status, outcome: d.outcome, question: d.question, providers: d.providers, rounds: d.rounds, result: d.result, usage: d.usage, credits_charged: d.credits_charged, created_at: d.created_at, finished_at: d.finished_at, truncated: d.truncated };
+    if (b.include_transcript) debate.transcript = d.transcript ?? null;
+    return { ok: true, debate };
+  },
+  // Binds a held reservation to a debate id, immutably; the same pair always gets the same answer.
+  'authorize-run'(b) {
+    const r = reservations.get(b.reservation_id);
+    if (!r) return refuse('not_found');
+    // Once a reservation is finalized nothing may be authorized for it again, even the same pair: a repeated run request for a
+    // finished debate must never start a second run.
+    if (finalizations.has(r.id)) return refuse('conflict');
+    const bound = bindings.get(r.id);
+    if (bound) return bound.debate_id === b.debate_id ? bound.answer : refuse('conflict');
+    const d = debates.get(b.debate_id);
+    if (d && d.reservation_id !== r.id) return refuse('conflict');
+    if ([...bindings.values()].some((x) => x.debate_id === b.debate_id)) return refuse('conflict');
+    if (r.state !== 'held' || finalizations.has(r.id)) return refuse('conflict');
+    const answer = { ok: true, principal: r.principal, price_credits: r.price, status: d ? 'bound' : 'reserved' };
+    bindings.set(r.id, { debate_id: b.debate_id, answer });
+    return answer;
   },
 };
 
@@ -165,17 +271,17 @@ const send = (res, status, body, headers = {}) => {
   res.writeHead(status, { 'content-type': 'application/json', 'content-length': Buffer.byteLength(text), ...headers });
   res.end(text);
 };
-const readBody = (req) => new Promise((resolve) => {
+const readBody = (req, cap = 16384) => new Promise((resolve) => {
   const chunks = []; let size = 0;
-  req.on('data', (c) => { size += c.length; if (size <= 16384) chunks.push(c); });
-  req.on('end', () => resolve(size > 16384 ? null : Buffer.concat(chunks).toString('utf8')));
+  req.on('data', (c) => { size += c.length; if (size <= cap) chunks.push(c); });
+  req.on('end', () => resolve(size > cap ? null : Buffer.concat(chunks).toString('utf8')));
   req.on('error', () => resolve(null));
 });
 
 const server = http.createServer(async (req, res) => {
   const path = (req.url ?? '').split('?')[0];
   const call = path.replace(/^\/+/, '');
-  const raw = req.method === 'POST' ? await readBody(req) : '';
+  const raw = req.method === 'POST' ? await readBody(req, call === 'finalize' ? 512 * 1024 : 16384) : '';
 
   // test-only admin
   if (path.startsWith('/_stub/')) {
@@ -186,11 +292,30 @@ const server = http.createServer(async (req, res) => {
         accounts: Object.fromEntries([...accounts.values()].map((a) => [a.principal, { balance: a.balance, available: available(a), status: a.status, holds: holds(a.principal).length }])),
         reservations: [...reservations.values()].map((r) => ({ reservation_id: r.id, request_id: r.request_id, principal: r.principal, state: r.state, hold: r.hold, charge: r.settlement?.charge ?? 0 })),
         settlements,
+        features: FEATURES,
+        // no debate content here: ids, states and amounts only
+        debates: [...debates.values()].map((d) => ({ debate_id: d.debate_id, reservation_id: d.reservation_id, principal: d.principal, status: d.status, outcome: d.outcome, credits_charged: d.credits_charged, truncated: d.truncated, has_result: d.result != null, transcript_bytes: d.transcript == null ? null : Buffer.byteLength(d.transcript) })),
+        finalize_requests: finalizeRequests, effects, received,
       });
     }
     let b; try { b = JSON.parse(raw || '{}'); } catch { return send(res, 400, { error: 'invalid_json' }); }
     if (path === '/_stub/inject' && req.method === 'POST') {
       inject = { mode: b.mode || null, calls: b.calls ?? null, count: b.count ?? Infinity, ms: b.ms ?? 5000 };
+      return send(res, 200, { ok: true });
+    }
+    if (path === '/_stub/features' && req.method === 'POST') {
+      FEATURES = Array.isArray(b.features) ? b.features.map(String) : [];
+      return send(res, 200, { ok: true, features: FEATURES });
+    }
+    if (path === '/_stub/tombstone' && req.method === 'POST') {
+      if (b.debate_id) { tombstones.add(b.debate_id); debates.delete(b.debate_id); }
+      if (b.principal) { closed.add(b.principal); for (const [id, d] of debates) if (d.principal === b.principal) debates.delete(id); }
+      return send(res, 200, { ok: true });
+    }
+    if (path === '/_stub/web-debate' && req.method === 'POST') {
+      const r = reservations.get(b.reservation_id);
+      if (!r || !re.debate.test(b.debate_id ?? '') || !question(b.question)) return send(res, 400, { ok: false });
+      debates.set(b.debate_id, { debate_id: b.debate_id, reservation_id: r.id, principal: r.principal, source: 'web', status: 'queued', outcome: null, question: b.question, providers: [], rounds: 0, result: null, usage: { calls: 0, est_input_tokens: 0, est_output_tokens: 0 }, credits_charged: 0, created_at: new Date().toISOString(), finished_at: null, truncated: false, transcript: null });
       return send(res, 200, { ok: true });
     }
     if (path === '/_stub/revoke' && req.method === 'POST') {
@@ -202,13 +327,17 @@ const server = http.createServer(async (req, res) => {
   }
 
   const isHealth = call === 'health' && req.method === 'GET';
-  if (!isHealth && !(req.method === 'POST' && call in ops)) return send(res, 404, { error: 'not_found' });
+  const debateCall = DEBATE_CALLS.has(call);
+  // a debate call this service does not advertise does not exist here (version skew: the server must not call it)
+  if (debateCall && !FEATURES.includes(call)) log({ call, refused: 'not_advertised' }); // visible to tests: a server sent an unadvertised call
+  if (!isHealth && !(req.method === 'POST' && call in ops && (!debateCall || FEATURES.includes(call)))) return send(res, 404, { error: 'not_found' });
   // health may be called without a service token; a wrong one is still refused so misconfiguration shows up
   if (!(isHealth && !req.headers.authorization) && !authorized(req)) return send(res, 401, { error: 'unauthorized' });
   if (req.headers['x-e3d-auth-version'] !== '1') return send(res, 400, { error: 'unsupported_version' });
   if (call === 'introspect' && limited('introspect', int(env.STUB_INTROSPECT_PER_MIN, 600))) return send(res, 429, { error: 'rate_limited' }, { 'retry-after': '60' });
   if (isHealth && limited('health', int(env.STUB_HEALTH_PER_MIN, 120))) return send(res, 429, { error: 'rate_limited' }, { 'retry-after': '60' });
 
+  received[call] = (received[call] ?? 0) + 1;
   const mode = injected(call);
   if (mode === 'slow') await new Promise((r) => setTimeout(r, inject.ms));
   if (mode === '5xx') return send(res, 503, { error: 'injected' });
@@ -217,16 +346,22 @@ const server = http.createServer(async (req, res) => {
   if (mode === 'redirect') return send(res, 307, { error: 'moved' }, { location: `${path}?redirected=1` }) // following it would succeed;
   if (mode === 'invalid') return send(res, 200, { ok: 'yes', active: 'yes', principal: 'not a valid principal!', status: 'nope' });
   if (mode === 'drop') return req.socket.destroy();
+  if (mode === 'unavailable' || mode === 'not_ready') return send(res, 503, refuse(mode));
 
   if (isHealth) return send(res, 200, { status: 'ok' });
-  if (raw === null) return send(res, 413, { error: 'too_large' });
-  let body; try { body = JSON.parse(raw); } catch { return send(res, 400, { error: 'invalid_json' }); }
-  if (!obj(body) || !valid[call](body)) return send(res, 400, { error: 'invalid_request' });
+  // the debate calls answer errors with { ok:false, code } and the code's HTTP status
+  const answer = (code) => send(res, DEBATE_STATUS[code], refuse(code));
+  if (raw === null) return debateCall ? answer('too_large') : send(res, 413, { error: 'too_large' });
+  let body; try { body = JSON.parse(raw); } catch { return debateCall ? answer('invalid') : send(res, 400, { error: 'invalid_json' }); }
+  if (!obj(body) || !valid[call](body)) return debateCall ? answer('invalid') : send(res, 400, { error: 'invalid_request' });
 
   sweep();
+  if (call === 'finalize') finalizeRequests[body.reservation_id] = (finalizeRequests[body.reservation_id] ?? 0) + 1;
   const out = ops[call](body);
-  log({ call, principal: out.principal ?? body.principal, request_id: body.request_id, reservation_id: body.reservation_id ?? out.reservation_id, outcome: out.ok ?? out.active, code: out.code });
+  // ids, outcomes and codes only: never a question, an answer or a transcript
+  log({ call, principal: out.principal ?? body.principal, request_id: body.request_id, reservation_id: body.reservation_id ?? out.reservation_id, debate_id: body.debate_id, outcome: out.ok ?? out.active, code: out.code, ...(call === 'finalize' && out.ok ? { stored: out.stored, charged: out.charged } : {}) });
   if (mode === 'drop-after-commit') return req.socket.destroy(); // committed, but the caller never hears about it
+  if (debateCall && out.ok === false) return answer(out.code);
   return send(res, 200, out);
 });
 

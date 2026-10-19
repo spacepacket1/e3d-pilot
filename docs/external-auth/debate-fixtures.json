@@ -1,0 +1,1404 @@
+{
+  "description": "Debate contract v1 conformance fixtures, shared verbatim by e3d-pilot and the billing service. Pinned by CONTRACT-VERSION.",
+  "contract_version": "1",
+  "limits": {
+    "question_scalar_values": 8000,
+    "transcript_bytes": 491520,
+    "finalize_body_bytes": 524288
+  },
+  "http_status": {
+    "ok": 200,
+    "invalid": 400,
+    "not_found": 404,
+    "conflict": 409,
+    "too_large": 413,
+    "rate_limited": 429,
+    "unavailable": 503,
+    "not_ready": 503
+  },
+  "features": [
+    "finalize",
+    "fetch",
+    "authorize-run"
+  ],
+  "canonical_json": [
+    {
+      "input": {
+        "b": 1,
+        "a": 2
+      },
+      "canonical": "{\"a\":2,\"b\":1}"
+    },
+    {
+      "input": {
+        "z": {
+          "y": [
+            3,
+            {
+              "d": true,
+              "c": null
+            }
+          ],
+          "x": "x"
+        },
+        "a": []
+      },
+      "canonical": "{\"a\":[],\"z\":{\"x\":\"x\",\"y\":[3,{\"c\":null,\"d\":true}]}}"
+    },
+    {
+      "input": {
+        "9": 6,
+        "10": 5,
+        "é": 1,
+        "Z": 2,
+        "a": 3,
+        "_": 4
+      },
+      "canonical": "{\"10\":5,\"9\":6,\"Z\":2,\"_\":4,\"a\":3,\"é\":1}"
+    },
+    {
+      "input": {
+        "s": "quote \" backslash \\ newline \n tab \t ctrl \u0001 unicode é 😀"
+      },
+      "canonical": "{\"s\":\"quote \\\" backslash \\\\ newline \\n tab \\t ctrl \\u0001 unicode é 😀\"}"
+    },
+    {
+      "input": [
+        {
+          "b": "b",
+          "a": "a"
+        },
+        2,
+        "x",
+        false
+      ],
+      "canonical": "[{\"a\":\"a\",\"b\":\"b\"},2,\"x\",false]"
+    },
+    {
+      "input": {
+        "nested": {
+          "list": [
+            {
+              "k2": 1,
+              "k1": [
+                {
+                  "q": 0,
+                  "p": -1
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "canonical": "{\"nested\":{\"list\":[{\"k1\":[{\"p\":-1,\"q\":0}],\"k2\":1}]}}"
+    }
+  ],
+  "transcript_truncation": [
+    {
+      "transcript": "# Debate\n\n## Round 1 -- claude\n\nJSON file.\n\n## Round 1 -- codex\n\nSQLite, é 😀.\n\n## Synthesis\n\nFINAL ANSWER: JSON.\n",
+      "max_bytes": 0,
+      "expected": "",
+      "truncated": true
+    },
+    {
+      "transcript": "# Debate\n\n## Round 1 -- claude\n\nJSON file.\n\n## Round 1 -- codex\n\nSQLite, é 😀.\n\n## Synthesis\n\nFINAL ANSWER: JSON.\n",
+      "max_bytes": 8,
+      "expected": "",
+      "truncated": true
+    },
+    {
+      "transcript": "# Debate\n\n## Round 1 -- claude\n\nJSON file.\n\n## Round 1 -- codex\n\nSQLite, é 😀.\n\n## Synthesis\n\nFINAL ANSWER: JSON.\n",
+      "max_bytes": 9,
+      "expected": "# Debate\n",
+      "truncated": true
+    },
+    {
+      "transcript": "# Debate\n\n## Round 1 -- claude\n\nJSON file.\n\n## Round 1 -- codex\n\nSQLite, é 😀.\n\n## Synthesis\n\nFINAL ANSWER: JSON.\n",
+      "max_bytes": 42,
+      "expected": "# Debate\n",
+      "truncated": true
+    },
+    {
+      "transcript": "# Debate\n\n## Round 1 -- claude\n\nJSON file.\n\n## Round 1 -- codex\n\nSQLite, é 😀.\n\n## Synthesis\n\nFINAL ANSWER: JSON.\n",
+      "max_bytes": 43,
+      "expected": "# Debate\n\n## Round 1 -- claude\n\nJSON file.\n",
+      "truncated": true
+    },
+    {
+      "transcript": "# Debate\n\n## Round 1 -- claude\n\nJSON file.\n\n## Round 1 -- codex\n\nSQLite, é 😀.\n\n## Synthesis\n\nFINAL ANSWER: JSON.\n",
+      "max_bytes": 81,
+      "expected": "# Debate\n\n## Round 1 -- claude\n\nJSON file.\n",
+      "truncated": true
+    },
+    {
+      "transcript": "# Debate\n\n## Round 1 -- claude\n\nJSON file.\n\n## Round 1 -- codex\n\nSQLite, é 😀.\n\n## Synthesis\n\nFINAL ANSWER: JSON.\n",
+      "max_bytes": 82,
+      "expected": "# Debate\n\n## Round 1 -- claude\n\nJSON file.\n\n## Round 1 -- codex\n\nSQLite, é 😀.\n",
+      "truncated": true
+    },
+    {
+      "transcript": "# Debate\n\n## Round 1 -- claude\n\nJSON file.\n\n## Round 1 -- codex\n\nSQLite, é 😀.\n\n## Synthesis\n\nFINAL ANSWER: JSON.\n",
+      "max_bytes": 116,
+      "expected": "# Debate\n\n## Round 1 -- claude\n\nJSON file.\n\n## Round 1 -- codex\n\nSQLite, é 😀.\n",
+      "truncated": true
+    },
+    {
+      "transcript": "# Debate\n\n## Round 1 -- claude\n\nJSON file.\n\n## Round 1 -- codex\n\nSQLite, é 😀.\n\n## Synthesis\n\nFINAL ANSWER: JSON.\n",
+      "max_bytes": 117,
+      "expected": "# Debate\n\n## Round 1 -- claude\n\nJSON file.\n\n## Round 1 -- codex\n\nSQLite, é 😀.\n\n## Synthesis\n\nFINAL ANSWER: JSON.\n",
+      "truncated": false
+    },
+    {
+      "transcript": "# Debate\n\n## Round 1 -- claude\n\nJSON file.\n\n## Round 1 -- codex\n\nSQLite, é 😀.\n\n## Synthesis\n\nFINAL ANSWER: JSON.\n",
+      "max_bytes": 4096,
+      "expected": "# Debate\n\n## Round 1 -- claude\n\nJSON file.\n\n## Round 1 -- codex\n\nSQLite, é 😀.\n\n## Synthesis\n\nFINAL ANSWER: JSON.\n",
+      "truncated": false
+    },
+    {
+      "transcript": "no sections at all, just text",
+      "max_bytes": 10,
+      "expected": "",
+      "truncated": true
+    },
+    {
+      "transcript": "## Round 1 -- a\n\nfirst\ntext with ## inside is not a boundary\n## Round 1 -- b\n\nsecond\n",
+      "max_bytes": 40,
+      "expected": "",
+      "truncated": true
+    }
+  ],
+  "requests": {
+    "finalize": {
+      "valid": [
+        {
+          "reservation_id": "rsv_0123456789abcdef",
+          "debate_id": "dbt_0123456789abcdef01234567",
+          "source": "connector",
+          "outcome": "ok",
+          "actual": {
+            "calls": 3,
+            "est_input_tokens": 1200,
+            "est_output_tokens": 300
+          },
+          "models": [
+            {
+              "provider": "claude",
+              "model": "unspecified",
+              "calls": 2
+            },
+            {
+              "provider": "codex",
+              "model": "unspecified",
+              "calls": 1
+            }
+          ],
+          "duration_ms": 4321,
+          "question": "JSON or SQLite?",
+          "providers": [
+            "claude",
+            "codex"
+          ],
+          "rounds": 1,
+          "result": {
+            "final_answer": "Use JSON.",
+            "consensus": "split",
+            "dissent": "codex prefers SQLite",
+            "positions": [
+              {
+                "provider": "claude",
+                "model": "unspecified",
+                "position": "JSON file."
+              },
+              {
+                "provider": "codex",
+                "model": "unspecified",
+                "position": "SQLite."
+              }
+            ]
+          },
+          "transcript": "# Debate\n\n## Round 1 -- claude\n\nJSON file.\n\n## Round 1 -- codex\n\nSQLite, é 😀.\n\n## Synthesis\n\nFINAL ANSWER: JSON.\n",
+          "truncated": false,
+          "started_at": "2026-10-18T12:00:00Z",
+          "finished_at": "2026-10-18T12:00:04.321Z"
+        },
+        {
+          "reservation_id": "rsv_0123456789abcdef",
+          "debate_id": "dbt_0123456789abcdef01234567",
+          "source": "connector",
+          "outcome": "error",
+          "actual": {
+            "calls": 3,
+            "est_input_tokens": 1200,
+            "est_output_tokens": 300
+          },
+          "models": [
+            {
+              "provider": "claude",
+              "model": "unspecified",
+              "calls": 2
+            },
+            {
+              "provider": "codex",
+              "model": "unspecified",
+              "calls": 1
+            }
+          ],
+          "duration_ms": 4321,
+          "question": "JSON or SQLite?",
+          "providers": [
+            "claude",
+            "codex"
+          ],
+          "rounds": 1,
+          "result": null,
+          "transcript": null,
+          "truncated": false,
+          "started_at": "2026-10-18T12:00:00Z",
+          "finished_at": "2026-10-18T12:00:04.321Z"
+        },
+        {
+          "reservation_id": "rsv_0123456789abcdef",
+          "debate_id": "dbt_0123456789abcdef01234567",
+          "source": "web",
+          "outcome": "timeout",
+          "actual": {
+            "calls": 0,
+            "est_input_tokens": 0,
+            "est_output_tokens": 0
+          },
+          "models": [],
+          "duration_ms": 4321,
+          "question": "JSON or SQLite?",
+          "providers": [
+            "claude",
+            "codex"
+          ],
+          "rounds": 1,
+          "result": null,
+          "transcript": "# Debate\n\n## Round 1 -- claude\n\nJSON file.\n\n## Round 1 -- codex\n\nSQLite, é 😀.\n\n## Synthesis\n\nFINAL ANSWER: JSON.\n",
+          "truncated": true,
+          "started_at": "2026-10-18T12:00:00Z",
+          "finished_at": "2026-10-18T12:00:04.321Z"
+        },
+        {
+          "reservation_id": "rsv_0123456789abcdef",
+          "debate_id": "dbt_0123456789abcdef01234567",
+          "source": "connector",
+          "outcome": "ok",
+          "actual": {
+            "calls": 3,
+            "est_input_tokens": 1200,
+            "est_output_tokens": 300
+          },
+          "models": [
+            {
+              "provider": "claude",
+              "model": "unspecified",
+              "calls": 2
+            },
+            {
+              "provider": "codex",
+              "model": "unspecified",
+              "calls": 1
+            }
+          ],
+          "duration_ms": 4321,
+          "question": "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀",
+          "providers": [
+            "claude",
+            "codex"
+          ],
+          "rounds": 1,
+          "result": {
+            "final_answer": "Use JSON.",
+            "consensus": "split",
+            "dissent": "codex prefers SQLite",
+            "positions": [
+              {
+                "provider": "claude",
+                "model": "unspecified",
+                "position": "JSON file."
+              },
+              {
+                "provider": "codex",
+                "model": "unspecified",
+                "position": "SQLite."
+              }
+            ]
+          },
+          "transcript": "# Debate\n\n## Round 1 -- claude\n\nJSON file.\n\n## Round 1 -- codex\n\nSQLite, é 😀.\n\n## Synthesis\n\nFINAL ANSWER: JSON.\n",
+          "truncated": false,
+          "started_at": "2026-10-18T12:00:00Z",
+          "finished_at": "2026-10-18T12:00:04.321Z"
+        },
+        {
+          "reservation_id": "rsv_0123456789abcdef",
+          "debate_id": "dbt_0123456789abcdef01234567",
+          "source": "connector",
+          "outcome": "ok",
+          "actual": {
+            "calls": 3,
+            "est_input_tokens": 1200,
+            "est_output_tokens": 300
+          },
+          "models": [
+            {
+              "provider": "claude",
+              "model": "unspecified",
+              "calls": 2
+            },
+            {
+              "provider": "codex",
+              "model": "unspecified",
+              "calls": 1
+            }
+          ],
+          "duration_ms": 4321,
+          "question": "tab\there\nline\r\n",
+          "providers": [
+            "claude",
+            "codex"
+          ],
+          "rounds": 1,
+          "result": {
+            "final_answer": "Use JSON.",
+            "consensus": "split",
+            "dissent": "codex prefers SQLite",
+            "positions": [
+              {
+                "provider": "claude",
+                "model": "unspecified",
+                "position": "JSON file."
+              },
+              {
+                "provider": "codex",
+                "model": "unspecified",
+                "position": "SQLite."
+              }
+            ]
+          },
+          "transcript": "# Debate\n\n## Round 1 -- claude\n\nJSON file.\n\n## Round 1 -- codex\n\nSQLite, é 😀.\n\n## Synthesis\n\nFINAL ANSWER: JSON.\n",
+          "truncated": false,
+          "started_at": "2026-10-18T12:00:00Z",
+          "finished_at": "2026-10-18T12:00:04.321Z",
+          "x_future_field": 1
+        }
+      ],
+      "invalid": [
+        {
+          "reservation_id": "rsv_0123456789abcdef",
+          "debate_id": "dbt_0123456789abcdef01234567",
+          "source": "connector",
+          "outcome": "ok",
+          "actual": {
+            "calls": 3,
+            "est_input_tokens": 1200,
+            "est_output_tokens": 300
+          },
+          "models": [
+            {
+              "provider": "claude",
+              "model": "unspecified",
+              "calls": 2
+            },
+            {
+              "provider": "codex",
+              "model": "unspecified",
+              "calls": 1
+            }
+          ],
+          "duration_ms": 4321,
+          "question": "JSON or SQLite?",
+          "providers": [
+            "claude",
+            "codex"
+          ],
+          "rounds": 1,
+          "result": null,
+          "transcript": "# Debate\n\n## Round 1 -- claude\n\nJSON file.\n\n## Round 1 -- codex\n\nSQLite, é 😀.\n\n## Synthesis\n\nFINAL ANSWER: JSON.\n",
+          "truncated": false,
+          "started_at": "2026-10-18T12:00:00Z",
+          "finished_at": "2026-10-18T12:00:04.321Z"
+        },
+        {
+          "reservation_id": "rsv_0123456789abcdef",
+          "debate_id": "dbt_0123456789abcdef01234567",
+          "source": "connector",
+          "outcome": "error",
+          "actual": {
+            "calls": 3,
+            "est_input_tokens": 1200,
+            "est_output_tokens": 300
+          },
+          "models": [
+            {
+              "provider": "claude",
+              "model": "unspecified",
+              "calls": 2
+            },
+            {
+              "provider": "codex",
+              "model": "unspecified",
+              "calls": 1
+            }
+          ],
+          "duration_ms": 4321,
+          "question": "JSON or SQLite?",
+          "providers": [
+            "claude",
+            "codex"
+          ],
+          "rounds": 1,
+          "result": {
+            "final_answer": "Use JSON.",
+            "consensus": "split",
+            "dissent": "codex prefers SQLite",
+            "positions": [
+              {
+                "provider": "claude",
+                "model": "unspecified",
+                "position": "JSON file."
+              },
+              {
+                "provider": "codex",
+                "model": "unspecified",
+                "position": "SQLite."
+              }
+            ]
+          },
+          "transcript": "# Debate\n\n## Round 1 -- claude\n\nJSON file.\n\n## Round 1 -- codex\n\nSQLite, é 😀.\n\n## Synthesis\n\nFINAL ANSWER: JSON.\n",
+          "truncated": false,
+          "started_at": "2026-10-18T12:00:00Z",
+          "finished_at": "2026-10-18T12:00:04.321Z"
+        },
+        {
+          "reservation_id": "rsv_0123456789abcdef",
+          "debate_id": "dbt_0123456789abcdef01234567",
+          "source": "connector",
+          "outcome": "orphaned",
+          "actual": {
+            "calls": 3,
+            "est_input_tokens": 1200,
+            "est_output_tokens": 300
+          },
+          "models": [
+            {
+              "provider": "claude",
+              "model": "unspecified",
+              "calls": 2
+            },
+            {
+              "provider": "codex",
+              "model": "unspecified",
+              "calls": 1
+            }
+          ],
+          "duration_ms": 4321,
+          "question": "JSON or SQLite?",
+          "providers": [
+            "claude",
+            "codex"
+          ],
+          "rounds": 1,
+          "result": null,
+          "transcript": "# Debate\n\n## Round 1 -- claude\n\nJSON file.\n\n## Round 1 -- codex\n\nSQLite, é 😀.\n\n## Synthesis\n\nFINAL ANSWER: JSON.\n",
+          "truncated": false,
+          "started_at": "2026-10-18T12:00:00Z",
+          "finished_at": "2026-10-18T12:00:04.321Z"
+        },
+        {
+          "reservation_id": "rsv_0123456789abcdef",
+          "debate_id": "dbt_0123",
+          "source": "connector",
+          "outcome": "ok",
+          "actual": {
+            "calls": 3,
+            "est_input_tokens": 1200,
+            "est_output_tokens": 300
+          },
+          "models": [
+            {
+              "provider": "claude",
+              "model": "unspecified",
+              "calls": 2
+            },
+            {
+              "provider": "codex",
+              "model": "unspecified",
+              "calls": 1
+            }
+          ],
+          "duration_ms": 4321,
+          "question": "JSON or SQLite?",
+          "providers": [
+            "claude",
+            "codex"
+          ],
+          "rounds": 1,
+          "result": {
+            "final_answer": "Use JSON.",
+            "consensus": "split",
+            "dissent": "codex prefers SQLite",
+            "positions": [
+              {
+                "provider": "claude",
+                "model": "unspecified",
+                "position": "JSON file."
+              },
+              {
+                "provider": "codex",
+                "model": "unspecified",
+                "position": "SQLite."
+              }
+            ]
+          },
+          "transcript": "# Debate\n\n## Round 1 -- claude\n\nJSON file.\n\n## Round 1 -- codex\n\nSQLite, é 😀.\n\n## Synthesis\n\nFINAL ANSWER: JSON.\n",
+          "truncated": false,
+          "started_at": "2026-10-18T12:00:00Z",
+          "finished_at": "2026-10-18T12:00:04.321Z"
+        },
+        {
+          "reservation_id": "rsv_0123456789abcdef",
+          "debate_id": "dbt_0123456789abcdef01234567",
+          "source": "connector",
+          "outcome": "ok",
+          "actual": {
+            "calls": 3,
+            "est_input_tokens": 1200,
+            "est_output_tokens": 300
+          },
+          "models": [
+            {
+              "provider": "claude",
+              "model": "unspecified",
+              "calls": 2
+            },
+            {
+              "provider": "codex",
+              "model": "unspecified",
+              "calls": 1
+            }
+          ],
+          "duration_ms": 4321,
+          "question": "",
+          "providers": [
+            "claude",
+            "codex"
+          ],
+          "rounds": 1,
+          "result": {
+            "final_answer": "Use JSON.",
+            "consensus": "split",
+            "dissent": "codex prefers SQLite",
+            "positions": [
+              {
+                "provider": "claude",
+                "model": "unspecified",
+                "position": "JSON file."
+              },
+              {
+                "provider": "codex",
+                "model": "unspecified",
+                "position": "SQLite."
+              }
+            ]
+          },
+          "transcript": "# Debate\n\n## Round 1 -- claude\n\nJSON file.\n\n## Round 1 -- codex\n\nSQLite, é 😀.\n\n## Synthesis\n\nFINAL ANSWER: JSON.\n",
+          "truncated": false,
+          "started_at": "2026-10-18T12:00:00Z",
+          "finished_at": "2026-10-18T12:00:04.321Z"
+        },
+        {
+          "reservation_id": "rsv_0123456789abcdef",
+          "debate_id": "dbt_0123456789abcdef01234567",
+          "source": "connector",
+          "outcome": "ok",
+          "actual": {
+            "calls": 3,
+            "est_input_tokens": 1200,
+            "est_output_tokens": 300
+          },
+          "models": [
+            {
+              "provider": "claude",
+              "model": "unspecified",
+              "calls": 2
+            },
+            {
+              "provider": "codex",
+              "model": "unspecified",
+              "calls": 1
+            }
+          ],
+          "duration_ms": 4321,
+          "question": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "providers": [
+            "claude",
+            "codex"
+          ],
+          "rounds": 1,
+          "result": {
+            "final_answer": "Use JSON.",
+            "consensus": "split",
+            "dissent": "codex prefers SQLite",
+            "positions": [
+              {
+                "provider": "claude",
+                "model": "unspecified",
+                "position": "JSON file."
+              },
+              {
+                "provider": "codex",
+                "model": "unspecified",
+                "position": "SQLite."
+              }
+            ]
+          },
+          "transcript": "# Debate\n\n## Round 1 -- claude\n\nJSON file.\n\n## Round 1 -- codex\n\nSQLite, é 😀.\n\n## Synthesis\n\nFINAL ANSWER: JSON.\n",
+          "truncated": false,
+          "started_at": "2026-10-18T12:00:00Z",
+          "finished_at": "2026-10-18T12:00:04.321Z"
+        },
+        {
+          "reservation_id": "rsv_0123456789abcdef",
+          "debate_id": "dbt_0123456789abcdef01234567",
+          "source": "connector",
+          "outcome": "ok",
+          "actual": {
+            "calls": 3,
+            "est_input_tokens": 1200,
+            "est_output_tokens": 300
+          },
+          "models": [
+            {
+              "provider": "claude",
+              "model": "unspecified",
+              "calls": 2
+            },
+            {
+              "provider": "codex",
+              "model": "unspecified",
+              "calls": 1
+            }
+          ],
+          "duration_ms": 4321,
+          "question": "nul \u0000 inside",
+          "providers": [
+            "claude",
+            "codex"
+          ],
+          "rounds": 1,
+          "result": {
+            "final_answer": "Use JSON.",
+            "consensus": "split",
+            "dissent": "codex prefers SQLite",
+            "positions": [
+              {
+                "provider": "claude",
+                "model": "unspecified",
+                "position": "JSON file."
+              },
+              {
+                "provider": "codex",
+                "model": "unspecified",
+                "position": "SQLite."
+              }
+            ]
+          },
+          "transcript": "# Debate\n\n## Round 1 -- claude\n\nJSON file.\n\n## Round 1 -- codex\n\nSQLite, é 😀.\n\n## Synthesis\n\nFINAL ANSWER: JSON.\n",
+          "truncated": false,
+          "started_at": "2026-10-18T12:00:00Z",
+          "finished_at": "2026-10-18T12:00:04.321Z"
+        },
+        {
+          "reservation_id": "rsv_0123456789abcdef",
+          "debate_id": "dbt_0123456789abcdef01234567",
+          "source": "connector",
+          "outcome": "ok",
+          "actual": {
+            "calls": -1,
+            "est_input_tokens": 0,
+            "est_output_tokens": 0
+          },
+          "models": [
+            {
+              "provider": "claude",
+              "model": "unspecified",
+              "calls": 2
+            },
+            {
+              "provider": "codex",
+              "model": "unspecified",
+              "calls": 1
+            }
+          ],
+          "duration_ms": 4321,
+          "question": "JSON or SQLite?",
+          "providers": [
+            "claude",
+            "codex"
+          ],
+          "rounds": 1,
+          "result": {
+            "final_answer": "Use JSON.",
+            "consensus": "split",
+            "dissent": "codex prefers SQLite",
+            "positions": [
+              {
+                "provider": "claude",
+                "model": "unspecified",
+                "position": "JSON file."
+              },
+              {
+                "provider": "codex",
+                "model": "unspecified",
+                "position": "SQLite."
+              }
+            ]
+          },
+          "transcript": "# Debate\n\n## Round 1 -- claude\n\nJSON file.\n\n## Round 1 -- codex\n\nSQLite, é 😀.\n\n## Synthesis\n\nFINAL ANSWER: JSON.\n",
+          "truncated": false,
+          "started_at": "2026-10-18T12:00:00Z",
+          "finished_at": "2026-10-18T12:00:04.321Z"
+        },
+        {
+          "reservation_id": "rsv_0123456789abcdef",
+          "debate_id": "dbt_0123456789abcdef01234567",
+          "source": "connector",
+          "outcome": "ok",
+          "actual": {
+            "calls": 3,
+            "est_input_tokens": 1200,
+            "est_output_tokens": 300
+          },
+          "models": [
+            {
+              "provider": "claude",
+              "model": "unspecified",
+              "calls": 2
+            },
+            {
+              "provider": "codex",
+              "model": "unspecified",
+              "calls": 1
+            }
+          ],
+          "duration_ms": 4321,
+          "question": "JSON or SQLite?",
+          "providers": [
+            "claude",
+            "codex"
+          ],
+          "rounds": 1.5,
+          "result": {
+            "final_answer": "Use JSON.",
+            "consensus": "split",
+            "dissent": "codex prefers SQLite",
+            "positions": [
+              {
+                "provider": "claude",
+                "model": "unspecified",
+                "position": "JSON file."
+              },
+              {
+                "provider": "codex",
+                "model": "unspecified",
+                "position": "SQLite."
+              }
+            ]
+          },
+          "transcript": "# Debate\n\n## Round 1 -- claude\n\nJSON file.\n\n## Round 1 -- codex\n\nSQLite, é 😀.\n\n## Synthesis\n\nFINAL ANSWER: JSON.\n",
+          "truncated": false,
+          "started_at": "2026-10-18T12:00:00Z",
+          "finished_at": "2026-10-18T12:00:04.321Z"
+        },
+        {
+          "reservation_id": "rsv_0123456789abcdef",
+          "debate_id": "dbt_0123456789abcdef01234567",
+          "source": "connector",
+          "outcome": "ok",
+          "actual": {
+            "calls": 3,
+            "est_input_tokens": 1200,
+            "est_output_tokens": 300
+          },
+          "models": [
+            {
+              "provider": "claude",
+              "model": "unspecified",
+              "calls": 2
+            },
+            {
+              "provider": "codex",
+              "model": "unspecified",
+              "calls": 1
+            }
+          ],
+          "duration_ms": 4321,
+          "question": "JSON or SQLite?",
+          "providers": [
+            "claude",
+            "codex"
+          ],
+          "rounds": 1,
+          "result": {
+            "final_answer": "Use JSON.",
+            "consensus": "split",
+            "dissent": "codex prefers SQLite",
+            "positions": [
+              {
+                "provider": "claude",
+                "model": "unspecified",
+                "position": "JSON file."
+              },
+              {
+                "provider": "codex",
+                "model": "unspecified",
+                "position": "SQLite."
+              }
+            ]
+          },
+          "transcript": "# Debate\n\n## Round 1 -- claude\n\nJSON file.\n\n## Round 1 -- codex\n\nSQLite, é 😀.\n\n## Synthesis\n\nFINAL ANSWER: JSON.\n",
+          "truncated": false,
+          "started_at": "2026-10-18 12:00:00",
+          "finished_at": "2026-10-18T12:00:04.321Z"
+        },
+        {
+          "reservation_id": "rsv_0123456789abcdef",
+          "debate_id": "dbt_0123456789abcdef01234567",
+          "source": "connector",
+          "outcome": "ok",
+          "actual": {
+            "calls": 3,
+            "est_input_tokens": 1200,
+            "est_output_tokens": 300
+          },
+          "models": [
+            {
+              "provider": "claude",
+              "model": "unspecified",
+              "calls": 2
+            },
+            {
+              "provider": "codex",
+              "model": "unspecified",
+              "calls": 1
+            }
+          ],
+          "duration_ms": 4321,
+          "question": "JSON or SQLite?",
+          "providers": [
+            "claude",
+            "codex"
+          ],
+          "rounds": 1,
+          "result": {
+            "final_answer": "Use JSON.",
+            "consensus": "maybe",
+            "dissent": "codex prefers SQLite",
+            "positions": [
+              {
+                "provider": "claude",
+                "model": "unspecified",
+                "position": "JSON file."
+              },
+              {
+                "provider": "codex",
+                "model": "unspecified",
+                "position": "SQLite."
+              }
+            ]
+          },
+          "transcript": "# Debate\n\n## Round 1 -- claude\n\nJSON file.\n\n## Round 1 -- codex\n\nSQLite, é 😀.\n\n## Synthesis\n\nFINAL ANSWER: JSON.\n",
+          "truncated": false,
+          "started_at": "2026-10-18T12:00:00Z",
+          "finished_at": "2026-10-18T12:00:04.321Z"
+        },
+        {
+          "reservation_id": "rsv_0123456789abcdef",
+          "debate_id": "dbt_0123456789abcdef01234567",
+          "source": "connector",
+          "outcome": "ok",
+          "actual": {
+            "calls": 3,
+            "est_input_tokens": 1200,
+            "est_output_tokens": 300
+          },
+          "models": [
+            {
+              "provider": "claude",
+              "model": "unspecified",
+              "calls": 2
+            },
+            {
+              "provider": "codex",
+              "model": "unspecified",
+              "calls": 1
+            }
+          ],
+          "duration_ms": 4321,
+          "question": "JSON or SQLite?",
+          "providers": [
+            "claude",
+            "codex"
+          ],
+          "rounds": 1,
+          "result": {
+            "final_answer": "Use JSON.",
+            "consensus": "split",
+            "dissent": "codex prefers SQLite",
+            "positions": [
+              {
+                "provider": "claude",
+                "model": "unspecified",
+                "position": "JSON file."
+              },
+              {
+                "provider": "codex",
+                "model": "unspecified",
+                "position": "SQLite."
+              }
+            ]
+          },
+          "transcript": "# Debate\n\n## Round 1 -- claude\n\nJSON file.\n\n## Round 1 -- codex\n\nSQLite, é 😀.\n\n## Synthesis\n\nFINAL ANSWER: JSON.\n",
+          "started_at": "2026-10-18T12:00:00Z",
+          "finished_at": "2026-10-18T12:00:04.321Z"
+        },
+        {
+          "reservation_id": "rsv_0123456789abcdef",
+          "debate_id": "dbt_0123456789abcdef01234567",
+          "source": "connector",
+          "outcome": "ok",
+          "actual": {
+            "calls": 3,
+            "est_input_tokens": 1200,
+            "est_output_tokens": 300
+          },
+          "models": [
+            {
+              "provider": "claude",
+              "model": "unspecified",
+              "calls": 2
+            },
+            {
+              "provider": "codex",
+              "model": "unspecified",
+              "calls": 1
+            }
+          ],
+          "duration_ms": 4321,
+          "question": "JSON or SQLite?",
+          "providers": [
+            "claude",
+            "codex"
+          ],
+          "rounds": 1,
+          "result": {
+            "final_answer": "Use JSON.",
+            "consensus": "split",
+            "dissent": "codex prefers SQLite",
+            "positions": [
+              {
+                "provider": "claude",
+                "model": "unspecified",
+                "position": "JSON file."
+              },
+              {
+                "provider": "codex",
+                "model": "unspecified",
+                "position": "SQLite."
+              }
+            ]
+          },
+          "truncated": false,
+          "started_at": "2026-10-18T12:00:00Z",
+          "finished_at": "2026-10-18T12:00:04.321Z"
+        }
+      ]
+    },
+    "fetch": {
+      "valid": [
+        {
+          "debate_id": "dbt_0123456789abcdef01234567",
+          "principal": "acct_ok",
+          "include_transcript": false
+        },
+        {
+          "debate_id": "dbt_0123456789abcdef01234567",
+          "principal": "a:b",
+          "include_transcript": true
+        }
+      ],
+      "invalid": [
+        {
+          "debate_id": "dbt_0123456789abcdef01234567",
+          "principal": "acct_ok"
+        },
+        {
+          "debate_id": "DBT_0123456789ABCDEF01234567",
+          "principal": "acct_ok",
+          "include_transcript": false
+        },
+        {
+          "debate_id": "dbt_0123456789abcdef01234567",
+          "principal": "bad principal",
+          "include_transcript": false
+        },
+        {
+          "debate_id": "dbt_0123456789abcdef01234567",
+          "principal": "acct_ok",
+          "include_transcript": "yes"
+        }
+      ]
+    },
+    "authorize-run": {
+      "valid": [
+        {
+          "reservation_id": "rsv_0123456789abcdef",
+          "debate_id": "dbt_0123456789abcdef01234567"
+        }
+      ],
+      "invalid": [
+        {
+          "reservation_id": "rsv_0123456789abcdef"
+        },
+        {
+          "reservation_id": "has space",
+          "debate_id": "dbt_0123456789abcdef01234567"
+        },
+        {
+          "reservation_id": "rsv_0123456789abcdef",
+          "debate_id": "dbt_xyz"
+        }
+      ]
+    }
+  },
+  "responses": {
+    "finalize": {
+      "valid": [
+        {
+          "ok": true,
+          "stored": true,
+          "charged": 5
+        },
+        {
+          "ok": true,
+          "stored": true,
+          "charged": 0
+        },
+        {
+          "ok": true,
+          "stored": false,
+          "charged": 0
+        },
+        {
+          "ok": false,
+          "code": "conflict"
+        },
+        {
+          "ok": false,
+          "code": "not_ready"
+        }
+      ],
+      "invalid": [
+        {
+          "ok": true,
+          "stored": false,
+          "charged": 3
+        },
+        {
+          "ok": true,
+          "stored": true
+        },
+        {
+          "ok": true,
+          "stored": "yes",
+          "charged": 0
+        },
+        {
+          "ok": false,
+          "code": "nope"
+        },
+        {
+          "ok": false
+        }
+      ]
+    },
+    "fetch": {
+      "valid": [
+        {
+          "ok": true,
+          "debate": {
+            "debate_id": "dbt_0123456789abcdef01234567",
+            "status": "done",
+            "outcome": "ok",
+            "question": "JSON or SQLite?",
+            "providers": [
+              "claude",
+              "codex"
+            ],
+            "rounds": 1,
+            "result": {
+              "final_answer": "Use JSON.",
+              "consensus": "split",
+              "dissent": "codex prefers SQLite",
+              "positions": [
+                {
+                  "provider": "claude",
+                  "model": "unspecified",
+                  "position": "JSON file."
+                },
+                {
+                  "provider": "codex",
+                  "model": "unspecified",
+                  "position": "SQLite."
+                }
+              ]
+            },
+            "usage": {
+              "calls": 3,
+              "est_input_tokens": 1200,
+              "est_output_tokens": 300
+            },
+            "credits_charged": 5,
+            "created_at": "2026-10-18T12:00:00Z",
+            "finished_at": "2026-10-18T12:00:04.321Z",
+            "truncated": false
+          }
+        },
+        {
+          "ok": true,
+          "debate": {
+            "debate_id": "dbt_0123456789abcdef01234567",
+            "status": "done",
+            "outcome": "ok",
+            "question": "JSON or SQLite?",
+            "providers": [
+              "claude",
+              "codex"
+            ],
+            "rounds": 1,
+            "result": {
+              "final_answer": "Use JSON.",
+              "consensus": "split",
+              "dissent": "codex prefers SQLite",
+              "positions": [
+                {
+                  "provider": "claude",
+                  "model": "unspecified",
+                  "position": "JSON file."
+                },
+                {
+                  "provider": "codex",
+                  "model": "unspecified",
+                  "position": "SQLite."
+                }
+              ]
+            },
+            "usage": {
+              "calls": 3,
+              "est_input_tokens": 1200,
+              "est_output_tokens": 300
+            },
+            "credits_charged": 5,
+            "created_at": "2026-10-18T12:00:00Z",
+            "finished_at": "2026-10-18T12:00:04.321Z",
+            "truncated": false,
+            "transcript": "# Debate\n\n## Round 1 -- claude\n\nJSON file.\n\n## Round 1 -- codex\n\nSQLite, é 😀.\n\n## Synthesis\n\nFINAL ANSWER: JSON.\n"
+          }
+        },
+        {
+          "ok": true,
+          "debate": {
+            "debate_id": "dbt_0123456789abcdef01234567",
+            "status": "queued",
+            "outcome": null,
+            "question": "JSON or SQLite?",
+            "providers": [
+              "claude",
+              "codex"
+            ],
+            "rounds": 1,
+            "result": null,
+            "usage": {
+              "calls": 3,
+              "est_input_tokens": 1200,
+              "est_output_tokens": 300
+            },
+            "credits_charged": 5,
+            "created_at": "2026-10-18T12:00:00Z",
+            "finished_at": null,
+            "truncated": false,
+            "transcript": null
+          }
+        },
+        {
+          "ok": false,
+          "code": "not_found"
+        }
+      ],
+      "invalid": [
+        {
+          "ok": true,
+          "debate": {
+            "debate_id": "dbt_0123456789abcdef01234567",
+            "status": "lost",
+            "outcome": "ok",
+            "question": "JSON or SQLite?",
+            "providers": [
+              "claude",
+              "codex"
+            ],
+            "rounds": 1,
+            "result": {
+              "final_answer": "Use JSON.",
+              "consensus": "split",
+              "dissent": "codex prefers SQLite",
+              "positions": [
+                {
+                  "provider": "claude",
+                  "model": "unspecified",
+                  "position": "JSON file."
+                },
+                {
+                  "provider": "codex",
+                  "model": "unspecified",
+                  "position": "SQLite."
+                }
+              ]
+            },
+            "usage": {
+              "calls": 3,
+              "est_input_tokens": 1200,
+              "est_output_tokens": 300
+            },
+            "credits_charged": 5,
+            "created_at": "2026-10-18T12:00:00Z",
+            "finished_at": "2026-10-18T12:00:04.321Z",
+            "truncated": false
+          }
+        },
+        {
+          "ok": true,
+          "debate": {
+            "debate_id": "dbt_0123456789abcdef01234567",
+            "status": "done",
+            "outcome": "ok",
+            "question": "JSON or SQLite?",
+            "providers": [
+              "claude",
+              "codex"
+            ],
+            "rounds": 1,
+            "result": {
+              "final_answer": "Use JSON.",
+              "consensus": "split",
+              "dissent": "codex prefers SQLite",
+              "positions": [
+                {
+                  "provider": "claude",
+                  "model": "unspecified",
+                  "position": "JSON file."
+                },
+                {
+                  "provider": "codex",
+                  "model": "unspecified",
+                  "position": "SQLite."
+                }
+              ]
+            },
+            "credits_charged": 5,
+            "created_at": "2026-10-18T12:00:00Z",
+            "finished_at": "2026-10-18T12:00:04.321Z",
+            "truncated": false
+          }
+        },
+        {
+          "ok": true,
+          "debate": {
+            "debate_id": "dbt_0123456789abcdef01234567",
+            "status": "done",
+            "outcome": "ok",
+            "question": "JSON or SQLite?",
+            "providers": [
+              "claude",
+              "codex"
+            ],
+            "rounds": 1,
+            "result": {
+              "final_answer": "Use JSON.",
+              "consensus": "split",
+              "dissent": "codex prefers SQLite",
+              "positions": [
+                {
+                  "provider": "claude",
+                  "model": "unspecified",
+                  "position": "JSON file."
+                },
+                {
+                  "provider": "codex",
+                  "model": "unspecified",
+                  "position": "SQLite."
+                }
+              ]
+            },
+            "usage": {
+              "calls": 3,
+              "est_input_tokens": 1200,
+              "est_output_tokens": 300
+            },
+            "credits_charged": 5,
+            "created_at": "2026-10-18T12:00:00Z",
+            "finished_at": "yesterday",
+            "truncated": false
+          }
+        },
+        {
+          "ok": false,
+          "code": "conflict"
+        }
+      ]
+    },
+    "authorize-run": {
+      "valid": [
+        {
+          "ok": true,
+          "principal": "acct_ok",
+          "price_credits": 25,
+          "status": "reserved"
+        },
+        {
+          "ok": true,
+          "principal": "acct_ok",
+          "price_credits": 25,
+          "status": "bound"
+        },
+        {
+          "ok": false,
+          "code": "conflict"
+        },
+        {
+          "ok": false,
+          "code": "not_found"
+        }
+      ],
+      "invalid": [
+        {
+          "ok": true,
+          "principal": "acct_ok",
+          "price_credits": -1,
+          "status": "bound"
+        },
+        {
+          "ok": true,
+          "principal": "acct_ok",
+          "status": "bound"
+        },
+        {
+          "ok": false,
+          "code": "too_large"
+        }
+      ]
+    }
+  }
+}

@@ -5,7 +5,7 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { SCHEMAS, REFUSAL_CODES } from '../../lib/mcp/external-auth.js';
+import { SCHEMAS, REFUSAL_CODES, DEBATE_CODES, DEBATE_STATUS, FEATURES, schemaOf } from '../../lib/mcp/external-auth.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const arg = (name, dflt) => { const i = process.argv.indexOf(name); return i > 0 ? process.argv[i + 1] : dflt; };
@@ -27,10 +27,19 @@ assert.deepEqual(sorted(files), sorted(Object.keys(SCHEMAS)), 'docs/external-aut
 for (const name of files) assert.deepEqual(JSON.parse(readFileSync(join(schemaDir, `${name}.schema.json`), 'utf8')), SCHEMAS[name], `${name}.schema.json differs from SCHEMAS['${name}']`);
 
 // 2. one request and one response schema per documented call, and the stub implements every call
-const calls = sorted([...doc.matchAll(/^### `(\w+)`/gm)].map((m) => m[1]));
-assert.deepEqual(calls, ['health', 'introspect', 'release', 'reserve', 'settle'], 'documented calls');
-for (const c of calls) for (const kind of ['request', 'response']) assert.ok(SCHEMAS[`${c}.${kind}`], `no ${c}.${kind} schema`);
-for (const c of calls.filter((c) => c !== 'health')) assert.match(stub, new RegExp(`^  ${c}\\(b\\) \\{`, 'm'), `the stub does not implement ${c}`);
+const calls = sorted([...doc.matchAll(/^### `([\w-]+)`/gm)].map((m) => m[1]));
+assert.deepEqual(calls, sorted(['health', 'introspect', 'release', 'reserve', 'settle', ...FEATURES]), 'documented calls');
+for (const c of calls) for (const kind of ['request', 'response']) assert.ok(schemaOf(c, kind), `no ${c}.${kind} schema`);
+for (const c of calls.filter((c) => c !== 'health')) assert.match(stub, new RegExp(`^  (${c}|'${c}')\\(b\\) \\{`, 'm'), `the stub does not implement ${c}`);
+
+// 2b. Debate contract codes: document = schemas (with the HTTP status of each code)
+const debateCodes = [...section('debate-codes').matchAll(/^\|\s*`([\w-]+)`\s*\|\s*`(\w+)`\s*\|\s*(\d{3})\s*\|/gm)].map((m) => ({ call: m[1], code: m[2], status: Number(m[3]) }));
+for (const call of FEATURES) {
+  assert.deepEqual(sorted(debateCodes.filter((c) => c.call === call).map((c) => c.code)), sorted(DEBATE_CODES[call]), `${call} codes in the document vs ${call}.schema.json`);
+  assert.deepEqual(sorted(schemaOf(call, 'response').oneOf.find((b) => b.properties.code).properties.code.enum), sorted(DEBATE_CODES[call]), `${call} codes in the schema vs the client`);
+}
+for (const c of debateCodes) assert.equal(c.status, DEBATE_STATUS[c.code], `${c.call} ${c.code}: the document says HTTP ${c.status}`);
+for (const c of debateCodes.filter((x) => !['rate_limited', 'unavailable', 'not_ready'].includes(x.code))) assert.ok(stub.includes(`refuse('${c.code}')`) || c.code === 'invalid' || c.code === 'too_large', `the stub never answers ${c.call}:${c.code}`);
 
 // 3. refusal codes: document = schemas = stub = vectors
 const codes = [...section('codes').matchAll(/^\|\s*`(\w+)`\s*\|\s*`(\w+)`\s*\|/gm)].map((m) => `${m[1]}:${m[2]}`);
@@ -54,14 +63,17 @@ assert.ok(transitions.length > 0, 'no transitions parsed from the document');
 assert.equal(new Set(transitions).size, transitions.length, 'duplicate transition ids in the document');
 for (const t of transitions) assert.ok(coverage.has(t), `the document lists transition ${t} but no conformance vector covers it`);
 for (const t of coverage) if (t.startsWith('T-')) assert.ok(transitions.includes(t), `a vector covers ${t} but the document does not list it`);
+// every terminal debate answer has a vector
+for (const c of debateCodes.filter((x) => !['rate_limited', 'unavailable', 'not_ready'].includes(x.code))) assert.ok(coverage.has(`${c.call}:${c.code}`) || (c.call === 'authorize-run' && c.code === 'invalid'), `no conformance vector covers ${c.call}:${c.code}`);
 for (const s of ['held', 'settled', 'released', 'expired']) assert.ok(section('transitions').includes(`\`${s}\``), `state ${s} missing from the transition table`);
 
 // 5. the required prose sections and numbers
 for (const needle of ['X-E3D-Auth-Version: 1', '16 KB', '64 KB', 'Store only key hashes', 'Constant-time comparison', 'Rate-limit `introspect`',
   'Atomic balance checks', 'No token logging', 'Maximum revocation latency', '## Compatibility', 'Unknown fields are ignored', '## What the server guarantees',
-  'E3D_MCP_AUTH_SERVICE_TOKEN_FILE', 'E3D_MCP_AUTH_CACHE_SEC', 'E3D_MCP_AUTH_MAX_INFLIGHT', '^[A-Za-z0-9_.:-]{1,80}$']) {
+  'E3D_MCP_AUTH_SERVICE_TOKEN_FILE', 'E3D_MCP_AUTH_CACHE_SEC', 'E3D_MCP_AUTH_MAX_INFLIGHT', '^[A-Za-z0-9_.:-]{1,80}$',
+  '## Debate contract v1', '### Capability gating', 'CONTRACT-VERSION', '512 KB', '480 KB', '8000 Unicode scalar', 'section boundary', 'E3D_MCP_OUTBOX_MAX_BYTES']) {
   assert.ok(doc.includes(needle), `the document is missing: ${needle}`);
 }
 assert.equal(SCHEMAS['introspect.response'].oneOf[0].properties.principal.pattern, '^[A-Za-z0-9_.:-]{1,80}$', 'principal pattern in the schema matches the document');
 
-console.log(`drift: document, ${files.length} schemas, stub and ${coverage.size} covered items agree (${codes.length} codes, ${transitions.length} transitions)`);
+console.log(`drift: document, ${files.length} schemas, stub and ${coverage.size} covered items agree (${codes.length} codes, ${debateCodes.length} debate codes, ${transitions.length} transitions)`);
