@@ -93,6 +93,12 @@ r="$(http A -X POST "${J[@]}" -d "$INIT")"; assert_eq "$(status "$r")" "401" "no
 r="$(http A -X POST "${J[@]}" -H "$(auth wrong-token-0123456789)" -d "$INIT")"; assert_eq "$(status "$r")" "401" "wrong token"
 r="$(http A -X POST "${J[@]}" -H "Authorization: Basic $ALICE" -d "$INIT")"; assert_eq "$(status "$r")" "401" "wrong scheme"
 r="$(http A -X POST "${J[@]}" -H "$(auth "${ALICE:0:10}")" -d "$INIT")"; assert_eq "$(status "$r")" "401" "a token prefix must not work"
+# X-Auth-Token: the same token for connector UIs that reserve Authorization (for example claude.ai custom connectors)
+r="$(http A -X POST "${J[@]}" -H "X-Auth-Token: $ALICE" -d "$INIT")"; assert_eq "$(status "$r")" "200" "X-Auth-Token with the raw token"
+r="$(http A -X POST "${J[@]}" -H "X-Auth-Token: Bearer $ALICE" -d "$INIT")"; assert_eq "$(status "$r")" "200" "X-Auth-Token with a Bearer prefix"
+r="$(http A -X POST "${J[@]}" -H "X-Auth-Token: wrong-token-0123456789" -d "$INIT")"; assert_eq "$(status "$r")" "401" "a wrong X-Auth-Token"
+r="$(http A -X POST "${J[@]}" -H "$(auth wrong-token-0123456789)" -H "X-Auth-Token: $ALICE" -d "$INIT")"; assert_eq "$(status "$r")" "401" "a wrong Authorization is never rescued by a right X-Auth-Token"
+r="$(http A -X POST "${J[@]}" -H "X-Auth-Token: ${ALICE:0:10}" -d "$INIT")"; assert_eq "$(status "$r")" "401" "a token prefix in X-Auth-Token must not work"
 r="$(http A -X POST "${J[@]}" -H "$(auth "$ALICE")" -d "$INIT")"; assert_eq "$(status "$r")" "200" "valid token"
 SID_ALICE="$(hdr mcp-session-id)"; [[ ${#SID_ALICE} -ge 32 ]] || fail "session id should be long and random"
 assert_eq "$(jq -r .result.serverInfo.name <<< "$(body "$r")")" "e3d-pilot"
