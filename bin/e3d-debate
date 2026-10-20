@@ -207,14 +207,18 @@ EOP
 # The v3 round-2+ format has no POSITION/status lines, but the early-convergence check and the MCP verdict
 # contract read them. Derive them: POSITION = ACTION; status = approved only if AGREES_WITH names every other analyst.
 v3_append_derived_lines() {
-  local me="$1" answer="$2" action agrees o st="approved"
+  local me="$1" answer="$2" action agrees o st="approved" computed
   action="$(grep -m1 -E '^ACTION:' <<< "$answer" | sed -E 's/^ACTION:[[:space:]]*//' || true)"
-  agrees="$(grep -m1 -E '^AGREES_WITH:' <<< "$answer" | sed -E 's/^AGREES_WITH:[[:space:]]*//' | tr 'A-Z' 'a-z' || true)"
-  for o in "${DEBATE_PROVIDERS[@]}"; do
-    [[ "$o" == "$me" ]] && continue
-    grep -qi -- "$o" <<< "$agrees" || st="revise"
-  done
-  [[ -n "$action" ]] || st="revise"
+  if computed="$(agreement_json "$me" "$answer")" && [[ -n "$computed" ]]; then
+    st="$(jq -r --arg me "$me" '.participants[$me].computed_status' <<< "$computed")"
+  else
+    agrees="$(grep -m1 -E '^AGREES_WITH:' <<< "$answer" | sed -E 's/^AGREES_WITH:[[:space:]]*//' | tr 'A-Z' 'a-z' || true)"
+    for o in "${DEBATE_PROVIDERS[@]}"; do
+      [[ "$o" == "$me" ]] && continue
+      grep -qi -- "$o" <<< "$agrees" || st="revise"
+    done
+    [[ -n "$action" ]] || st="revise"
+  fi
   printf '%s\n\n[derived by e3d-debate from ACTION / AGREES_WITH]\nPOSITION: %s\nstatus: %s' "$answer" "$action" "$st"
 }
 
@@ -234,6 +238,43 @@ CLAIMS CHECKED: any factual claim where analysts contradicted each other, and wh
 OPEN QUESTIONS: up to 3.
 Rules: every quote must be copied verbatim from that analyst's text. If you cannot find a quote, omit the claim. Never attribute a statement to someone who did not write it.
 EOP
+}
+
+# Computed agreement (lib/debate/agreement): reads ACTION / AGREES_WITH by exact name instead of trusting a
+# model's self-declared status. agreement_json <participant> <answer> computes one participant;
+# agreement_json with no arguments computes every participant from LAST_ANSWER. Fails (so callers fall back)
+# when node, jq or the module is missing.
+agreement_json() {
+  local agree="$REPO_ROOT/lib/debate/agreement" p
+  [[ -f "$agree" ]] && command -v node >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 || return 1
+  local names_json answers_json
+  names_json="$(printf '%s\n' "${DEBATE_PROVIDERS[@]}" | jq -R . | jq -sc .)"
+  if [[ $# -ge 2 ]]; then
+    answers_json="$(jq -nc --arg me "$1" --arg a "$2" '{($me): $a}')"
+  else
+    answers_json='{}'
+    for p in "${DEBATE_PROVIDERS[@]}"; do
+      answers_json="$(jq -c --arg p "$p" --arg a "${LAST_ANSWER[$p]:-}" '. + {($p): $a}' <<< "$answers_json")"
+    done
+  fi
+  jq -nc --argjson n "$names_json" --argjson a "$answers_json" '{participants:$n, answers:$a}' | node "$agree" 2>/dev/null
+}
+
+# One JSON line per round for the decision log (no question or answer text, only structure).
+decision_round() {
+  local round="$1" p st ok words rec comp=""
+  command -v jq >/dev/null 2>&1 || return 0
+  (( round >= 2 )) && comp="$(agreement_json 2>/dev/null || true)"
+  rec="[]"
+  for p in "${DEBATE_PROVIDERS[@]}"; do
+    st="$(cat "$work_dir/round${round}-${p}.status" 2>/dev/null || echo 1)"
+    ok=false; [[ "$st" == "0" ]] && ok=true
+    words="$(wc -w < "$work_dir/round${round}-${p}.out" 2>/dev/null | tr -d ' ' || true)"
+    rec="$(jq -c --arg p "$p" --argjson ok "$ok" --argjson w "${words:-0}" --argjson c "${comp:-null}" \
+      '. + [{provider:$p, ok:$ok, words:$w} + (if $c then ($c.participants[$p] // {}) else {} end)]' <<< "$rec")"
+  done
+  jq -nc --argjson r "$round" --argjson prov "$rec" --argjson c "${comp:-null}" \
+    '{round:$r, providers:$prov} + (if $c then {basis:$c.basis, converged:$c.converged} else {} end)' >> "$work_dir/decision-rounds.jsonl"
 }
 
 declare -A LAST_ANSWER
@@ -298,6 +339,8 @@ for ((round = 1; round <= DEBATE_ROUNDS; round++)); do
     printf '## Round %d -- %s\n\n%s\n\n' "$round" "$provider" "$answer" >> "$transcript_md"
     printf -- '--- Round %d / %s ---\n%s\n\n' "$round" "$provider" "$answer"
   done
+
+  decision_round "$round" || true
 
   if (( round >= 2 )); then
     statuses=()
@@ -377,8 +420,35 @@ else
   echo "error: synthesis provider failed -- see $work_dir/synthesis.stderr" >&2
 fi
 
+# Decision log (idea-bf6be2834a60): a structured record of how this debate ran, with no question or answer text.
+# Always written next to the transcript; also appended to $E3D_DEBATE_DECISION_LOG when that is set.
+write_decision_log() {
+  command -v jq >/dev/null 2>&1 && [[ -s "$work_dir/decision-rounds.jsonl" ]] || return 0
+  local qhash consensus dissent_present=false stop_reason="max_rounds" providers_json ran="$DEBATE_ROUNDS"
+  qhash="$(printf '%s' "$QUESTION" | shasum -a 256 | cut -d' ' -f1)"
+  consensus="$(grep -m1 -E '^CONSENSUS:' "$synth_out" 2>/dev/null | sed -E 's/^CONSENSUS:[[:space:]]*//' || true)"
+  if grep -qE '^DISSENT:' "$synth_out" 2>/dev/null && ! grep -m1 -E '^DISSENT:' "$synth_out" | grep -qiE '^DISSENT:[[:space:]]*"?none"?\.?[[:space:]]*$'; then dissent_present=true; fi
+  if (( converged == 1 )); then stop_reason="converged"; ran="$converged_at_round"; fi
+  providers_json="$(printf '%s\n' "${DEBATE_PROVIDERS[@]}" | jq -R . | jq -sc .)"
+  jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg qhash "$qhash" --arg pv "$DEBATE_PROMPT_VERSION" \
+    --arg synth "$DEBATE_SYNTHESIZER" --arg stop "$stop_reason" --arg consensus "$consensus" \
+    --argjson providers "$providers_json" --argjson maxr "$DEBATE_ROUNDS" --argjson ran "$ran" \
+    --argjson at "$converged_at_round" --argjson fast "$fast_synthesis" --argjson sok "$synth_ok" \
+    --argjson dissent "$dissent_present" --argjson secs "$SECONDS" --slurpfile rounds "$work_dir/decision-rounds.jsonl" \
+    '{schema:1, ts:$ts, question_sha256:$qhash, prompt_version:$pv, providers:$providers, synthesizer:$synth,
+      max_rounds:$maxr, rounds_ran:$ran, stop_reason:$stop, converged_at_round:(if $at>0 then $at else null end),
+      fast_synthesis:($fast==1), synthesis_ok:($sok==1), consensus:(if $consensus=="" then null else $consensus end),
+      dissent_present:$dissent, seconds:$secs, rounds:$rounds}' > "$work_dir/decision-log.json" || return 0
+  if [[ -n "${E3D_DEBATE_DECISION_LOG:-}" ]]; then
+    { mkdir -p "$(dirname "$E3D_DEBATE_DECISION_LOG")" && jq -c . "$work_dir/decision-log.json" >> "$E3D_DEBATE_DECISION_LOG"; } 2>/dev/null \
+      || echo "warning: could not append to E3D_DEBATE_DECISION_LOG" >&2
+  fi
+}
+write_decision_log || true
+
 if [[ -n "$OUT_DIR" ]]; then
   mkdir -p "$OUT_DIR"
+  [[ -s "$work_dir/decision-log.json" ]] && cp "$work_dir/decision-log.json" "$OUT_DIR/decision-log.json"
   cp "$transcript_md" "$OUT_DIR/transcript.md"
   echo "transcript: $OUT_DIR/transcript.md" >&2
 else
