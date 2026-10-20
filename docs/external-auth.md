@@ -76,6 +76,10 @@ short `snake_case` word such as `zero_usage`, `local_refused`, `ambiguous_reserv
 token; the service may accept it without the service token, but a wrong service token must still be refused so
 misconfiguration is visible. The service rate-limits it.
 
+The answer may also carry `features` (the same array as `introspect`, see [Capability gating](#capability-gating)):
+`{ "status": "ok", "features": ["finalize", "fetch", "authorize-run"] }`. It lets the server learn the advertisement without a
+caller token (see below). It is optional and additive: a service that omits it behaves exactly as before.
+
 ## Refusal codes
 
 <!-- conformance:codes -->
@@ -208,6 +212,16 @@ advertised (the latest active `introspect` answer wins):
 | `finalize` | finalizes every synchronous `e3d_debate` with `finalize` instead of `settle` (never both) |
 | `finalize` and `fetch` | additionally offers the async debate tools (start, check on, and get the result of a debate) |
 | all three | additionally enables the internal run listener for pre-reserved (web) runs |
+
+The advertisement is also read from `GET /health`: when a `200 { "status": "ok" }` answer has a `features` array, the server
+takes it as the current advertisement (same filtering as above; the latest answer wins, `introspect` or `health`). An answer
+without a `features` key changes nothing. Nothing is learned from a failed, slow, malformed or non-200 answer. The server
+probes `health` at startup and every `E3D_MCP_AUTH_HEALTH_SEC` seconds (15 by default; after a failure it retries after 1 s, 2 s,
+4 s ... up to that interval), and, while the run listener sees the features unknown, at most once every 5 s when a web run
+arrives. So after a restart, web runs become ready as soon as `health` answers, with no client call to `/mcp` needed.
+A service that must serve web runs should therefore advertise `features` on `health` as well as on `introspect` (the two
+must agree); one that does not still works, but its web runs stay `503 not_ready` after a server restart until some client
+presents a valid key.
 
 ### Ids
 
