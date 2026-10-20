@@ -1,0 +1,60 @@
+#!/usr/bin/env node
+// Computed agreement for one debate round, from the structured ACTION / AGREES_WITH lines, not from a
+// model's own "status:" claim. Reads JSON on stdin: {"participants":["a","b"],"answers":{"a":"<text>","b":"<text>"}}
+// Writes JSON: {"basis":"computed"|"declared","converged":bool,"participants":{name:{action,agrees_with,declared_status,computed_status}}}.
+// A participant is computed "approved" only when it has an ACTION and its AGREES_WITH names every other
+// participant exactly (a parenthetical caveat after a name is ignored; "none" names nobody; a name inside a
+// longer phrase such as "not claude" does not count). Answers with no AGREES_WITH line (the v2 format) fall back to
+// the declared status and are marked basis "declared".
+import fs from 'node:fs';
+import { fileURLToPath } from 'node:url';
+
+function line(text, key) {
+  const m = new RegExp(`^${key}:[ \\t]*(.*)$`, 'mi').exec(text);
+  return m ? m[1].trim() : null;
+}
+
+export function names(value) {
+  if (value === null) return null;
+  return value
+    .toLowerCase()
+    .split(/\s*(?:,|;|\band\b|&|\/)\s*/)
+    .map((t) => t.replace(/\([^)]*\)/g, '').replace(/[.\s]+$/g, '').trim())
+    .filter((t) => t && t !== 'none');
+}
+
+export function compute(participants, answers) {
+  const out = {};
+  let structured = true;
+  for (const me of participants) {
+    const text = String(answers[me] ?? '');
+    const action = line(text, 'ACTION');
+    const agrees = names(line(text, 'AGREES_WITH'));
+    const declared = (/^status:[ \t]*(approved|revise)[ \t]*$/im.exec(text) || [])[1] || 'revise';
+    let computed;
+    if (agrees === null) {
+      structured = false;
+      computed = declared;
+    } else {
+      const others = participants.filter((p) => p !== me);
+      computed = action && others.every((o) => agrees.includes(o.toLowerCase())) ? 'approved' : 'revise';
+    }
+    out[me] = { action: action || null, agrees_with: agrees || [], declared_status: declared, computed_status: computed };
+  }
+  const converged = participants.length > 0 && participants.every((p) => out[p].computed_status === 'approved');
+  return { basis: structured ? 'computed' : 'declared', converged, participants: out };
+}
+
+if (process.argv[1] && fs.realpathSync(process.argv[1]) === fs.realpathSync(fileURLToPath(import.meta.url))) {
+  let raw = '';
+  process.stdin.on('data', (d) => (raw += d));
+  process.stdin.on('end', () => {
+    let input;
+    try { input = JSON.parse(raw); } catch { process.stderr.write('error: stdin is not JSON\n'); process.exit(2); }
+    if (!Array.isArray(input.participants) || typeof input.answers !== 'object' || input.answers === null) {
+      process.stderr.write('error: need participants[] and answers{}\n');
+      process.exit(2);
+    }
+    process.stdout.write(`${JSON.stringify(compute(input.participants, input.answers))}\n`);
+  });
+}
