@@ -348,7 +348,7 @@ const server = http.createServer(async (req, res) => {
   if (mode === 'drop') return req.socket.destroy();
   if (mode === 'unavailable' || mode === 'not_ready') return send(res, 503, refuse(mode));
 
-  if (isHealth) return send(res, 200, { status: 'ok' });
+  if (isHealth) return send(res, 200, { status: 'ok', ...(env.STUB_HEALTH_FEATURES === '1' && FEATURES.length ? { features: FEATURES } : {}) });
   // the debate calls answer errors with { ok:false, code } and the code's HTTP status
   const answer = (code) => send(res, DEBATE_STATUS[code], refuse(code));
   if (raw === null) return debateCall ? answer('too_large') : send(res, 413, { error: 'too_large' });
