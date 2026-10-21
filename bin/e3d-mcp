@@ -452,7 +452,9 @@ const TOOLS = [
       },
       required: ['final_answer', 'consensus', 'dissent', 'positions', 'mode', 'providers', 'rounds_ran'],
     },
-    annotations: { title: 'Multi-model debate', readOnlyHint: true, openWorldHint: true, idempotentHint: false },
+    // Not read-only: a call spends the caller's credits or budget and sends the question to model providers (openWorld). It does
+    // not delete or overwrite anything, so destructiveHint is false (the MCP default for a non-read-only tool is true).
+    annotations: { title: 'Multi-model debate', readOnlyHint: false, destructiveHint: false, openWorldHint: true, idempotentHint: false },
   },
   {
     name: 'e3d_debate_start',
@@ -475,7 +477,7 @@ const TOOLS = [
       properties: { debate_id: { type: 'string' }, status: { type: 'string', enum: ['queued', 'running'] }, poll_after_sec: { type: 'integer' } },
       required: ['debate_id', 'status', 'poll_after_sec'],
     },
-    annotations: { title: 'Start a debate', readOnlyHint: false, openWorldHint: true, idempotentHint: false },
+    annotations: { title: 'Start a debate', readOnlyHint: false, destructiveHint: false, openWorldHint: true, idempotentHint: false },
   },
   {
     name: 'e3d_debate_status',
