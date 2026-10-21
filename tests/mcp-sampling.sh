@@ -62,6 +62,11 @@ assert.deepEqual(ind.families.sort(), ['anthropic', 'openai']);
 ind = independence(['mcp-sampling', 'mcp-sampling-b'], sm(['mcp-sampling', 'claude-sonnet-5.5'], ['mcp-sampling-b', 'gpt-5.1']));
 assert.equal(ind.independent, true); assert.equal(ind.warnings.length, 0);
 assert.equal(independence(['codex', 'openai-api'], []).independent, false, 'two OpenAI providers are one family');
+assert.equal(independence(['xai-api', 'gemini-api'], []).independent, true, 'xAI and Google are separate families');
+assert.equal(independence(['gemini-api', 'gemini'], []).independent, false, 'gemini-api and the gemini CLI are one family');
+assert.equal(independence(['xai-api', 'grok-build'], []).independent, false, 'xai-api and grok-build are one family');
+ind = independence(['anthropic-api', 'openai-api', 'gemini-api', 'xai-api'], []);
+assert.equal(ind.independent, true); assert.deepEqual(ind.families.sort(), ['anthropic', 'google', 'openai', 'xai']); assert.equal(ind.warnings.length, 0);
 console.log('voices ok');
 JS
 

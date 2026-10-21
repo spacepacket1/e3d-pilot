@@ -1,0 +1,98 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Google Gemini (OpenAI-compatible endpoint) chat-completions provider (curl + jq; no SDK, no `codex` CLI needed), for servers and containers.
+#   GEMINI_API_KEY        or GEMINI_API_KEY_FILE (a file holding the key, or an `export GEMINI_API_KEY=...` line)
+#   GEMINI_API_MODEL      required: there is deliberately no default, because valid model names change
+#   GEMINI_API_MAX_TOKENS optional (sent as max_tokens)
+#   GEMINI_API_BASE_URL   default https://generativelanguage.googleapis.com/v1beta/openai (any OpenAI-compatible endpoint works)
+# Gemini errors may arrive as a one-element JSON array; both shapes are handled.
+# The key is sent from a 0600 header file, never on the command line, and is never printed.
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=./common.sh
+source "$SCRIPT_DIR/common.sh"
+
+GEMINI_API_BASE_URL="${GEMINI_API_BASE_URL:-https://generativelanguage.googleapis.com/v1beta/openai}"
+PROVIDER_TOKEN_LIMIT="${E3D_PILOT_PROVIDER_TOKEN_LIMIT:-200000}"
+
+gemini_key() {
+  if [[ -n "${GEMINI_API_KEY:-}" ]]; then printf '%s' "$GEMINI_API_KEY"
+  else provider_key_from_file "${GEMINI_API_KEY_FILE:-}" GEMINI_API_KEY
+  fi
+}
+
+if [[ "${E3D_PILOT_CHECK:-0}" == "1" ]]; then
+  if ! provider_binary_available curl || ! provider_binary_available jq; then
+    printf 'unavailable: curl and jq are required\n'
+    exit "$PROVIDER_EXIT_UNAVAILABLE"
+  fi
+  if [[ -z "$(gemini_key)" ]]; then
+    printf 'unavailable: set GEMINI_API_KEY (or GEMINI_API_KEY_FILE)\n'
+    exit "$PROVIDER_EXIT_UNAVAILABLE"
+  fi
+  if [[ -z "${GEMINI_API_MODEL:-}" ]]; then
+    printf 'unavailable: set GEMINI_API_MODEL (no default: model names change)\n'
+    exit "$PROVIDER_EXIT_UNAVAILABLE"
+  fi
+  # Reachability only: no key is sent and nothing is billed.
+  if curl -s -o /dev/null -m "${GEMINI_API_CHECK_TIMEOUT:-3}" "${GEMINI_API_BASE_URL%/}"; then
+    printf 'available (%s)\n' "$GEMINI_API_MODEL"
+    exit "$PROVIDER_EXIT_OK"
+  fi
+  printf 'unavailable: API not reachable (%s)\n' "${GEMINI_API_BASE_URL%/}"
+  exit "$PROVIDER_EXIT_UNAVAILABLE"
+fi
+
+if [[ -z "$(gemini_key)" || -z "${GEMINI_API_MODEL:-}" ]]; then
+  echo "error: gemini-api is not configured (GEMINI_API_KEY or GEMINI_API_KEY_FILE, and GEMINI_API_MODEL)" >&2
+  exit "$PROVIDER_EXIT_UNAVAILABLE"
+fi
+
+PROMPT_FILE="${1:-}"
+provider_require_prompt_file "$PROMPT_FILE"
+
+URL="${GEMINI_API_BASE_URL%/}/chat/completions"
+
+if [[ "${E3D_PILOT_DRY_RUN:-0}" == "1" ]]; then
+  printf 'curl -sS -X POST %q -H %q -H %q -d @- (model=%s) < %q\n' "$URL" 'Authorization: Bearer [redacted]' 'Content-Type: application/json' "$GEMINI_API_MODEL" "$PROMPT_FILE"
+  exit "$PROVIDER_EXIT_OK"
+fi
+
+work="$(mktemp -d "${TMPDIR:-/tmp}/e3d-pilot-gemini-api.XXXXXX")"
+trap 'rm -rf "$work"' EXIT
+chmod 700 "$work"
+( umask 077; printf 'Authorization: Bearer %s\nContent-Type: application/json\n' "$(gemini_key)" > "$work/headers" )
+
+jq -n --rawfile content "$PROMPT_FILE" --arg model "$GEMINI_API_MODEL" --arg max "${GEMINI_API_MAX_TOKENS:-}" \
+  '{model: $model, messages: [{role: "user", content: $content}]} + (if $max != "" then {max_tokens: ($max | tonumber)} else {} end)' > "$work/payload.json"
+
+set +e
+http_code="$(curl -sS -m "${GEMINI_API_TIMEOUT:-180}" -o "$work/response.json" -w '%{http_code}' \
+  -H "@$work/headers" -d "@$work/payload.json" "$URL" 2> "$work/curl.err")"
+status=$?
+set -e
+
+if [[ $status -ne 0 ]]; then
+  printf 'error: gemini-api request failed (curl exit %s): %s\n' "$status" "$(head -c 300 "$work/curl.err" | tr '\n' ' ')" >&2
+  exit "$PROVIDER_EXIT_FAILURE"
+fi
+if [[ "$http_code" != 2* ]]; then
+  msg="$(jq -r '(if type == "array" then .[0] else . end) | .error.message // empty' "$work/response.json" 2>/dev/null | head -c 300)"
+  printf 'error: gemini-api HTTP %s%s\n' "$http_code" "${msg:+: $msg}" >&2
+  exit "$PROVIDER_EXIT_FAILURE"
+fi
+
+content="$(jq -r '.choices[0].message.content // empty' "$work/response.json")"
+if [[ -z "$content" ]]; then
+  echo "error: gemini-api returned no message content" >&2
+  exit "$PROVIDER_EXIT_FAILURE"
+fi
+tokens="$(jq '.usage.total_tokens // 0' "$work/response.json")"
+printf 'e3d_provider_usage=%s\n' "$(jq -c --arg m "$GEMINI_API_MODEL" '{provider:"gemini-api",model:(.model // $m),tokens:(.usage.total_tokens // null),usage:(.usage // null)}' "$work/response.json")" >&2
+printf '%s\n' "$content"
+
+if [[ "$PROVIDER_TOKEN_LIMIT" =~ ^[0-9]+$ ]] && (( PROVIDER_TOKEN_LIMIT > 0 && tokens > PROVIDER_TOKEN_LIMIT )); then
+  printf 'error: gemini-api provider token ceiling exceeded (%s > %s)\n' "$tokens" "$PROVIDER_TOKEN_LIMIT" >&2
+  exit "$PROVIDER_EXIT_FAILURE"
+fi
