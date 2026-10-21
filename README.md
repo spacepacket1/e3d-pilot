@@ -313,12 +313,22 @@ from them. A question is sent only to the vendors on the effective panel, the fi
   different families left refuses the debate. A client's `providers` must be a subset of the account's panel, so a tool
   argument can narrow the panel but never add a vendor. Billing's vendor families must match this server's; a mismatch
   refuses the debate (`panel_config_mismatch`) and logs an alert. Results carry `panel` (`source`, `requested`, `used`,
-  `dropped`, `families`, `synthesizer`).
+  `dropped`, `families`, `synthesizer`, and `required` when set).
+- `E3D_MCP_REQUIRED_PROVIDERS` (hosted only; ignored for stdio) names providers that take part in every hosted debate, first
+  and in this order; the first one always writes the summary. A client's `providers` can narrow only the other providers (the
+  required ones are added back, first, and the client's order is kept for the rest); the default, an account's panel and a
+  web run's list get them first as well. If a required provider is not available, the debate is refused
+  (`required_provider_unavailable`) before anything is reserved or run, so nothing is charged; another vendor never writes
+  the summary in its place, and a summary that fails mid-debate is a failed debate, never retried with another provider.
+  Every required provider must be in `E3D_MCP_ALLOWED_PROVIDERS` and the list must fit `E3D_MCP_MAX_PROVIDERS` (and the
+  `providers` maximum of `E3D_MCP_CUSTOMER_LIMITS` with the external hook); the server refuses to start otherwise. On
+  pilot.e3d.ai it must match the billing side's `PILOT_PANEL_REQUIRED` (for example `anthropic-api`).
 
 | Variable | Default | Meaning |
 |---|---|---|
 | `E3D_MCP_ALLOWED_PROVIDERS` | unset (any available provider) | Comma-separated providers every debate is limited to. |
 | `E3D_MCP_PANEL` | unset | `1`: resolve each account's panel at the billing service before every hosted debate. Set it only once the service serves the endpoint. |
+| `E3D_MCP_REQUIRED_PROVIDERS` | unset (no required provider) | Hosted only: comma-separated providers that take part in every debate, first; the first writes the summary. Unavailable = the debate is refused (`required_provider_unavailable`). Must be inside `E3D_MCP_ALLOWED_PROVIDERS`. |
 
 #### Web runs (the internal run listener)
 

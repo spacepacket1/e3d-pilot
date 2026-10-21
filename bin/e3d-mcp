@@ -38,7 +38,7 @@ import { createOutbox, outboxStatus, outboxExport, outboxRetryDead } from '../li
 import { createMetering, createReadiness, modelsFromTranscript, orphanPolicy } from '../lib/mcp/metering.js';
 import { createRuns, validateRunsConfig } from '../lib/mcp/runs.js';
 import { startRunServer, validateRunServerConfig } from '../lib/mcp/run-server.js';
-import { validatePanelConfig, createPanelClient, checkFamilies, requireFamilies, degrade, explicitPanel, familiesOf } from '../lib/mcp/panel.js';
+import { validatePanelConfig, validateRequiredConfig, withRequired, requireAvailable, createPanelClient, checkFamilies, requireFamilies, degrade, explicitPanel, familiesOf } from '../lib/mcp/panel.js';
 
 const HTTP_MODE = process.argv.includes('--http');
 // External auth and metering hook (docs/external-auth.md): hosted --http mode only.
@@ -122,6 +122,9 @@ function renderDebate(d) {
 
 // The hosted allowlist and the per-account panel (lib/mcp/panel.js; pilot.e3d.ai docs/panel-config-spec.md 4.3), read once.
 const PANEL_CONFIG = validatePanelConfig(process.env);
+// E3D_MCP_REQUIRED_PROVIDERS: hosted only (never read for stdio). Empty = no required provider, today's behaviour.
+const REQUIRED_CONFIG = HTTP_MODE ? validateRequiredConfig(process.env, { allowed: PANEL_CONFIG.allowed, max: LIMITS.providers }) : { ok: true, errors: [], required: [] };
+const REQUIRED = REQUIRED_CONFIG.required;
 let panelClient = null; // billing's panel resolve client, with E3D_MCP_PANEL=1 once the external hook is running
 
 // Test hook, only with E3D_MCP_DEBATE_BIN (a stub debate binary, which skips the real provider check): the providers named in
@@ -133,10 +136,11 @@ function stubUnavailable() {
 }
 
 // Who writes the final summary: always a provider of the debate (never the claude CLI just because it is installed). Hosted:
-// the first provider of the effective panel. Local: the client's own model when it takes part, else claude when it takes
-// part, else the first provider. Always passed to e3d-debate explicitly.
+// the first required provider (E3D_MCP_REQUIRED_PROVIDERS), else the first provider of the effective panel. Local: the
+// client's own model when it takes part, else claude when it takes part, else the first provider. Always passed to e3d-debate
+// explicitly; a failed summary is a failed debate, never retried with another provider.
 function chooseSynthesizer(providers, samplingOn) {
-  if (HTTP_MODE) return providers[0];
+  if (HTTP_MODE) return REQUIRED.length ? REQUIRED[0] : providers[0];
   if (samplingOn && providers.includes('mcp-sampling')) return 'mcp-sampling';
   return providers.includes('claude') ? 'claude' : providers[0];
 }
@@ -184,8 +188,8 @@ async function planDebate(args, ctx, { clamp = null, web = false } = {}) {
 
   if (panelClient && web) {
     // A run-listener list is the account's panel as billing stored it at creation (an older billing sends none: the default).
-    const requested = providers ?? pinned().providers;
-    const d = degrade(requested, { allowed, isAvailable, max });
+    const requested = withRequired(providers ?? pinned().providers, REQUIRED);
+    const d = degrade(requested, { allowed, isAvailable, max, required: REQUIRED });
     if (d.error) return d;
     providers = d.providers; selection = 'pinned'; selectionNote = 'the debate panel of the account';
     panel = { source: args.providers === undefined ? 'default' : 'account', requested, used: providers, dropped: d.dropped };
@@ -195,23 +199,35 @@ async function planDebate(args, ctx, { clamp = null, web = false } = {}) {
     if (!r.ok) return { error: 'error: temporarily unavailable; retry (the debate panel could not be read; nothing was charged)', code: 'unavailable' };
     const mismatch = checkFamilies(r, log);
     if (mismatch) return mismatch;
-    const accountIds = r.providers.map((p) => p.id);
+    // Required providers (E3D_MCP_REQUIRED_PROVIDERS) are forced first, defensively (billing already puts them first).
+    const accountIds = withRequired(r.providers.map((p) => p.id), REQUIRED);
     if (providers === undefined) {
-      const d = degrade(accountIds, { allowed, isAvailable, max });
+      const d = degrade(accountIds, { allowed, isAvailable, max, required: REQUIRED });
       if (d.error) return d;
       providers = d.providers; selection = 'pinned';
       selectionNote = r.source === 'account' ? "your account's debate panel" : 'the default debate panel';
       panel = { source: r.source, requested: accountIds, used: providers, dropped: d.dropped };
     } else {
-      // A client's list may narrow the account's panel, never add to it (tool arguments are not consent).
+      // A client's list may narrow the account's panel, never add to it (tool arguments are not consent). It can narrow only
+      // the optional providers: the required ones are added back, first.
+      const requested = providers;
+      const down = requireAvailable(REQUIRED, isAvailable);
+      if (down) return down;
+      providers = withRequired(providers, REQUIRED);
       const e = explicitPanel(providers, { allowed, accountIds, isAvailable, max });
       if (e.error) return e;
-      panel = { source: 'explicit', requested: providers, used: providers, dropped: [] };
+      panel = { source: 'explicit', requested, used: providers, dropped: [] };
     }
   } else {
     if (providers === undefined) {
       const pick = pinned();
       ({ providers } = pick); selection = pick.selection; selectionNote = pick.note;
+    }
+    if (REQUIRED.length) {
+      // Hosted with E3D_MCP_REQUIRED_PROVIDERS: the required providers always take part, first; never a substitute.
+      const down = requireAvailable(REQUIRED, isAvailable);
+      if (down) return down;
+      providers = withRequired(providers, REQUIRED);
     }
     // The hosted allowlist binds every debate whenever it is set (sampling voices are never in it).
     const notAllowed = allowed ? providers.filter((p) => !allowed.includes(p)) : [];
@@ -230,7 +246,7 @@ async function planDebate(args, ctx, { clamp = null, web = false } = {}) {
     if (f) return f;
   }
   const synthesizer = chooseSynthesizer(providers, samplingOn);
-  if (panel) panel = { ...panel, families: familiesOf(providers), synthesizer };
+  if (panel) panel = { ...panel, families: familiesOf(providers), synthesizer, ...(REQUIRED.length ? { required: [...REQUIRED] } : {}) };
   return { question, mode, rounds, maxWords, providers, synthesizer, selection, selectionNote, ...(panel ? { panel } : {}) };
 }
 
@@ -767,6 +783,10 @@ if (!PANEL_CONFIG.ok) {
   process.stderr.write(`[e3d-mcp] refusing to start: ${PANEL_CONFIG.errors.join('; ')}\n`);
   process.exit(2);
 }
+if (!REQUIRED_CONFIG.ok) {
+  process.stderr.write(`[e3d-mcp] refusing to start: ${REQUIRED_CONFIG.errors.join('; ')}\n`);
+  process.exit(2);
+}
 if (PANEL_CONFIG.panel && !HTTP_MODE) {
   process.stderr.write('[e3d-mcp] E3D_MCP_PANEL is only supported in hosted mode (--http) with E3D_MCP_AUTH_URL; unset it for stdio.\n');
   process.exit(2);
@@ -807,6 +827,8 @@ async function startAuthHook() {
   try { orphanPolicy(process.env); } catch (e) { errors.push(e.message); }
   const runsChecked = validateRunsConfig(process.env);
   errors.push(...runsChecked.errors);
+  const customerMax = runsChecked.config?.customer?.providers;
+  if (REQUIRED.length && Number.isInteger(customerMax) && REQUIRED.length > customerMax) errors.push(`E3D_MCP_REQUIRED_PROVIDERS names ${REQUIRED.length} providers; at most ${customerMax} per started debate (E3D_MCP_CUSTOMER_LIMITS providers)`);
   if (errors.length) throw new Error(`external auth hook: refusing to start: ${errors.join('; ')}`);
   if (process.env.E3D_MCP_AUTH_TOKENS) log('warning: E3D_MCP_AUTH_TOKENS is ignored because E3D_MCP_AUTH_URL is set (keys are checked by the auth service)');
   const external = createExternalAuth({ log });
@@ -862,7 +884,7 @@ if (HTTP_MODE) {
   const stop = async () => { if (stopping) return; stopping = true; log('shutting down'); setTimeout(() => process.exit(0), 10000).unref(); hook?.readiness.stop(); hook?.outbox.stop(); runs?.stop(); await runServer?.close(); await server.close(); await sampling.stop(); process.exit(0); };
   process.on('SIGTERM', stop);
   process.on('SIGINT', stop);
-  log(`ready (hosted; limits: ${JSON.stringify(LIMITS)}; allowed providers: ${PANEL_CONFIG.allowed ? PANEL_CONFIG.allowed.join(',') : 'any available'}; account panels: ${panelClient ? 'on' : 'off'})`);
+  log(`ready (hosted; limits: ${JSON.stringify(LIMITS)}; allowed providers: ${PANEL_CONFIG.allowed ? PANEL_CONFIG.allowed.join(',') : 'any available'}; account panels: ${panelClient ? 'on' : 'off'}${REQUIRED.length ? `; required providers: ${REQUIRED.join(',')}` : ''})`);
 } else {
   const rl = createInterface({ input: process.stdin });
   const pending = new Set();
