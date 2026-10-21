@@ -366,6 +366,18 @@ Every request carries `Authorization: Bearer <E3D_MCP_RUN_TOKEN>`. Tokens are co
 | `E3D_MCP_RUN_TOKEN` | unset | Service token for the listener, at least 32 characters. Debate processes do not inherit it. |
 | `E3D_MCP_RUN_AUTH_FAILS_PER_MIN` | 20 | Failed authentications per minute before the listener refuses every request for up to a minute. |
 
+#### Token pricing (`per_token_v1`)
+
+With `E3D_MCP_PRICING=per_token` the server prices debates by tokens for the billing service (its `PILOT_PRICING_MODE=per_token`): the run listener's health answer (the `400 invalid` an empty run request gets) adds `"capabilities": ["per_token_v1"]`, hosted connector debates ask the service for a quote before the reserve, every debate runs under the quoted per-provider limits, and the vendor-reported tokens of every call go to the service before finalize. Unset, nothing changes, and a run body without the new fields is handled exactly as before, so an older billing service keeps working. The full behaviour, the files and the byte counts to put in the rate table are in [docs/token-pricing.md](docs/token-pricing.md).
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `E3D_MCP_PRICING` | unset | `per_token` turns token pricing on and advertises `per_token_v1`. Hosted mode with the external hook only; needs `E3D_MCP_CUSTOMER_LIMITS` stated (rounds and max_words equal to billing's `PILOT_TOKEN_MAX_ROUNDS` and `PILOT_TOKEN_MAX_WORDS`). |
+| `E3D_MCP_PER_TOKEN_ALLOW_XAI` | unset | `1` offers `xai-api` per token. Off by default: xAI reasoning tokens are billed but not capped by `max_tokens`. |
+| `E3D_DEBATE_MAX_TOKENS` | unset | `e3d-debate` only: `{"<provider>": n}`, the vendor output limit of every call. Switches the debate to per-token mode (API providers only, no retry, no web search, `usage.json` written). e3d-mcp sets it from the quote. |
+| `E3D_DEBATE_ANSWER_BYTES_MAX` | unset | `e3d-debate` only: `{"<provider>": n}`, the most UTF-8 bytes of a provider's answer inserted into a later prompt. Works on its own. |
+| `E3D_DEBATE_PROMPT_OVERHEAD` | unset | `1` makes `e3d-debate` print the byte counts of each prompt kind's fixed text and stop. |
+
 ## Why we built this
 
 Autonomous coding agents solved the *execution* half of the problem: point a good model at a good spec, and it will faithfully implement it. What's still missing is everything **before** that — noticing what's worth building, making sure it isn't a rehash of a closed PR or last week's abandoned branch, and getting more than one model to actually agree the plan is safe and sound before anything touches a working tree. Skip that half and you get agents that happily reimplement existing features, argue with themselves in a PR nobody asked for, or quietly blow through a repo's real diff budget.

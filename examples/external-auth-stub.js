@@ -165,10 +165,13 @@ const ops = {
     }
     if (a.status === 'suspended') return { ok: false, code: 'suspended', message: 'account suspended' };
     if (holds(a.principal).length >= a.max_holds) return { ok: false, code: 'limit_reached', message: 'too many reservations in progress' };
-    const hold = cost(b.units.calls, b.units.est_tokens);
+    const quoted = PRICING ? quotes.get(b.request_id.toLowerCase()) : null;
+    if (quoted && b.units.calls !== quoted.calls) return { ok: false, code: 'limit_reached', message: 'pricing basis mismatch' };
+    const hold = quoted ? quoted.answer.credits : cost(b.units.calls, b.units.est_tokens);
     if (available(a) < hold) return { ok: false, code: 'insufficient_credits', message: `this debate needs up to ${hold} credits; ${Math.max(available(a), 0)} available` };
     const r = { id: `res_${randomUUID()}`, request_id: b.request_id, principal: a.principal, units: { ...b.units }, hold, price: hold, state: 'held', expires_at: new Date(Date.now() + TTL_MS).toISOString(), settlement: null };
     reservations.set(r.id, r); byRequest.set(b.request_id, r.id);
+    if (quoted) { quoted.reservation_id = r.id; order.push(['reserve', r.id]); }
     return view(r);
   },
   settle(b) {
@@ -220,6 +223,14 @@ const ops = {
     }
     effects.push({ reservation_id: r.id, debate_id: b.debate_id, stored, charged });
     const answer = { ok: true, stored, charged };
+    const q = PRICING ? quotes.get(r.request_id.toLowerCase()) : null;
+    if (q) {
+      order.push(['finalize', r.id]);
+      const rep = usageReports.get(r.id);
+      answer.pricing = { quote_credits: q.answer.credits, charged_credits: charged, rate_version: q.answer.rate_version,
+        usage: rep ? { input_tokens: rep.rows.reduce((t, x) => t + x.input_tokens, 0), output_tokens: rep.rows.reduce((t, x) => t + x.output_tokens, 0), source: rep.rows.some((x) => x.source === 'bytes') ? 'estimate' : 'vendor' }
+          : { input_tokens: b.actual.est_input_tokens, output_tokens: b.actual.est_output_tokens, source: 'estimate' } };
+    }
     finalizations.set(r.id, { key, answer });
     return answer;
   },
@@ -284,6 +295,74 @@ const readBody = (req, cap = 16384) => new Promise((resolve) => {
   req.on('error', () => resolve(null));
 });
 
+// ---- token pricing side channels (not the hook protocol; docs/token-pricing.md): STUB_PRICING=1 serves them ----
+// POST /pricing/v1/quote (x-e3d-pricing-version: 1) and POST /usage/v1/report (x-e3d-usage-version: 1), as billing's
+// docs/token-pricing-interface.md sections 2 and 4 describe them: a quote is write-once under its request id; a reserve with a
+// quoted request id must carry units.calls = providers x rounds + 1; a usage report is validated against that manifest and accepted
+// once per reservation; a finalize of a quoted reservation answers with a `pricing` object. Limits per provider come from
+// STUB_PRICING_LIMITS ({"<provider>": {"maxTokens": n, "answerBytes": n}}); a provider not in it has no rate.
+const PRICING = env.STUB_PRICING === '1';
+const RATE_LIMITS = env.STUB_PRICING_LIMITS ? JSON.parse(env.STUB_PRICING_LIMITS) : { 'anthropic-api': { maxTokens: 700, answerBytes: 6000 }, 'openai-api': { maxTokens: 700, answerBytes: 6000 }, 'gemini-api': { maxTokens: 700, answerBytes: 6000 }, 'xai-api': { maxTokens: 700, answerBytes: 6000 } };
+const QUOTE_MAX_CREDITS = int(env.STUB_QUOTE_MAX_CREDITS, 1000);
+const quotes = new Map();       // request_id -> { key, answer, basis, calls, reservation_id }
+const usageReports = new Map(); // reservation_id -> { key, rows, replays }
+const order = [];               // the order of quote, reserve, usage and finalize calls: [call, reservation_id|request_id]
+const manifestOf = (basis) => new Set([...basis.providers.flatMap((p) => Array.from({ length: basis.rounds }, (_, i) => `r${i + 1}:${p}`)), 'synth']);
+async function pricingRoute(req, res, raw, route) {
+  if (req.method !== 'POST') return send(res, 405, { error: 'method_not_allowed' });
+  if (!authorized(req)) return send(res, 401, { error: 'unauthorized' });
+  const header = route === 'quote' ? 'x-e3d-pricing-version' : 'x-e3d-usage-version';
+  if (req.headers[header] !== '1') return send(res, 400, { error: 'unsupported_version' });
+  received[route] = (received[route] ?? 0) + 1;
+  let b; try { b = JSON.parse(raw || ''); } catch { return send(res, 400, { ok: false, code: 'invalid' }); }
+  if (!obj(b)) return send(res, 400, { ok: false, code: 'invalid' });
+  if (route === 'quote') {
+    const okShape = re.principal.test(b.principal ?? '') && re.uuid.test(b.request_id ?? '') && Array.isArray(b.providers) && b.providers.length >= 1 && b.providers.length <= 16 && b.providers.every((p) => re.word64.test(p ?? ''))
+      && n(b.rounds, 10, 1) && n(b.max_words, 10000, 1) && n(b.question_bytes, 32000, 1) && /^[0-9a-f]{64}$/.test(b.question_sha256 ?? '') && /^v[0-9]{1,4}$/.test(b.prompt_version ?? '');
+    if (!okShape) return send(res, 400, { ok: false, code: 'invalid' });
+    const reqId = b.request_id.toLowerCase();
+    const key = hex(canon(b));
+    const prior = quotes.get(reqId);
+    if (prior) return prior.key === key ? send(res, 200, prior.answer) : send(res, 409, { ok: false, code: 'conflict' });
+    if (b.providers.some((p) => !RATE_LIMITS[p])) return send(res, 400, { ok: false, code: 'unknown_model_rate' });
+    const credits = b.providers.length * b.rounds * 3 + 2;
+    if (credits > QUOTE_MAX_CREDITS) return send(res, 400, { ok: false, code: 'quote_exceeds_limit', credits, max_credits: QUOTE_MAX_CREDITS });
+    const answer = { ok: true, credits, rate_version: 'stub.1', max_credits: QUOTE_MAX_CREDITS,
+      max_tokens: Object.fromEntries(b.providers.map((p) => [p, RATE_LIMITS[p].maxTokens])), answer_bytes: Object.fromEntries(b.providers.map((p) => [p, RATE_LIMITS[p].answerBytes])) };
+    quotes.set(reqId, { key, answer, basis: { providers: [...b.providers], rounds: b.rounds, max_words: b.max_words, question_sha256: b.question_sha256 }, calls: b.providers.length * b.rounds + 1, reservation_id: null });
+    order.push(['quote', reqId]);
+    return send(res, 200, answer);
+  }
+  // usage report
+  if (!re.rid.test(b.reservation_id ?? '') || (b.debate_id !== undefined && !re.debate.test(b.debate_id)) || !Array.isArray(b.rows) || b.rows.length > 64) return send(res, 400, { ok: false, code: 'invalid' });
+  const r = reservations.get(b.reservation_id);
+  const q = r && quotes.get(r.request_id);
+  if (!r || !q) return send(res, 404, { ok: false, code: 'not_found' });
+  if (finalizations.has(r.id)) return send(res, 409, { ok: false, code: 'closed' });
+  const manifest = manifestOf(q.basis);
+  const seen = new Set();
+  const rows = [];
+  for (const x of b.rows) {
+    if (!obj(x)) return send(res, 400, { ok: false, code: 'invalid', why: 'row' });
+    if (!manifest.has(x.key)) return send(res, 400, { ok: false, code: 'invalid', why: 'unknown_key' });
+    if (seen.has(x.key)) return send(res, 400, { ok: false, code: 'invalid', why: 'duplicate_key' });
+    seen.add(x.key);
+    if (x.key !== 'synth' && x.key.slice(x.key.indexOf(':') + 1) !== x.provider) return send(res, 400, { ok: false, code: 'invalid', why: 'provider_mismatch' });
+    if (x.key === 'synth' && !q.basis.providers.includes(x.provider)) return send(res, 400, { ok: false, code: 'invalid', why: 'provider_mismatch' });
+    if (!re.word128.test(x.model ?? '')) return send(res, 400, { ok: false, code: 'invalid', why: 'model' });
+    if (!n(x.input_tokens, 1e9) || !n(x.output_tokens, 1e9)) return send(res, 400, { ok: false, code: 'invalid', why: 'tokens' });
+    if (!['vendor', 'bytes'].includes(x.source)) return send(res, 400, { ok: false, code: 'invalid', why: 'source' });
+    rows.push({ key: x.key, provider: x.provider, model: x.model, input_tokens: x.input_tokens, output_tokens: x.output_tokens, source: x.source });
+  }
+  rows.sort((a, c) => (a.key < c.key ? -1 : a.key > c.key ? 1 : 0));
+  const key = hex(JSON.stringify(rows));
+  const prior = usageReports.get(r.id);
+  order.push(['usage', r.id]);
+  if (prior) { if (prior.key !== key) return send(res, 409, { ok: false, code: 'conflict' }); prior.replays++; return send(res, 200, { ok: true, replay: true }); }
+  usageReports.set(r.id, { key, rows, replays: 0 });
+  return send(res, 200, { ok: true, replay: false });
+}
+
 // ---- per-account model panels (not the hook protocol) ----
 const PANEL_DEFAULT = (env.STUB_PANEL_DEFAULT || 'anthropic-api:anthropic,openai-api:openai').split(',').map((x) => x.trim()).filter(Boolean)
   .map((x) => { const [id, family] = x.split(':'); return { id, family }; });
@@ -311,6 +390,8 @@ const server = http.createServer(async (req, res) => {
   const call = path.replace(/^\/+/, '');
   const raw = req.method === 'POST' ? await readBody(req, call === 'finalize' ? 512 * 1024 : 16384) : '';
   if (path === '/panel/v1/resolve') return resolvePanel(req, res, raw);
+  if (PRICING && path === '/pricing/v1/quote') return pricingRoute(req, res, raw, 'quote');
+  if (PRICING && path === '/usage/v1/report') return pricingRoute(req, res, raw, 'usage');
 
   // test-only admin
   if (path.startsWith('/_stub/')) {
@@ -325,6 +406,8 @@ const server = http.createServer(async (req, res) => {
         // no debate content here: ids, states and amounts only
         debates: [...debates.values()].map((d) => ({ debate_id: d.debate_id, reservation_id: d.reservation_id, principal: d.principal, status: d.status, outcome: d.outcome, credits_charged: d.credits_charged, truncated: d.truncated, has_result: d.result != null, transcript_bytes: d.transcript == null ? null : Buffer.byteLength(d.transcript) })),
         finalize_requests: finalizeRequests, effects, received,
+        ...(PRICING ? { pricing: { quotes: [...quotes.entries()].map(([id, x]) => ({ request_id: id, calls: x.calls, reservation_id: x.reservation_id, providers: x.basis.providers, rounds: x.basis.rounds, max_words: x.basis.max_words })),
+          reports: Object.fromEntries([...usageReports.entries()].map(([id, x]) => [id, { rows: x.rows, replays: x.replays }])), order } } : {}),
       });
     }
     let b; try { b = JSON.parse(raw || '{}'); } catch { return send(res, 400, { error: 'invalid_json' }); }

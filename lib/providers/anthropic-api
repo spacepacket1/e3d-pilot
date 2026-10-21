@@ -140,13 +140,18 @@ if [[ "$http_code" != 2* ]]; then
   exit "$PROVIDER_EXIT_FAILURE"
 fi
 
+# the usage line comes first: a 200 with no text (all output tokens spent on thinking, say) is still billed. input_tokens counts every
+# billed input class (cache writes and reads included); output_tokens is the vendor's, thinking included.
+printf 'e3d_provider_usage=%s\n' "$(jq -c --arg m "$ANTHROPIC_API_MODEL" '{provider:"anthropic-api",model:(.model // $m),tokens:((.usage.input_tokens // 0) + (.usage.output_tokens // 0)),usage:(.usage // null)}
+  + (if (.usage.input_tokens | type) == "number" and (.usage.output_tokens | type) == "number"
+     then {input_tokens: (.usage.input_tokens + (.usage.cache_creation_input_tokens // 0) + (.usage.cache_read_input_tokens // 0)), output_tokens: .usage.output_tokens}
+     else {input_tokens: null, output_tokens: null} end)' "$work/response.json")" >&2
 content="$(jq -r '[.content[]? | select(.type == "text") | .text] | join("")' "$work/response.json")"
 if [[ -z "$content" ]]; then
   echo "error: anthropic-api returned no text content" >&2
   exit "$PROVIDER_EXIT_FAILURE"
 fi
 tokens="$(jq '((.usage.input_tokens // 0) + (.usage.output_tokens // 0))' "$work/response.json")"
-printf 'e3d_provider_usage=%s\n' "$(jq -c --arg m "$ANTHROPIC_API_MODEL" '{provider:"anthropic-api",model:(.model // $m),tokens:((.usage.input_tokens // 0) + (.usage.output_tokens // 0)),usage:(.usage // null)}' "$work/response.json")" >&2
 printf '%s\n' "$content"
 
 if [[ "$PROVIDER_TOKEN_LIMIT" =~ ^[0-9]+$ ]] && (( PROVIDER_TOKEN_LIMIT > 0 && tokens > PROVIDER_TOKEN_LIMIT )); then

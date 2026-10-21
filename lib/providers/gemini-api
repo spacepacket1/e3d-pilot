@@ -131,13 +131,14 @@ if [[ "$http_code" != 2* ]]; then
   exit "$PROVIDER_EXIT_FAILURE"
 fi
 
+# the usage line comes first: a 200 with no content (all output tokens spent on reasoning, say) is still billed
+printf 'e3d_provider_usage=%s\n' "$(jq -c --arg m "$GEMINI_API_MODEL" "$PROVIDER_OAI_USAGE_JQ"' oai_usage as $n | {provider:"gemini-api",model:(.model // $m),tokens:(.usage.total_tokens // null),usage:(.usage // null)} + $n' "$work/response.json")" >&2
 content="$(jq -r '.choices[0].message.content // empty' "$work/response.json")"
 if [[ -z "$content" ]]; then
   echo "error: gemini-api returned no message content" >&2
   exit "$PROVIDER_EXIT_FAILURE"
 fi
 tokens="$(jq '.usage.total_tokens // 0' "$work/response.json")"
-printf 'e3d_provider_usage=%s\n' "$(jq -c --arg m "$GEMINI_API_MODEL" '{provider:"gemini-api",model:(.model // $m),tokens:(.usage.total_tokens // null),usage:(.usage // null)}' "$work/response.json")" >&2
 printf '%s\n' "$content"
 
 if [[ "$PROVIDER_TOKEN_LIMIT" =~ ^[0-9]+$ ]] && (( PROVIDER_TOKEN_LIMIT > 0 && tokens > PROVIDER_TOKEN_LIMIT )); then

@@ -126,3 +126,12 @@ provider_key_from_file() {
     tr -d '\n\r ' < "$file"
   fi
 }
+
+# Normalised billed token counts for the OpenAI-compatible adapters (openai-api, gemini-api, xai-api), as a jq function `oai_usage`
+# for the e3d_provider_usage= line: input_tokens = prompt_tokens (cached included); output_tokens = every billed output token,
+# reasoning or thinking included. A vendor may report those apart from completion_tokens (xAI reasoning_tokens, Gemini thoughts), so the
+# larger of completion_tokens and total_tokens - prompt_tokens is taken: never an undercount. Both null when the vendor sent no usage.
+PROVIDER_OAI_USAGE_JQ='def oai_usage: (.usage // null) as $u
+  | if ($u | type) == "object" and ($u.prompt_tokens | type) == "number" and (($u.completion_tokens | type) == "number" or ($u.total_tokens | type) == "number")
+    then {input_tokens: $u.prompt_tokens, output_tokens: ([($u.completion_tokens // 0), (if ($u.total_tokens | type) == "number" then ($u.total_tokens - $u.prompt_tokens) else 0 end)] | max)}
+    else {input_tokens: null, output_tokens: null} end;'
