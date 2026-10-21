@@ -7,7 +7,7 @@
 //
 // Tools:
 //   e3d_debate          multi-model debate -> decisive answer + consensus + named dissent
-//   e3d_list_providers  which model providers are configured on this machine
+//   e3d_list_providers  which model providers this server can use
 //   e3d_provenance_trace / e3d_ideas_list   read-only "why does this exist?" queries
 //
 // Debate cost guard: every debate spends the *server operator's* model credits, so
@@ -488,7 +488,7 @@ const TOOLS = [
       properties: { debate_id: { type: 'string' }, status: { type: 'string', enum: ['queued', 'running', 'done', 'failed'] }, outcome: { type: ['string', 'null'] }, created_at: { type: 'string' }, finished_at: { type: ['string', 'null'] }, poll_after_sec: { type: 'integer' } },
       required: ['debate_id', 'status'],
     },
-    annotations: { title: 'Check on a debate', readOnlyHint: true, openWorldHint: false, idempotentHint: true },
+    annotations: { title: 'Check on a debate', readOnlyHint: true, destructiveHint: false, openWorldHint: false, idempotentHint: true },
   },
   {
     name: 'e3d_debate_result',
@@ -513,13 +513,13 @@ const TOOLS = [
       },
       required: ['debate_id', 'status'],
     },
-    annotations: { title: 'Get a debate result', readOnlyHint: true, openWorldHint: false, idempotentHint: true },
+    annotations: { title: 'Get a debate result', readOnlyHint: true, destructiveHint: false, openWorldHint: false, idempotentHint: true },
   },
   {
     name: 'e3d_list_providers',
-    description: 'List the model providers configured on this machine and whether each is available to join a debate.',
+    description: 'List the model providers this server can use and whether each is available to join a debate. Free.',
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
-    annotations: { title: 'List debate providers', readOnlyHint: true, openWorldHint: false },
+    annotations: { title: 'List debate providers', readOnlyHint: true, destructiveHint: false, openWorldHint: false },
   },
   {
     name: 'e3d_provenance_trace',
