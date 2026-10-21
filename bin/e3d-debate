@@ -117,6 +117,19 @@ if [[ -n "$LINK_REPO" || -n "$LINK_IDEA" ]]; then
   esac
 fi
 
+# Date and limits: every prompt (each round, each provider, and the synthesizer) starts with today's UTC date, and a call
+# without web access is told so, so a model never presents stale knowledge as current. Captured once so every prompt in
+# one debate carries the same date.
+DEBATE_DATE="$(date -u +%Y-%m-%d)"
+NO_WEB_ACCESS_TEXT="You have no web access and your knowledge may be out of date. If the question depends on recent events or current data, say so and give your answer conditionally."
+# date_preamble <web-access: 1|0>
+date_preamble() {
+  printf "Today's date (UTC): %s.\n" "$DEBATE_DATE"
+  [[ "${1:-0}" == "1" ]] || printf '%s\n' "$NO_WEB_ACCESS_TEXT"
+  printf '\n'
+}
+SYNTH_CURRENT_DATA_TEXT="If the question depends on recent events or current data that the participants did not have, say so plainly in FINAL ANSWER instead of presenting the answer as current."
+
 work_dir="$(mktemp -d "${TMPDIR:-/tmp}/e3d-debate.XXXXXX")"
 transcript_md="$work_dir/transcript.md"
 printf '# Debate\n\n**Prompt version:** %s\n\n**Question:** %s\n\n' "$DEBATE_PROMPT_VERSION" "$QUESTION" > "$transcript_md"
@@ -289,6 +302,7 @@ for ((round = 1; round <= DEBATE_ROUNDS; round++)); do
     out_file="$work_dir/round${round}-${provider}.out"
     status_file="$work_dir/round${round}-${provider}.status"
     {
+      date_preamble 0
       if [[ "$DEBATE_PROMPT_VERSION" != "v2" ]]; then
         if (( round == 1 )); then v3_round1_prompt "$provider"; else v3_round2_prompt "$provider"; fi
       elif (( round == 1 )); then
@@ -366,6 +380,7 @@ fi
 
 synth_prompt="$work_dir/synthesis.prompt.md"
 {
+  date_preamble 0
   printf 'Below is the full transcript of a debate between multiple AI models answering one question for a human who needs a single, decisive answer (%s).\n\n' "$rounds_ran_note"
   printf 'Question: %s\n\n' "$QUESTION"
   if [[ "$DEBATE_PROMPT_VERSION" != "v3c" ]]; then
@@ -380,6 +395,7 @@ synth_prompt="$work_dir/synthesis.prompt.md"
     printf 'CONSENSUS: <full | majority | split>\n'
     printf 'DISSENT: <one line on any remaining disagreement worth flagging, or "none">\n'
   fi
+  printf '%s\n' "$SYNTH_CURRENT_DATA_TEXT"
 } > "$synth_prompt"
 
 synth_out="$work_dir/synthesis.out"
