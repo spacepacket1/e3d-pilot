@@ -29,8 +29,14 @@
 //
 // Test-only admin endpoints (service token required): GET /_stub/state, POST /_stub/inject {mode,calls,count,ms},
 // POST /_stub/revoke {key_id}, POST /_stub/features {features}, POST /_stub/tombstone {debate_id?, principal?},
-// POST /_stub/web-debate {reservation_id, debate_id, question} (a web debate created before its run). A real service has
-// no such thing.
+// POST /_stub/web-debate {reservation_id, debate_id, question} (a web debate created before its run), POST /_stub/panel
+// {principal, providers: [{id, family}] | null} and POST /_stub/panel-mode {mode: 404 | 5xx | slow | garbled | redirect | null}.
+// A real service has no such thing.
+//
+// Per-account model panels (pilot.e3d.ai docs/panel-config-spec.md 4.2; NOT part of the hook protocol): POST /panel/v1/resolve
+// {principal} with the service token and X-E3D-Panel-Version: 1 answers { ok: true, source, providers: [{id, family}] }, the
+// panel set for that principal or STUB_PANEL_DEFAULT (comma list of id:family; default anthropic-api:anthropic,
+// openai-api:openai) for any other, identically.
 import http from 'node:http';
 import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
@@ -278,10 +284,33 @@ const readBody = (req, cap = 16384) => new Promise((resolve) => {
   req.on('error', () => resolve(null));
 });
 
+// ---- per-account model panels (not the hook protocol) ----
+const PANEL_DEFAULT = (env.STUB_PANEL_DEFAULT || 'anthropic-api:anthropic,openai-api:openai').split(',').map((x) => x.trim()).filter(Boolean)
+  .map((x) => { const [id, family] = x.split(':'); return { id, family }; });
+const panels = new Map();
+let panelMode = null;
+async function resolvePanel(req, res, raw) {
+  if (req.method !== 'POST') return send(res, 405, { error: 'method_not_allowed' });
+  if (!authorized(req)) return send(res, 401, { error: 'unauthorized' });
+  if (req.headers['x-e3d-panel-version'] !== '1') return send(res, 400, { error: 'unsupported_version' });
+  received.panel = (received.panel ?? 0) + 1;
+  if (panelMode === 'slow') await new Promise((r) => setTimeout(r, 5000));
+  if (panelMode === '404') return send(res, 404, { error: 'not_found' });
+  if (panelMode === '5xx') return send(res, 503, { error: 'injected' });
+  if (panelMode === 'garbled') return send(res, 200, '{"ok": tru');
+  if (panelMode === 'redirect') return send(res, 307, { error: 'moved' }, { location: '/panel/v1/resolve?x=1' });
+  let b; try { b = JSON.parse(raw || ''); } catch { return send(res, 400, { error: 'invalid_json' }); }
+  if (!obj(b) || typeof b.principal !== 'string') return send(res, 400, { error: 'invalid_request' });
+  const mine = panels.get(b.principal);
+  log({ call: 'panel', principal: b.principal, source: mine ? 'account' : 'default' });
+  return send(res, 200, { ok: true, source: mine ? 'account' : 'default', providers: mine ?? PANEL_DEFAULT });
+}
+
 const server = http.createServer(async (req, res) => {
   const path = (req.url ?? '').split('?')[0];
   const call = path.replace(/^\/+/, '');
   const raw = req.method === 'POST' ? await readBody(req, call === 'finalize' ? 512 * 1024 : 16384) : '';
+  if (path === '/panel/v1/resolve') return resolvePanel(req, res, raw);
 
   // test-only admin
   if (path.startsWith('/_stub/')) {
@@ -316,6 +345,14 @@ const server = http.createServer(async (req, res) => {
       const r = reservations.get(b.reservation_id);
       if (!r || !re.debate.test(b.debate_id ?? '') || !question(b.question)) return send(res, 400, { ok: false });
       debates.set(b.debate_id, { debate_id: b.debate_id, reservation_id: r.id, principal: r.principal, source: 'web', status: 'queued', outcome: null, question: b.question, providers: [], rounds: 0, result: null, usage: { calls: 0, est_input_tokens: 0, est_output_tokens: 0 }, credits_charged: 0, created_at: new Date().toISOString(), finished_at: null, truncated: false, transcript: null });
+      return send(res, 200, { ok: true });
+    }
+    if (path === '/_stub/panel' && req.method === 'POST') {
+      if (b.providers === null) panels.delete(b.principal); else panels.set(b.principal, b.providers);
+      return send(res, 200, { ok: true });
+    }
+    if (path === '/_stub/panel-mode' && req.method === 'POST') {
+      panelMode = b.mode ?? null;
       return send(res, 200, { ok: true });
     }
     if (path === '/_stub/revoke' && req.method === 'POST') {

@@ -79,7 +79,10 @@ function fakeExecutor(ref) {
   return ex;
 }
 
-const plan = (f) => (f.question.includes('FORBIDDEN') ? { error: 'error: providers not available here' }
+// `down`: providers the planner treats as unavailable (a vendor outage), and how often a request was planned.
+const down = new Set();
+const planned = { n: 0 };
+const plan = (f) => (planned.n++, f.question.includes('FORBIDDEN') || (f.providers ?? []).some((p) => down.has(p)) ? { error: 'error: panel_unavailable: your panel needs at least two available vendors from different companies' }
   : { plan: { question: f.question.trim(), mode: 'quick', providers: f.providers ?? ['claude', 'codex'], rounds: Math.min(f.rounds ?? 1, 2), maxWords: Math.min(f.max_words ?? 80, 300), synthesizer: 'claude' }, worst });
 const servers = [];
 let active = 0;
@@ -346,6 +349,33 @@ let mainT;
   await b.metering.recover();
   assert.equal(intents(b.dir).length, 0); assert.equal(svc.finalizes.length, nf); assert.equal(svc.releases.length, nr, 'nothing is sent for an unaccepted web run');
   ok('recovery: a queued web run resumes without a reserve, a started one ends as error, an unaccepted one is dropped locally');
+}
+
+// ---- a run that exists is answered from its key BEFORE planning (pilot.e3d.ai docs/panel-config-spec.md 4.3 item 4) ----
+{
+  const t = await setup('replan');
+  t.ex.open = false;
+  const id = ids(); t.svc.reserve(id.reservation_id, 'acct_web');
+  const body = { ...id, question: Q, providers: ['anthropic-api', 'openai-api'] };
+  const first = await t.post(body);
+  assert.equal(first.status, 202);
+  down.add('openai-api'); // a vendor of the panel goes down while the run is held
+  const p0 = planned.n;
+  const again = await t.post(body);
+  assert.equal(again.status, 200, JSON.stringify(again.body)); assert.equal(again.body.existing, true); assert.equal(again.body.run_token, first.body.run_token);
+  assert.equal(planned.n, p0, 'an identical retry is not planned again');
+  assert.equal((await t.post({ ...body, providers: ['anthropic-api', 'gemini-api'] })).status, 409, 'a changed body is still a conflict');
+  // A NEW run with the vendor still down is planned and refused: 400 invalid, nothing authorized, nothing local.
+  const fresh = ids(); t.svc.reserve(fresh.reservation_id, 'acct_web');
+  const a0 = t.svc.authorizes.length;
+  const r = await t.post({ ...fresh, question: Q, providers: ['anthropic-api', 'openai-api'] });
+  assert.equal(r.status, 400); assert.equal(r.body.code, 'invalid'); assert.match(r.body.message, /panel_unavailable/);
+  assert.equal(t.svc.authorizes.length, a0);
+  down.clear(); t.ex.releaseAll();
+  assert.ok(await t.done(id.debate_id));
+  assert.equal(t.ex.ran.length, 1); assert.equal(t.svc.finalizes.length, 1);
+  assert.deepEqual([t.svc.finalizes[0].outcome], ['ok'], 'the held run finishes and is charged normally');
+  ok('an identical retry after a vendor went down is 200 existing (never planned again); only a new run is planned and refused');
 }
 
 // ---- privacy: no question, answer, transcript, service token or run token in any log line ----

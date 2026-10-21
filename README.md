@@ -273,7 +273,7 @@ node examples/external-auth-conformance.js <that URL> <token>          # run aga
 
 A debate can take minutes, and many clients stop waiting on a tool call long before that (Claude Code after about a minute). When the service advertises **both** `finalize` and `fetch` in its `introspect` answers (Debate contract v1, [docs/external-auth.md](docs/external-auth.md)), customers also get three tools:
 
-- `e3d_debate_start` starts a debate and returns a `debate_id` at once. It takes the same arguments as `e3d_debate`, but rounds, words per answer and providers are lowered to the customer maxima (`E3D_MCP_CUSTOMER_LIMITS`) instead of refused.
+- `e3d_debate_start` starts a debate and returns a `debate_id` at once. It takes the same arguments as `e3d_debate`, but rounds and words per answer are lowered to the customer maxima (`E3D_MCP_CUSTOMER_LIMITS`) instead of refused. A longer provider list is refused (nothing is reserved), never truncated: dropping a vendor the caller named would change who answers.
 - `e3d_debate_status` reports whether a debate is queued, running, done or failed, and when to check again.
 - `e3d_debate_result` returns the answer, the consensus level, the dissent and each model's position. It includes the transcript only with `include_transcript: true`.
 
@@ -292,7 +292,33 @@ Every limit refuses a new start before anything is reserved: the admission slots
 | `E3D_MCP_RUNS_MAX_BYTES` | 67108864 (64 MB) | Total size of the local run store. At this bound, new starts are refused. |
 | `E3D_MCP_RUNS_POLL_PER_MIN` | 60 | Status and result requests per account per minute. |
 | `E3D_MCP_RUN_TIMEOUT_SEC` | 1800 | A queued run older than this is ended with zero charge instead of being started. This also applies after a restart. |
-| `E3D_MCP_CUSTOMER_LIMITS` | `rounds=2,max_words=300,providers=3` | The highest values a customer's async debate may use. Larger values from the caller are lowered to these. |
+| `E3D_MCP_CUSTOMER_LIMITS` | `rounds=2,max_words=300,providers=3` | The highest values a customer's async debate may use. Larger rounds and words from the caller are lowered to these; a longer provider list is refused. |
+
+#### Debate panels (which vendors answer)
+
+In hosted mode the operator decides which vendors a debate may use, and each account (on pilot.e3d.ai) chooses its panel
+from them. A question is sent only to the vendors on the effective panel, the final summary included.
+
+- `E3D_MCP_ALLOWED_PROVIDERS` is the hosted allowlist. Whenever it is set, every debate (the default, an account's panel, a
+  web run's list or a client's own `providers`) may use only these providers, so MCP sampling voices are refused in hosted
+  mode. `E3D_MCP_PROVIDERS` must be inside it, and every entry needs a known vendor family; the server refuses to start
+  otherwise.
+- The final summary is always written by the first provider of the debate and passed to `e3d-debate` explicitly. (Before
+  this, the `claude` CLI wrote it whenever it was installed, even for a debate without Anthropic.) Locally it is the
+  client's own model or `claude` when they take part, else the first provider.
+- `E3D_MCP_PANEL=1` (hosted, with the external hook) asks the billing service's `POST /panel/v1/resolve` for the caller's
+  panel before every debate, before anything is reserved. There is no cache on this path, and any failure (an HTTP error,
+  a timeout, a malformed answer) refuses the debate; nothing falls back to a default. Unavailable vendors are dropped from an
+  account's panel in order (the result's `panel.dropped` and the tool text say so); fewer than two vendors from two
+  different families left refuses the debate. A client's `providers` must be a subset of the account's panel, so a tool
+  argument can narrow the panel but never add a vendor. Billing's vendor families must match this server's; a mismatch
+  refuses the debate (`panel_config_mismatch`) and logs an alert. Results carry `panel` (`source`, `requested`, `used`,
+  `dropped`, `families`, `synthesizer`).
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `E3D_MCP_ALLOWED_PROVIDERS` | unset (any available provider) | Comma-separated providers every debate is limited to. |
+| `E3D_MCP_PANEL` | unset | `1`: resolve each account's panel at the billing service before every hosted debate. Set it only once the service serves the endpoint. |
 
 #### Web runs (the internal run listener)
 
