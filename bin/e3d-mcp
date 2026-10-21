@@ -33,6 +33,7 @@ import { listPrompts, getPrompt } from '../lib/mcp/prompts.js';
 import { chooseVoices, independence, isSampling } from '../lib/mcp/voices.js';
 import { startHttpServer } from '../lib/mcp/http.js';
 import { createUsage, usageFromTranscript, worstCase, usageTool, usageHandler } from '../lib/mcp/usage.js';
+import { webSearchConfig, sanitizeText, cleanUrl, hostOf, API_PROVIDERS, PRIVACY_NOTICE } from '../lib/debate/websearch.mjs';
 import { createExternalAuth, validateConfig as validateAuthConfig } from '../lib/mcp/external-auth.js';
 import { createOutbox, outboxStatus, outboxExport, outboxRetryDead } from '../lib/mcp/outbox.js';
 import { createMetering, createReadiness, modelsFromTranscript, orphanPolicy } from '../lib/mcp/metering.js';
@@ -96,6 +97,23 @@ function parsePositions(transcript) {
   };
 }
 
+// The web-search lines of a rendered verdict. Sources are plain text: the domain, then the URL as a code span (never a
+// markdown link or image), so nothing loads or hides where it points. Titles and excerpts are left to structuredContent.
+function renderWebSearch(w) {
+  if (!w?.requested) return [];
+  if (!w.enabled) return ['_Web search: off for this debate, so the answers come from the models\' own knowledge, which may be out of date._', ''];
+  const out = [`**Web search:** on for ${w.models_with_search} of ${w.models_total} models; ${w.searches_used} search${w.searches_used === 1 ? '' : 'es'} used. Search results are untrusted internet data.`];
+  for (const u of w.flags.unavailable) out.push(`**WARNING:** web search was unavailable for ${u.provider} in round ${u.round} (${u.reason}); it answered without web access.`);
+  for (const a of w.flags.cap_exceeded) out.push(`**WARNING:** ${a.provider} ran ${a.searches} searches in round ${a.round}, over the cap of ${a.cap}.`);
+  if (w.flags.instructions_ignored) out.push('_A source contained instructions; they were ignored._');
+  if (w.citations.length) {
+    out.push('', '**Sources (from web search):**');
+    for (const c of w.citations) out.push(`- ${c.domain}: \`${c.url}\``);
+  }
+  out.push('');
+  return out;
+}
+
 function renderDebate(d) {
   const label = d.consensus === 'full' ? 'FULL CONSENSUS' : d.consensus === 'majority' ? 'MAJORITY (some dissent)' : d.consensus === 'split' ? 'SPLIT' : 'CONSENSUS UNKNOWN';
   const warn = (d.warnings ?? []);
@@ -107,6 +125,7 @@ function renderDebate(d) {
     '', `**Answer:** ${d.final_answer}`, '',
   ];
   for (const w of d.warnings ?? []) lines.push(`**WARNING:** ${w}`, '');
+  lines.push(...renderWebSearch(d.web_search));
   if (d.models?.length) lines.push(`_Models that answered: ${d.models.map((m) => `${m.provider} = ${m.model}`).join('; ')}_`, '');
   if (d.dissent.present === false) lines.push('**Dissent:** none', '');
   else lines.push(`**Dissent (report this to the user, do not drop it when summarizing):** ${d.dissent.summary}`, '');
@@ -133,6 +152,8 @@ async function planDebate(args, ctx, { clamp = null } = {}) {
   const maxWords = lower(args.max_words ?? MODES[mode].maxWords, clamp?.max_words);
   if (!Number.isInteger(maxWords) || maxWords < 20 || maxWords > LIMITS.maxWords) return { error: `error: max_words must be an integer 20..${LIMITS.maxWords}` };
   if (args.include_transcript !== undefined && typeof args.include_transcript !== 'boolean') return { error: 'error: include_transcript must be a boolean' };
+  if (args.web_search !== undefined && typeof args.web_search !== 'boolean') return { error: 'error: web_search must be a boolean' };
+  const webSearch = args.web_search !== false;
 
   // E3D_MCP_DEBATE_BIN swaps in another debate executable (used by tests); provider checks are then that binary's job.
   const stubbed = Boolean(process.env.E3D_MCP_DEBATE_BIN);
@@ -163,7 +184,48 @@ async function planDebate(args, ctx, { clamp = null } = {}) {
   }
   const claudeUp = stubbed || known.some((k) => k.name === 'claude' && k.available);
   if (synthesizer === undefined) synthesizer = samplingOn && providers.includes('mcp-sampling') ? 'mcp-sampling' : (claudeUp ? 'claude' : providers[0]);
-  return { question, mode, rounds, maxWords, providers, synthesizer, selection, selectionNote };
+  return { question, mode, rounds, maxWords, providers, synthesizer, selection, selectionNote, webSearch, ...searchPlan(providers, webSearch) };
+}
+
+// Which voices may search in this debate (the same rules bin/e3d-debate applies): only the four API providers, only with the
+// global switch on, and only those on E3D_DEBATE_WEB_SEARCH_PROVIDERS. Used for the worst-case estimate.
+function searchPlan(providers, webSearch) {
+  const cfg = webSearchConfig(process.env);
+  const searching = webSearch && cfg.enabled ? providers.filter((p) => API_PROVIDERS.includes(p) && cfg.providers.includes(p)) : [];
+  return { searchProviders: searching.length, maxSearchesPerCall: cfg.maxSearches };
+}
+const worstFor = (plan) => worstCase({ providers: plan.providers.length, rounds: plan.rounds, maxWords: plan.maxWords, questionChars: plan.question.length,
+  searchProviders: plan.searchProviders ?? 0, maxSearchesPerCall: plan.maxSearchesPerCall ?? 0 });
+
+// The web-search part of a debate's result, from the out/web-search.json bin/e3d-debate writes. Everything is re-checked and
+// re-sanitised here: titles and excerpts are page text, so they are bounded and stripped of markup; URLs are http(s) with no
+// query string; nothing is ever fetched.
+function readWebSearch(raw, requested) {
+  let w = null;
+  try { w = raw ? JSON.parse(raw) : null; } catch { w = null; }
+  const int = (v) => (Number.isSafeInteger(v) && v >= 0 ? v : 0);
+  const line = (v, max) => sanitizeText(String(v ?? '')).replace(/\s+/g, ' ').trim().slice(0, max);
+  const name = (v) => String(v ?? '').replace(/[^a-z0-9_.:-]/gi, '').slice(0, 64);
+  if (!w || typeof w !== 'object') return { enabled: false, requested, models_with_search: 0, models_total: 0, searches_used: 0, searches_by_provider: {}, citations: [], flags: { instructions_ignored: false, cap_exceeded: [], unavailable: [], citations_dropped: {} } };
+  const byProvider = {};
+  for (const [k, v] of Object.entries(w.searches_used ?? {})) if (API_PROVIDERS.includes(k)) byProvider[k] = int(v);
+  const citations = (Array.isArray(w.citations) ? w.citations : []).slice(0, 20).map((c) => {
+    const url = cleanUrl(c?.url);
+    if (!url) return null;
+    const domain = /^[a-z0-9.-]{1,253}$/.test(String(c?.domain ?? '')) ? c.domain : hostOf(url);
+    return { title: line(c?.title, 120) || domain, domain, url, excerpt: line(c?.excerpt, 300), provider: name(c?.provider) };
+  }).filter(Boolean);
+  const flags = w.flags ?? {};
+  return {
+    enabled: w.enabled === true, requested, models_with_search: int(w.models_with_search), models_total: int(w.models_total),
+    searches_used: Object.values(byProvider).reduce((a, b) => a + b, 0), searches_by_provider: byProvider, citations,
+    flags: {
+      instructions_ignored: flags.instructions_ignored === true,
+      cap_exceeded: (Array.isArray(flags.cap_exceeded) ? flags.cap_exceeded : []).slice(0, 32).map((a) => ({ provider: name(a?.provider), round: int(a?.round), searches: int(a?.searches), cap: int(a?.cap) })),
+      unavailable: (Array.isArray(flags.unavailable) ? flags.unavailable : []).slice(0, 32).map((u) => ({ provider: name(u?.provider), round: int(u?.round), reason: name(u?.reason) })),
+      citations_dropped: Object.fromEntries(Object.entries(flags.citations_dropped ?? {}).filter(([k]) => /^[a-z_]{1,32}$/.test(k)).map(([k, v]) => [k, int(v)])),
+    },
+  };
 }
 
 // The tool error for a refused metering.begin().
@@ -181,6 +243,7 @@ function beginError(rsv) {
 // stores (ok outcomes only).
 async function executeDebate(plan, handle, ctx, { progress, onStarted, signal } = {}) {
   const { question, providers, rounds, maxWords, synthesizer } = plan;
+  const webSearchRequested = plan.webSearch !== false;
   const debateBin = process.env.E3D_MCP_DEBATE_BIN || join(ROOT, 'bin/e3d-debate');
   let settled = false;
   let ran = false;
@@ -192,7 +255,8 @@ async function executeDebate(plan, handle, ctx, { progress, onStarted, signal } 
     const qfile = join(dir, 'question.md');
     await writeFile(qfile, question);
     const cliArgs = ['--question-file', qfile, '--providers', providers.join(','), '--rounds', String(rounds),
-      '--max-words', String(maxWords), '--out-dir', join(dir, 'out'), ...(synthesizer !== 'claude' ? ['--synthesizer', synthesizer] : [])];
+      '--max-words', String(maxWords), '--out-dir', join(dir, 'out'), ...(synthesizer !== 'claude' ? ['--synthesizer', synthesizer] : []),
+      '--web-search', webSearchRequested ? 'on' : 'off'];
     let step = 0;
     const tag = `debate-${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 8)}`;
     const usesSampling = providers.some(isSampling) || isSampling(synthesizer);
@@ -203,18 +267,24 @@ async function executeDebate(plan, handle, ctx, { progress, onStarted, signal } 
     await onStarted?.();
     const r = await run(debateBin, cliArgs, {
       timeoutMs, signal,
-      env: { ...process.env, ...samplingEnv },
+      env: { ...process.env, ...samplingEnv, E3D_DEBATE_TIMEOUT_SEC: String(Math.max(Math.floor(timeoutMs / 1000), 1)) },
       onStderr: (s) => { for (const m of s.matchAll(/^=== (.+?) ===$/gm)) progress?.(++step, m[1]); },
     });
     lastRun = r;
     // Calls that actually ran are counted from the transcript, whether or not the debate succeeded.
     const transcript = await readFile(join(dir, 'out', 'transcript.md'), 'utf8').catch(() => '');
+    const webSearch = readWebSearch(await readFile(join(dir, 'out', 'web-search.json'), 'utf8').catch(() => ''), webSearchRequested);
+    // with web search, everything returned is sanitised again here (e3d-debate already did): control and bidi characters,
+    // markdown images, HTML and links are neutralised
+    const clean = webSearch.enabled ? (t) => sanitizeText(t) : (t) => t;
     // The synthesis call counts when the transcript shows it ran ("## Synthesis" heading), or when the debate was not stopped by the timeout (a failed debate is charged conservatively).
     const spent = usageFromTranscript(transcript, question, { synthesized: /\n## Synthesis/.test(transcript) || !(r.timedOut || r.cancelled) });
-    const verdict = parseVerdict(r.out);
+    const parsed = parseVerdict(r.out);
+    const verdict = parsed && webSearch.enabled ? { ...parsed, final_answer: clean(parsed.final_answer), dissent: { ...parsed.dissent, summary: clean(parsed.dissent.summary) } } : parsed;
     // Every outcome settles what actually ran (no transcript = zero calls = release).
     const outcome = r.cancelled ? 'error' : r.timedOut ? 'timeout' : (r.code !== 0 || !verdict ? 'error' : 'ok');
-    const { roundsRan, positions } = parsePositions(transcript);
+    const { roundsRan, positions: rawPositions } = parsePositions(transcript);
+    const positions = rawPositions.map((p) => ({ ...p, text: clean(p.text) }));
     const samplingCalls = sampling.drain(tag).map((m) => ({ provider: m.voice === 'b' ? 'mcp-sampling-b' : 'mcp-sampling', model: m.model, hint: m.hint }));
     // One entry per provider+model, with how many calls it answered (a voice that also wrote the verdict made two).
     const samplingModels = [...samplingCalls.reduce((acc, m) => {
@@ -230,12 +300,15 @@ async function executeDebate(plan, handle, ctx, { progress, onStarted, signal } 
         const model = samplingModels.find((m) => m.provider === p.provider)?.model;
         return { provider: p.provider, model: typeof model === 'string' && /^[!-~]{1,128}$/.test(model) ? model : 'unspecified', position: p.text };
       }),
+      web_search: webSearch,
     } : null;
     // With finalize, the service stores the result with the charge.
     const finalizeMeta = handle.finalize ? { transcript: transcript || null, finished_at: Date.now(), result: stored } : {};
-    const { budget, billing } = await metering.commit(handle, spent, { outcome, duration_ms: Date.now() - started, models: modelsFromTranscript(transcript, { synthesizer, calls: spent.calls }), ...finalizeMeta });
+    // search usage is recorded per provider like tokens (models[].searches); it never changes the calls that are charged
+    const models = modelsFromTranscript(transcript, { synthesizer, calls: spent.calls }).map((m) => ({ ...m, searches: webSearch.searches_by_provider[m.provider] ?? 0 }));
+    const { budget, billing } = await metering.commit(handle, { ...spent, searches: webSearch.searches_used }, { outcome, duration_ms: Date.now() - started, models, ...finalizeMeta });
     settled = true;
-    return { r, timeoutMs, transcript, spent, verdict, outcome, roundsRan, positions, samplingModels, stored, budget, billing };
+    return { r, timeoutMs, transcript, spent, verdict, outcome, roundsRan, positions, samplingModels, stored, budget, billing, webSearch };
   } finally {
     // Not settled (an unexpected error): give the reservation back, as before. With the hook, once the debate binary
     // has run the intent is kept instead, so the next start reconciles it per E3D_MCP_ORPHAN_POLICY (never free).
@@ -257,7 +330,7 @@ async function toolDebate(args, progress, ctx) {
 
   // Refuse BEFORE spending if the worst case for this request would break today's cap.
   const principal = ctx?.principal ?? 'local';
-  const worst = worstCase({ providers: providers.length, rounds, maxWords, questionChars: question.length });
+  const worst = worstFor(plan);
   // Reserve the worst case first (atomically, so concurrent debates cannot overshoot the cap), then settle to actual use.
   // With the external hook, metering.begin also reserves at the billing service and persists an intent before returning.
   // When the service advertises finalize, the debate (question, providers, rounds) is finalized and stored there at the end.
@@ -269,7 +342,7 @@ async function toolDebate(args, progress, ctx) {
   let x;
   try { x = await executeDebate(plan, handle, ctx, { progress }); } finally { activeDebates--; runs?.pump(); }
   if (x.startFailed) return text('error: billing: temporarily unavailable', true);
-  const { r, timeoutMs, transcript, spent, verdict, roundsRan, positions, samplingModels, budget, billing } = x;
+  const { r, timeoutMs, transcript, spent, verdict, roundsRan, positions, samplingModels, budget, billing, webSearch } = x;
   if (r.timedOut) return text(`error: debate timed out after ${timeoutMs / 1000}s and was stopped. ${spent.calls} model call(s) had already answered and are counted against today's budget (${budget?.remaining_calls ?? 'no limit'} calls left). Try mode "quick", fewer providers, or a shorter question.`, true);
   if (r.code !== 0 || !verdict) return text(`error: debate failed (exit ${r.code})\n${redact(r.err.slice(-1500))}`, true);
 
@@ -281,7 +354,8 @@ async function toolDebate(args, progress, ctx) {
     ...(samplingModels.length ? { models: samplingModels } : {}),
     independent: indep.independent, warnings: indep.warnings,
     ...(indep.families.length ? { families: indep.families } : {}),
-    usage: { model_calls: spent.calls, est_input_tokens: spent.inTokens, est_output_tokens: spent.outTokens, estimate: true },
+    usage: { model_calls: spent.calls, est_input_tokens: spent.inTokens, est_output_tokens: spent.outTokens, searches: webSearch.searches_used, estimate: true },
+    web_search: webSearch,
     budget,
     ...(billing ? { billing } : {}),
     positions,
@@ -311,7 +385,7 @@ async function toolDebateStart(args, _progress, ctx) {
   const plan = await planDebate(args, { ...ctx, session: null }, { clamp: runsConfig.customer });
   if (plan.error) return text(plan.error, true);
   const principal = ctx?.principal ?? 'local';
-  const worst = worstCase({ providers: plan.providers.length, rounds: plan.rounds, maxWords: plan.maxWords, questionChars: plan.question.length });
+  const worst = worstFor(plan);
   const r = await runs.start({ principal, plan, worst });
   if (!r.ok) return r.kind === 'begin' ? beginError(r.rsv) : text(`error: ${r.kind === 'busy' ? 'busy: ' : ''}${r.message}`, true);
   const out = { debate_id: r.debate_id, status: r.status, poll_after_sec: r.poll_after_sec };
@@ -337,6 +411,7 @@ function renderStored(d) {
     `**Answer:** ${res.final_answer}`, '',
     res.dissent === 'none' ? '**Dissent:** none' : `**Dissent (report this to the user, do not drop it when summarizing):** ${res.dissent}`, '',
   ];
+  if (res.web_search && typeof res.web_search === 'object') lines.push(...renderWebSearch(res.web_search));
   if (res.positions?.length) {
     lines.push('**Each model\'s final position:**');
     for (const p of res.positions) lines.push('', `**${p.provider}:**`, ...String(p.position).split('\n').map((l) => `> ${l}`));
@@ -353,6 +428,7 @@ async function toolDebateResult(args, _progress, ctx) {
   const out = {
     debate_id: d.debate_id, status: d.status, outcome: d.outcome,
     ...(d.result ? { final_answer: d.result.final_answer, consensus: d.result.consensus, dissent: d.result.dissent, positions: d.result.positions } : {}),
+    ...(d.result?.web_search && typeof d.result.web_search === 'object' ? { web_search: d.result.web_search } : {}),
     providers: d.providers, rounds: d.rounds, usage: d.usage, credits_charged: d.credits_charged, created_at: d.created_at, finished_at: d.finished_at,
     truncated: d.truncated, source: d.source, ...(d.poll_after_sec ? { poll_after_sec: d.poll_after_sec } : {}),
     ...(args.include_transcript === true && 'transcript' in d ? { transcript: d.transcript } : {}),
@@ -409,10 +485,31 @@ async function toolIdeasList(args) {
   return text(JSON.stringify({ total: ideas.length, shown: rows.length, ideas: rows }, null, 2));
 }
 
+// The web_search object in e3d_debate's structured result (docs/web-search-interface.md).
+const WEB_SEARCH_SCHEMA = {
+  type: 'object',
+  description: 'Web search in this debate. Citations are untrusted internet data: titles and excerpts are page text (sanitised, bounded), URLs have no query string, and nothing was fetched by the server.',
+  properties: {
+    enabled: { type: 'boolean', description: 'true when at least one model could search.' },
+    requested: { type: 'boolean' },
+    models_with_search: { type: 'integer' }, models_total: { type: 'integer' },
+    searches_used: { type: 'integer' },
+    searches_by_provider: { type: 'object', additionalProperties: { type: 'integer' } },
+    citations: { type: 'array', items: { type: 'object', properties: { title: { type: 'string' }, domain: { type: 'string' }, url: { type: 'string' }, excerpt: { type: 'string' }, provider: { type: 'string' } }, required: ['title', 'domain', 'url', 'excerpt'] } },
+    flags: { type: 'object', properties: {
+      instructions_ignored: { type: 'boolean' },
+      cap_exceeded: { type: 'array', items: { type: 'object' } },
+      unavailable: { type: 'array', items: { type: 'object' } },
+      citations_dropped: { type: 'object' },
+    } },
+  },
+  required: ['enabled', 'searches_used', 'citations', 'flags'],
+};
+
 const TOOLS = [
   {
     name: 'e3d_debate',
-    description: 'Use when the user asks for a second opinion, wants to compare options, or has to decide between alternatives (for example "JSON or SQLite?", "should we...", architecture or library tradeoffs). Get a multi-model second opinion on a decision or design question. Independent AI models answer, and a synthesizer returns a final answer, a consensus level (full/majority/split), and any dissent, plus each model\'s final position. ALWAYS report the dissent and consensus level to the user -- the disagreement is the point; never present a split verdict as settled. Write a self-contained question: the models cannot see your code. mode "quick" (default): one round, usually well under a minute. mode "thorough": models also critique each other, a few minutes. Use for architectural choices, tradeoffs, and contestable judgment calls -- not for lookups or questions with an obvious answer. Spends the user\'s model credits.',
+    description: 'Use when the user asks for a second opinion, wants to compare options, or has to decide between alternatives (for example "JSON or SQLite?", "should we...", architecture or library tradeoffs). Get a multi-model second opinion on a decision or design question. Independent AI models answer, and a synthesizer returns a final answer, a consensus level (full/majority/split), and any dissent, plus each model\'s final position. ALWAYS report the dissent and consensus level to the user -- the disagreement is the point; never present a split verdict as settled. Write a self-contained question: the models cannot see your code. mode "quick" (default): one round, usually well under a minute. mode "thorough": models also critique each other, a few minutes. Use for architectural choices, tradeoffs, and contestable judgment calls -- not for lookups or questions with an obvious answer. Spends the user\'s model credits. ' + PRIVACY_NOTICE,
     inputSchema: {
       type: 'object',
       properties: {
@@ -422,6 +519,7 @@ const TOOLS = [
         rounds: { type: 'integer', minimum: 1, maximum: LIMITS.rounds, description: 'Override the mode\'s round count. Stops early on convergence.' },
         max_words: { type: 'integer', minimum: 20, maximum: LIMITS.maxWords, description: 'Override the mode\'s per-provider per-round answer cap.' },
         include_transcript: { type: 'boolean', description: 'Also return the full transcript (large). Default false.' },
+        web_search: { type: 'boolean', description: 'Let the API models (Anthropic, OpenAI, Google, xAI) search the web for current facts. Default true. false keeps the question away from search providers.' },
       },
       required: ['question'],
       additionalProperties: false,
@@ -448,6 +546,7 @@ const TOOLS = [
         families: { type: 'array', items: { type: 'string' }, description: 'Vendor families among the voices.' },
         independent: { type: 'boolean', description: 'false when every voice resolved to the same model.' },
         warnings: { type: 'array', items: { type: 'string' } },
+        web_search: WEB_SEARCH_SCHEMA,
         transcript: { type: 'string' },
       },
       required: ['final_answer', 'consensus', 'dissent', 'positions', 'mode', 'providers', 'rounds_ran'],
@@ -458,7 +557,7 @@ const TOOLS = [
   },
   {
     name: 'e3d_debate_start',
-    description: 'Start a debate that keeps running on the server, so a slow debate is never lost when you stop waiting. Same question and options as e3d_debate. Returns a debate_id right away; check on the debate with e3d_debate_status and get the answer with e3d_debate_result (both work later too, even after a disconnect). Use instead of e3d_debate for "thorough" debates or when your client gives up on long tool calls. Spends the account\'s credits once, when the debate finishes.',
+    description: 'Start a debate that keeps running on the server, so a slow debate is never lost when you stop waiting. Same question and options as e3d_debate. Returns a debate_id right away; check on the debate with e3d_debate_status and get the answer with e3d_debate_result (both work later too, even after a disconnect). Use instead of e3d_debate for "thorough" debates or when your client gives up on long tool calls. Spends the account\'s credits once, when the debate finishes. ' + PRIVACY_NOTICE,
     inputSchema: {
       type: 'object',
       properties: {
@@ -468,6 +567,7 @@ const TOOLS = [
         rounds: { type: 'integer', minimum: 1, maximum: LIMITS.rounds, description: 'Override the mode\'s round count (the server may lower it).' },
         max_words: { type: 'integer', minimum: 20, maximum: LIMITS.maxWords, description: 'Override the per-answer word cap (the server may lower it).' },
         include_transcript: { type: 'boolean', description: 'Accepted for compatibility with e3d_debate; ask e3d_debate_result for the transcript instead.' },
+        web_search: { type: 'boolean', description: 'Let the API models (Anthropic, OpenAI, Google, xAI) search the web for current facts. Default true. false keeps the question away from search providers.' },
       },
       required: ['question'],
       additionalProperties: false,
@@ -510,6 +610,7 @@ const TOOLS = [
         positions: { type: 'array', items: { type: 'object', properties: { provider: { type: 'string' }, model: { type: 'string' }, position: { type: 'string' } }, required: ['provider', 'position'] } },
         providers: { type: 'array', items: { type: 'string' } }, rounds: { type: 'integer' }, credits_charged: { type: ['integer', 'null'] },
         source: { type: 'string', enum: ['local', 'service'] }, transcript: { type: ['string', 'null'] }, poll_after_sec: { type: 'integer' },
+        web_search: WEB_SEARCH_SCHEMA,
       },
       required: ['debate_id', 'status'],
     },
@@ -692,15 +793,15 @@ async function runAsyncDebate({ plan, handle, principal, onStarted, progress, si
   const x = await executeDebate(plan, handle, ctx, { progress, onStarted, signal });
   if (x.startFailed) return { startFailed: true };
   return { outcome: x.outcome, result: x.stored, transcript: x.transcript || null,
-    usage: { calls: x.spent.calls, est_input_tokens: x.spent.inTokens, est_output_tokens: x.spent.outTokens }, billing: x.billing };
+    usage: { calls: x.spent.calls, est_input_tokens: x.spent.inTokens, est_output_tokens: x.spent.outTokens, searches: x.webSearch?.searches_used ?? 0 }, billing: x.billing };
 }
 
 // A web run's plan: the same validation and customer maxima as e3d_debate_start; no client, so no sampling.
 async function planWebRun(fields) {
   const ctx = { session: { clientInfo: null, capabilities: {}, rootsReady: null }, principal: null };
-  const plan = await planDebate({ question: fields.question, providers: fields.providers, rounds: fields.rounds, max_words: fields.max_words }, ctx, { clamp: runsConfig.customer });
+  const plan = await planDebate({ question: fields.question, providers: fields.providers, rounds: fields.rounds, max_words: fields.max_words, web_search: fields.web_search }, ctx, { clamp: runsConfig.customer });
   if (plan.error) return plan;
-  return { plan, worst: worstCase({ providers: plan.providers.length, rounds: plan.rounds, maxWords: plan.maxWords, questionChars: plan.question.length }) };
+  return { plan, worst: worstFor(plan) };
 }
 
 // The external hook: validate everything, then recover crashed work and start outbox delivery BEFORE listening.

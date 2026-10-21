@@ -11,6 +11,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=./common.sh
 source "$SCRIPT_DIR/common.sh"
+# shellcheck source=./websearch.sh
+source "$SCRIPT_DIR/websearch.sh"
 
 XAI_API_BASE_URL="${XAI_API_BASE_URL:-https://api.x.ai/v1}"
 PROVIDER_TOKEN_LIMIT="${E3D_PILOT_PROVIDER_TOKEN_LIMIT:-200000}"
@@ -62,6 +64,24 @@ work="$(mktemp -d "${TMPDIR:-/tmp}/e3d-pilot-xai-api.XXXXXX")"
 trap 'rm -rf "$work"' EXIT
 chmod 700 "$work"
 ( umask 077; printf 'Authorization: Bearer %s\nContent-Type: application/json\n' "$(xai_key)" > "$work/headers" )
+
+if ws_enabled; then
+  # Web search (lib/providers/websearch.sh; docs/web-search-providers.md): the Responses API with exactly one tool,
+  # web_search, image understanding and image search off. xAI documents no per-call search cap: max_turns (the limit on
+  # server-side tool-calling turns) is the closest control, and the count is checked after the fact. One domain list of at
+  # most 5 natively (allow wins); anything else is post-filtered by e3d-debate.
+  # a search call always has an output ceiling (8192 unless XAI_API_MAX_TOKENS says otherwise)
+  ws_settings || ws_fail xai-api invalid_domain_config
+  WS_MODEL="$XAI_API_MODEL"
+  jq -n --rawfile content "$PROMPT_FILE" --arg model "$XAI_API_MODEL" --arg max "${XAI_API_MAX_TOKENS:-8192}" \
+    --arg sys "$WS_SYSTEM_TEXT" --argjson cap "$WS_MAX" --argjson allow "$WS_ALLOW" --argjson deny "$WS_DENY" \
+    '{model: $model, input: [{role: "system", content: $sys}, {role: "user", content: $content}], store: false, max_turns: $cap,
+      tools: [{type: "web_search", enable_image_understanding: false, enable_image_search: false}
+        + (if ($allow | length) > 0 and ($allow | length) <= 5 then {filters: {allowed_domains: $allow}}
+           elif ($deny | length) > 0 and ($deny | length) <= 5 then {filters: {excluded_domains: $deny}} else {} end)]}
+      + (if $max != "" then {max_output_tokens: ($max | tonumber)} else {} end)' > "$work/payload.json"
+  ws_responses_run xai-api "${XAI_API_BASE_URL%/}/responses" "$work"
+fi
 
 jq -n --rawfile content "$PROMPT_FILE" --arg model "$XAI_API_MODEL" --arg max "${XAI_API_MAX_TOKENS:-}" \
   '{model: $model, messages: [{role: "user", content: $content}]} + (if $max != "" then {max_tokens: ($max | tonumber)} else {} end)' > "$work/payload.json"

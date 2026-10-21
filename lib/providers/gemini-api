@@ -12,6 +12,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=./common.sh
 source "$SCRIPT_DIR/common.sh"
+# shellcheck source=./websearch.sh
+source "$SCRIPT_DIR/websearch.sh"
 
 GEMINI_API_BASE_URL="${GEMINI_API_BASE_URL:-https://generativelanguage.googleapis.com/v1beta/openai}"
 PROVIDER_TOKEN_LIMIT="${E3D_PILOT_PROVIDER_TOKEN_LIMIT:-200000}"
@@ -63,6 +65,52 @@ work="$(mktemp -d "${TMPDIR:-/tmp}/e3d-pilot-gemini-api.XXXXXX")"
 trap 'rm -rf "$work"' EXIT
 chmod 700 "$work"
 ( umask 077; printf 'Authorization: Bearer %s\nContent-Type: application/json\n' "$(gemini_key)" > "$work/headers" )
+
+if ws_enabled; then
+  # Web search (lib/providers/websearch.sh; docs/web-search-providers.md). Google documents the google_search tool for
+  # its Interactions API, not for the OpenAI-compatible endpoint used below, so a search call goes to
+  # POST {GEMINI_API_NATIVE_BASE_URL}/interactions with exactly one tool (google_search, web results only, no image
+  # search) and store:false. Google documents no domain control and no cap on queries: domains are post-filtered and the
+  # query count is checked after the fact (compensating controls only).
+  # a search call always has an output ceiling (8192 unless GEMINI_API_MAX_TOKENS says otherwise)
+  ws_settings || ws_fail gemini-api invalid_domain_config
+  native="${GEMINI_API_NATIVE_BASE_URL:-https://generativelanguage.googleapis.com/v1beta}"
+  ( umask 077; printf 'x-goog-api-key: %s\nContent-Type: application/json\n' "$(gemini_key)" > "$work/native-headers" )
+  jq -n --rawfile content "$PROMPT_FILE" --arg model "${GEMINI_API_MODEL#models/}" --arg max "${GEMINI_API_MAX_TOKENS:-8192}" --arg sys "$WS_SYSTEM_TEXT" \
+    '{model: $model, input: $content, system_instruction: $sys, store: false, tools: [{type: "google_search", search_types: ["web_search"]}]}
+      + (if $max != "" then {generation_config: {max_output_tokens: ($max | tonumber)}} else {} end)' > "$work/payload.json"
+  set +e
+  http_code="$(curl -sS -m "$(ws_remaining)" -o "$work/response.json" -w '%{http_code}' \
+    -H "@$work/native-headers" -d "@$work/payload.json" "${native%/}/interactions" 2> "$work/curl.err")"
+  status=$?
+  set -e
+  (( status == 28 )) && ws_fail gemini-api timeout
+  (( status != 0 )) && ws_fail gemini-api request_failed "curl exit $status"
+  if [[ "$http_code" != 2* ]]; then
+    msg="$(jq -r '(if type == "array" then .[0] else . end) | .error.message // empty' "$work/response.json" 2>/dev/null | head -c 200)"
+    ws_fail gemini-api "http_$http_code" "$msg"
+  fi
+  jq -e 'type == "object"' "$work/response.json" >/dev/null 2>&1 || ws_fail gemini-api bad_response
+  [[ "$(jq -r '.status // "completed"' "$work/response.json")" == "completed" ]] || ws_fail gemini-api "status_$(jq -r '.status' "$work/response.json" | tr -cd 'a-z_' | head -c 20)"
+  [[ "$(jq '(.errors // []) | length' "$work/response.json")" == 0 ]] || ws_fail gemini-api response_errors
+  # Only model output, thoughts and the search tool's own steps may appear: anything else means another tool ran. Fail closed.
+  bad="$(jq -r '[.steps[]? | .type as $t | select(($t | IN("model_output","thought","google_search_call","google_search_result")) | not) | $t] | unique | join(",")' "$work/response.json")"
+  [[ -z "$bad" ]] || ws_fail gemini-api unexpected_tool "$bad"
+  content="$(jq -r '[.steps[]? | select(.type == "model_output") | .content[]? | select(.type == "text") | .text] | join("")' "$work/response.json")"
+  [[ -n "$content" ]] || ws_fail gemini-api no_text
+  tokens="$(jq '.usage.total_tokens // 0' "$work/response.json")"
+  # billed per query: the usage count when present, else the queries the search steps list
+  searches="$(jq '([.usage.grounding_tool_count[]? | select(.type == "google_search") | .count] | add) // ([.steps[]? | select(.type == "google_search_call") | (.arguments.queries // []) | length] | add) // 0' "$work/response.json")"
+  cites="$(jq -c '[.steps[]? | select(.type == "model_output") | .content[]? | .annotations[]? | select(.type == "url_citation") | {url: (.url // ""), title: ((.title // "") | tostring), excerpt: ""}] | .[0:60]' "$work/response.json")"
+  ws_record "$searches" "$cites"
+  printf 'e3d_provider_usage=%s\n' "$(jq -c --arg m "$GEMINI_API_MODEL" --argjson s "$searches" '{provider:"gemini-api",model:(.model // $m),tokens:(.usage.total_tokens // null),searches:$s}' "$work/response.json")" >&2
+  printf '%s\n' "$content"
+  if [[ "$PROVIDER_TOKEN_LIMIT" =~ ^[0-9]+$ ]] && (( PROVIDER_TOKEN_LIMIT > 0 && tokens > PROVIDER_TOKEN_LIMIT )); then
+    printf 'error: gemini-api provider token ceiling exceeded (%s > %s)\n' "$tokens" "$PROVIDER_TOKEN_LIMIT" >&2
+    exit "$PROVIDER_EXIT_FAILURE"
+  fi
+  exit "$PROVIDER_EXIT_OK"
+fi
 
 jq -n --rawfile content "$PROMPT_FILE" --arg model "$GEMINI_API_MODEL" --arg max "${GEMINI_API_MAX_TOKENS:-}" \
   '{model: $model, messages: [{role: "user", content: $content}]} + (if $max != "" then {max_tokens: ($max | tonumber)} else {} end)' > "$work/payload.json"
