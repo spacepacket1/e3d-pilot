@@ -101,6 +101,11 @@ r="$(call_debate garbled '{"question":"q"}')"
 
 [[ "$(jq -r .result.isError <<< "$(call_debate split '{"question":"q","mode":"turbo"}')")" == "true" ]] || fail "invalid mode rejected"
 [[ "$(printf '%s\n' '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' | "$SERVER" 2>/dev/null | jq -r '.result.tools[0].outputSchema.required|index("dissent")!=null')" == "true" ]] || fail "e3d_debate must declare outputSchema with dissent"
+# Annotations (ChatGPT directory review): a debate spends credits and sends the question to model providers, so it is not
+# read-only; it deletes nothing, so destructiveHint must be an explicit false (the MCP default for a non-read-only tool is true).
+tools_json="$(printf '%s\n' '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' | "$SERVER" 2>/dev/null)"
+[[ "$(jq -r '.result.tools[] | select(.name=="e3d_debate") | [.annotations.readOnlyHint, .annotations.destructiveHint, .annotations.openWorldHint, .annotations.idempotentHint] | map(tostring) | join(",")' <<< "$tools_json")" == "false,false,true,false" ]] || fail "e3d_debate annotations: not read-only, not destructive, open world, not idempotent"
+[[ "$(jq -r '[.result.tools[] | select(.annotations.readOnlyHint == false) | select((.annotations.destructiveHint | type) != "boolean") | .name] | join(",")' <<< "$tools_json")" == "" ]] || fail "every non-read-only tool must declare destructiveHint explicitly"
 
 # ---- housekeeping: print-config matches README, provider wording, doctor ending, redaction ----
 cfg_out="$("$SERVER" --print-config 2>/dev/null)"

@@ -1,10 +1,11 @@
 [
   {
     "annotations": {
-      "idempotentHint": false,
+      "title": "Multi-model debate",
+      "readOnlyHint": false,
+      "destructiveHint": false,
       "openWorldHint": true,
-      "readOnlyHint": true,
-      "title": "Multi-model debate"
+      "idempotentHint": false
     },
     "description": "Use when the user asks for a second opinion, wants to compare options, or has to decide between alternatives (for example \"JSON or SQLite?\", \"should we...\", architecture or library tradeoffs). Get a multi-model second opinion on a decision or design question. Independent AI models answer, and a synthesizer returns a final answer, a consensus level (full/majority/split), and any dissent, plus each model's final position. ALWAYS report the dissent and consensus level to the user -- the disagreement is the point; never present a split verdict as settled. Write a self-contained question: the models cannot see your code. mode \"quick\" (default): one round, usually well under a minute. mode \"thorough\": models also critique each other, a few minutes. Use for architectural choices, tradeoffs, and contestable judgment calls -- not for lookups or questions with an obvious answer. Spends the user's model credits.",
     "inputSchema": {
