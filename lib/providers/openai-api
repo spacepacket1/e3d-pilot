@@ -11,6 +11,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=./common.sh
 source "$SCRIPT_DIR/common.sh"
+# shellcheck source=./websearch.sh
+source "$SCRIPT_DIR/websearch.sh"
 
 OPENAI_API_BASE_URL="${OPENAI_API_BASE_URL:-https://api.openai.com/v1}"
 PROVIDER_TOKEN_LIMIT="${E3D_PILOT_PROVIDER_TOKEN_LIMIT:-200000}"
@@ -62,6 +64,24 @@ work="$(mktemp -d "${TMPDIR:-/tmp}/e3d-pilot-openai.XXXXXX")"
 trap 'rm -rf "$work"' EXIT
 chmod 700 "$work"
 ( umask 077; printf 'Authorization: Bearer %s\nContent-Type: application/json\n' "$(openai_key)" > "$work/headers" )
+
+if ws_enabled; then
+  # Web search (lib/providers/websearch.sh; docs/web-search-providers.md): the Responses API with exactly one tool,
+  # web_search. Chat Completions has no search tool (only always-searching search models), so search-off stays below.
+  # max_tool_calls is the cap; one domain list natively (allow wins), the other is post-filtered by e3d-debate.
+  # a search call always has an output ceiling (8192 unless OPENAI_API_MAX_TOKENS says otherwise)
+  ws_settings || ws_fail openai-api invalid_domain_config
+  WS_MODEL="$OPENAI_API_MODEL"
+  jq -n --rawfile content "$PROMPT_FILE" --arg model "$OPENAI_API_MODEL" --arg max "${OPENAI_API_MAX_TOKENS:-8192}" \
+    --arg sys "$WS_SYSTEM_TEXT" --argjson cap "$WS_MAX" --argjson allow "$WS_ALLOW" --argjson deny "$WS_DENY" \
+    --arg ctx "${OPENAI_API_SEARCH_CONTEXT_SIZE:-low}" \
+    '{model: $model, instructions: $sys, input: $content, store: false, tool_choice: "auto", max_tool_calls: $cap,
+      include: ["web_search_call.action.sources"],
+      tools: [{type: "web_search", search_context_size: (if ($ctx | IN("low","medium","high")) then $ctx else "low" end), external_web_access: true}
+        + (if ($allow | length) > 0 then {filters: {allowed_domains: $allow}} elif ($deny | length) > 0 then {filters: {blocked_domains: $deny}} else {} end)]}
+      + (if $max != "" then {max_output_tokens: ($max | tonumber)} else {} end)' > "$work/payload.json"
+  ws_responses_run openai-api "${OPENAI_API_BASE_URL%/}/responses" "$work"
+fi
 
 jq -n --rawfile content "$PROMPT_FILE" --arg model "$OPENAI_API_MODEL" --arg max "${OPENAI_API_MAX_TOKENS:-}" \
   '{model: $model, messages: [{role: "user", content: $content}]} + (if $max != "" then {max_completion_tokens: ($max | tonumber)} else {} end)' > "$work/payload.json"

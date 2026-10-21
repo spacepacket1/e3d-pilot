@@ -138,6 +138,27 @@ In Copilot agent mode (or any client), ask: *"Before you pick a storage layer, r
 - `quick` debates take seconds to a minute and `thorough` ones a few minutes; both spend **your** model credits. The server caps `e3d_debate` with `E3D_MCP_MAX_ROUNDS` (3), `E3D_MCP_MAX_PROVIDERS` (4), `E3D_MCP_MAX_CONCURRENT` (2), and `E3D_MCP_TIMEOUT_SEC` (900).
 - It uses whatever provider CLIs and keys are in the server's environment (see `e3d-pilot providers list`).
 - The Copilot *coding agent* runs on GitHub-hosted runners, where those provider CLIs aren't installed. Use the local (stdio) setup above for now.
+
+### Web search in debates
+
+Every debate prompt states today's UTC date. The API providers (`anthropic-api`, `openai-api`, `gemini-api`, `xai-api`) can also use their vendor's own web search tool in the debate rounds. It is **on by default**, and the question text may then be sent to a search provider. CLI voices, MCP-sampling voices and the synthesizer never search; they are told they have no web access. Pass `web_search: false` to `e3d_debate` or `e3d_debate_start`, or `--web-search off` to `e3d-debate`, to turn it off for one debate. Search results are treated as untrusted data: see [docs/web-search-providers.md](docs/web-search-providers.md) for what each vendor allows and what risk remains, and [docs/web-search-interface.md](docs/web-search-interface.md) for the result shapes.
+
+| Variable | Default | Effect |
+|---|---|---|
+| `E3D_DEBATE_WEB_SEARCH` | `on` | `off` is the kill switch: no search anywhere, no code change needed. Any other value also turns search off. |
+| `E3D_DEBATE_WEB_SEARCH_PROVIDERS` | `anthropic-api,openai-api,gemini-api,xai-api` | Which providers may search. Names other than these four are ignored. |
+| `E3D_DEBATE_SEARCH_MAX_PER_CALL` | `3` (1-10) | Search cap per model call. It is native for Anthropic and OpenAI, the closest available control for xAI, and checked after the fact for every vendor, with an ALARM when a vendor goes over. |
+| `E3D_DEBATE_SEARCH_MAX_CITATIONS` | `8` (1-20) | Citations kept per call. Extra citations are discarded and counted. |
+| `E3D_DEBATE_SEARCH_EXCERPT_CHARS` | `150` (0-300) | Hard cap on an excerpt kept from a citation. `0` keeps none. |
+| `E3D_DEBATE_SEARCH_ALLOW_DOMAINS` | empty | Comma list of bare domains (`example.com`). Applied natively where the vendor supports it and post-filtered everywhere. It takes precedence where a vendor accepts only one list. |
+| `E3D_DEBATE_SEARCH_DENY_DOMAINS` | empty | Comma list of bare domains. Native where possible, post-filtered everywhere. |
+| `E3D_DEBATE_SEARCH_TIMEOUT_SEC` | derived | Wall-clock limit for one search call. By default it is the debate timeout divided by (2 x rounds + 1), at least 10 s, or 120 s when no debate timeout is set. |
+| `E3D_MCP_DAILY_SEARCHES` | `0` (unlimited) | Daily cap on web searches per principal. The worst case (cap x searching calls) is reserved before a debate runs. |
+| `GEMINI_API_NATIVE_BASE_URL` | `https://generativelanguage.googleapis.com/v1beta` | Endpoint for Gemini's Interactions API, which is used only when Gemini searches. |
+| `OPENAI_API_SEARCH_CONTEXT_SIZE` | `low` | `search_context_size` for OpenAI's search tool. |
+| `ANTHROPIC_API_MAX_PAUSE_CONTINUATIONS` | `2` (0-5) | How many `pause_turn` continuations a search call may make. Beyond that it fails closed. |
+
+If a search call fails, times out, uses a tool other than search, or the vendor has search disabled, that model is asked again without search, and the answer says so ("web search was unavailable ..."). The answer also reports how many models could search ("on for N of M models").
 - `e3d_debate` and the read-only tools never write to a repo. The pipeline tools below do, only through the same gated CLI paths as a person would, and `e3d_pilot_propose` writes to the repo's `.e3d-pilot/` ledger.
 
 ### Run the pipeline from your editor

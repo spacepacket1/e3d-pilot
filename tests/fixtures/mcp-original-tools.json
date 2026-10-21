@@ -7,7 +7,7 @@
       "openWorldHint": true,
       "idempotentHint": false
     },
-    "description": "Use when the user asks for a second opinion, wants to compare options, or has to decide between alternatives (for example \"JSON or SQLite?\", \"should we...\", architecture or library tradeoffs). Get a multi-model second opinion on a decision or design question. Independent AI models answer, and a synthesizer returns a final answer, a consensus level (full/majority/split), and any dissent, plus each model's final position. ALWAYS report the dissent and consensus level to the user -- the disagreement is the point; never present a split verdict as settled. Write a self-contained question: the models cannot see your code. mode \"quick\" (default): one round, usually well under a minute. mode \"thorough\": models also critique each other, a few minutes. Use for architectural choices, tradeoffs, and contestable judgment calls -- not for lookups or questions with an obvious answer. Spends the user's model credits.",
+    "description": "Use when the user asks for a second opinion, wants to compare options, or has to decide between alternatives (for example \"JSON or SQLite?\", \"should we...\", architecture or library tradeoffs). Get a multi-model second opinion on a decision or design question. Independent AI models answer, and a synthesizer returns a final answer, a consensus level (full/majority/split), and any dissent, plus each model's final position. ALWAYS report the dissent and consensus level to the user -- the disagreement is the point; never present a split verdict as settled. Write a self-contained question: the models cannot see your code. mode \"quick\" (default): one round, usually well under a minute. mode \"thorough\": models also critique each other, a few minutes. Use for architectural choices, tradeoffs, and contestable judgment calls -- not for lookups or questions with an obvious answer. Spends the user's model credits. Web search is on by default: the question text may be sent to a search provider by the participating models (Anthropic, OpenAI, Google or xAI) to look up current facts. Pass web_search: false to turn it off for this debate.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
@@ -45,6 +45,10 @@
           "maximum": 3,
           "minimum": 1,
           "type": "integer"
+        },
+        "web_search": {
+          "type": "boolean",
+          "description": "Let the API models (Anthropic, OpenAI, Google, xAI) search the web for current facts. Default true. false keeps the question away from search providers."
         }
       },
       "required": [
@@ -177,6 +181,92 @@
             "type": "string"
           },
           "type": "array"
+        },
+        "web_search": {
+          "type": "object",
+          "description": "Web search in this debate. Citations are untrusted internet data: titles and excerpts are page text (sanitised, bounded), URLs have no query string, and nothing was fetched by the server.",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "true when at least one model could search."
+            },
+            "requested": {
+              "type": "boolean"
+            },
+            "models_with_search": {
+              "type": "integer"
+            },
+            "models_total": {
+              "type": "integer"
+            },
+            "searches_used": {
+              "type": "integer"
+            },
+            "searches_by_provider": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "integer"
+              }
+            },
+            "citations": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "title": {
+                    "type": "string"
+                  },
+                  "domain": {
+                    "type": "string"
+                  },
+                  "url": {
+                    "type": "string"
+                  },
+                  "excerpt": {
+                    "type": "string"
+                  },
+                  "provider": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "title",
+                  "domain",
+                  "url",
+                  "excerpt"
+                ]
+              }
+            },
+            "flags": {
+              "type": "object",
+              "properties": {
+                "instructions_ignored": {
+                  "type": "boolean"
+                },
+                "cap_exceeded": {
+                  "type": "array",
+                  "items": {
+                    "type": "object"
+                  }
+                },
+                "unavailable": {
+                  "type": "array",
+                  "items": {
+                    "type": "object"
+                  }
+                },
+                "citations_dropped": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "required": [
+            "enabled",
+            "searches_used",
+            "citations",
+            "flags"
+          ]
         }
       },
       "required": [
