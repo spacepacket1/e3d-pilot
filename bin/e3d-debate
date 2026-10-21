@@ -25,6 +25,11 @@ DEBATE_PROVIDERS=(claude codex)
 DEBATE_ROUNDS=2
 DEBATE_SYNTHESIZER="claude"
 DEBATE_MAX_WORDS=200
+# Transient provider failures (HTTP 429/500/502/503/504 or a curl timeout) are retried this many times, waiting DELAY x attempt seconds.
+DEBATE_PROVIDER_RETRIES="${E3D_DEBATE_PROVIDER_RETRIES:-2}"
+DEBATE_PROVIDER_RETRY_DELAY="${E3D_DEBATE_PROVIDER_RETRY_DELAY:-4}"
+[[ "$DEBATE_PROVIDER_RETRIES" =~ ^[0-9]$ ]] || DEBATE_PROVIDER_RETRIES=2
+[[ "$DEBATE_PROVIDER_RETRY_DELAY" =~ ^[0-9]{1,2}$ ]] || DEBATE_PROVIDER_RETRY_DELAY=4
 # v1 = original prompts (a speaker saw its own answer labelled as a peer's; rounds not described as simultaneous).
 # v2 = own answer labelled YOU, simultaneity stated in round 2+ and in the synthesizer prompt.
 # v3b = experimental rewrite of round 1 and rounds 2+ (docs/prompt-review-2026-10.md R1, R2); v3c = v3b plus the
@@ -290,6 +295,11 @@ decision_round() {
     '{round:$r, providers:$prov} + (if $c then {basis:$c.basis, converged:$c.converged} else {} end)' >> "$work_dir/decision-rounds.jsonl"
 }
 
+# True when a provider's stderr shows a failure worth retrying: an HTTP 429/500/502/503/504 or a curl timeout (exit 28).
+provider_failure_transient() {
+  grep -qE 'HTTP (429|500|502|503|504)\b|curl exit (28|52|56)\b|timed out|Operation timed out' "$1" 2>/dev/null
+}
+
 declare -A LAST_ANSWER
 converged=0
 converged_at_round=0
@@ -330,8 +340,21 @@ for ((round = 1; round <= DEBATE_ROUNDS; round++)); do
     } > "$prompt_file"
     (
       set +e
-      "$PROVIDERS_DIR/$provider" "$prompt_file" > "$out_file" 2>"$work_dir/round${round}-${provider}.stderr"
-      echo $? > "$status_file"
+      attempt=0
+      while :; do
+        "$PROVIDERS_DIR/$provider" "$prompt_file" > "$out_file" 2>"$work_dir/round${round}-${provider}.stderr"
+        rc=$?
+        # A transient vendor failure (HTTP 429/500/502/503/504, a timeout) is retried a bounded number of times so one busy
+        # moment does not drop a model from the debate. Nothing else is retried: a refused key or a bad request will not improve.
+        if (( rc != 0 && attempt < DEBATE_PROVIDER_RETRIES )) && provider_failure_transient "$work_dir/round${round}-${provider}.stderr"; then
+          attempt=$((attempt + 1))
+          echo "note: $provider failed transiently in round $round, retry $attempt of $DEBATE_PROVIDER_RETRIES" >&2
+          sleep $(( DEBATE_PROVIDER_RETRY_DELAY * attempt ))
+          continue
+        fi
+        break
+      done
+      echo $rc > "$status_file"
     ) &
     pids+=($!)
   done
