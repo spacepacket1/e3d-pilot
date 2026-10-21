@@ -38,6 +38,7 @@ import { createOutbox, outboxStatus, outboxExport, outboxRetryDead } from '../li
 import { createMetering, createReadiness, modelsFromTranscript, orphanPolicy } from '../lib/mcp/metering.js';
 import { createRuns, validateRunsConfig } from '../lib/mcp/runs.js';
 import { startRunServer, validateRunServerConfig } from '../lib/mcp/run-server.js';
+import { validatePanelConfig, createPanelClient, checkFamilies, requireFamilies, degrade, explicitPanel, familiesOf } from '../lib/mcp/panel.js';
 
 const HTTP_MODE = process.argv.includes('--http');
 // External auth and metering hook (docs/external-auth.md): hosted --http mode only.
@@ -108,6 +109,7 @@ function renderDebate(d) {
   ];
   for (const w of d.warnings ?? []) lines.push(`**WARNING:** ${w}`, '');
   if (d.models?.length) lines.push(`_Models that answered: ${d.models.map((m) => `${m.provider} = ${m.model}`).join('; ')}_`, '');
+  if (d.panel?.dropped?.length) lines.push(`_Not available for this debate, so not asked: ${d.panel.dropped.join(', ')} (the rest of the panel answered; ${d.panel.synthesizer} wrote the summary)._`, '');
   if (d.dissent.present === false) lines.push('**Dissent:** none', '');
   else lines.push(`**Dissent (report this to the user, do not drop it when summarizing):** ${d.dissent.summary}`, '');
   if (d.positions.length) {
@@ -118,9 +120,32 @@ function renderDebate(d) {
   return lines.join('\n');
 }
 
+// The hosted allowlist and the per-account panel (lib/mcp/panel.js; pilot.e3d.ai docs/panel-config-spec.md 4.3), read once.
+const PANEL_CONFIG = validatePanelConfig(process.env);
+let panelClient = null; // billing's panel resolve client, with E3D_MCP_PANEL=1 once the external hook is running
+
+// Test hook, only with E3D_MCP_DEBATE_BIN (a stub debate binary, which skips the real provider check): the providers named in
+// E3D_MCP_STUB_UNAVAILABLE_FILE, re-read for every plan, count as unavailable.
+function stubUnavailable() {
+  const f = process.env.E3D_MCP_STUB_UNAVAILABLE_FILE;
+  if (!f) return new Set();
+  try { return new Set(readFileSync(f, 'utf8').split(/[\s,]+/).filter(Boolean)); } catch { return new Set(); }
+}
+
+// Who writes the final summary: always a provider of the debate (never the claude CLI just because it is installed). Hosted:
+// the first provider of the effective panel. Local: the client's own model when it takes part, else claude when it takes
+// part, else the first provider. Always passed to e3d-debate explicitly.
+function chooseSynthesizer(providers, samplingOn) {
+  if (HTTP_MODE) return providers[0];
+  if (samplingOn && providers.includes('mcp-sampling')) return 'mcp-sampling';
+  return providers.includes('claude') ? 'claude' : providers[0];
+}
+
 // Validates and resolves the arguments shared by e3d_debate and e3d_debate_start. Returns { error } or the plan.
-// clamp (customer async runs only): caller values are lowered to these maxima instead of refused.
-async function planDebate(args, ctx, { clamp = null } = {}) {
+// clamp (customer async runs only): rounds and max_words are lowered to these maxima; a longer provider list is refused, never
+// truncated. web: the request came from the internal run listener (billing's stored panel, no principal yet).
+// With E3D_MCP_PANEL=1 a hosted tool call first asks billing for the account's panel (before anything is reserved).
+async function planDebate(args, ctx, { clamp = null, web = false } = {}) {
   const question = typeof args.question === 'string' ? args.question.trim() : '';
   if (!question) return { error: 'error: `question` is required' };
   if (question.length > LIMITS.questionChars) return { error: `error: question exceeds ${LIMITS.questionChars} characters` };
@@ -138,32 +163,75 @@ async function planDebate(args, ctx, { clamp = null } = {}) {
   const stubbed = Boolean(process.env.E3D_MCP_DEBATE_BIN);
   const known = stubbed ? [] : await configuredProviders();
   const samplingOn = sampling.available(ctx?.session);
+  const stubDown = stubbed ? stubUnavailable() : null;
+  const isAvailable = (p) => (isSampling(p) ? samplingOn : stubbed ? !stubDown.has(p) : known.some((k) => k.name === p && k.available));
+  const allowed = PANEL_CONFIG.allowed;
+  const max = clamp ? Math.min(clamp.providers, LIMITS.providers) : LIMITS.providers;
   let providers = args.providers;
-  let synthesizer;
+  if (providers !== undefined) {
+    if (!Array.isArray(providers) || providers.some((p) => typeof p !== 'string' || !NAME_RE.test(p))) return { error: 'error: providers must be an array of provider names' };
+    providers = [...new Set(providers)];
+  }
   let selection = 'explicit';
   let selectionNote = 'chosen by the caller';
-  if (providers === undefined) {
-    if (stubbed) { providers = ['claude', 'codex']; selection = 'auto'; selectionNote = 'test stub'; }
-    else {
-      // Default: the client's own models (MCP sampling, e.g. Copilot) plus any model CLIs detected here.
-      const pick = chooseVoices({ known, samplingOn });
-      ({ providers, synthesizer, selection } = pick);
-      selectionNote = pick.note;
+  let panel = null; // { source, requested, used, dropped } with the per-account panel on
+  const pinned = () => {
+    if (stubbed) return { providers: (process.env.E3D_MCP_PROVIDERS ? chooseVoices({ known, samplingOn: false }).providers : ['claude', 'codex']), selection: 'auto', note: 'test stub' };
+    // Default: the client's own models (MCP sampling, e.g. Copilot) plus any model CLIs detected here; hosted: the pinned list.
+    const pick = chooseVoices({ known, samplingOn });
+    return { providers: pick.providers, selection: pick.selection, note: pick.note };
+  };
+
+  if (panelClient && web) {
+    // A run-listener list is the account's panel as billing stored it at creation (an older billing sends none: the default).
+    const requested = providers ?? pinned().providers;
+    const d = degrade(requested, { allowed, isAvailable, max });
+    if (d.error) return d;
+    providers = d.providers; selection = 'pinned'; selectionNote = 'the debate panel of the account';
+    panel = { source: args.providers === undefined ? 'default' : 'account', requested, used: providers, dropped: d.dropped };
+  } else if (panelClient && !web) {
+    // Every hosted debate, with or without explicit providers: the account's panel from billing, never cached, never a default.
+    const r = await panelClient.resolve(ctx?.principal);
+    if (!r.ok) return { error: 'error: temporarily unavailable; retry (the debate panel could not be read; nothing was charged)', code: 'unavailable' };
+    const mismatch = checkFamilies(r, log);
+    if (mismatch) return mismatch;
+    const accountIds = r.providers.map((p) => p.id);
+    if (providers === undefined) {
+      const d = degrade(accountIds, { allowed, isAvailable, max });
+      if (d.error) return d;
+      providers = d.providers; selection = 'pinned';
+      selectionNote = r.source === 'account' ? "your account's debate panel" : 'the default debate panel';
+      panel = { source: r.source, requested: accountIds, used: providers, dropped: d.dropped };
+    } else {
+      // A client's list may narrow the account's panel, never add to it (tool arguments are not consent).
+      const e = explicitPanel(providers, { allowed, accountIds, isAvailable, max });
+      if (e.error) return e;
+      panel = { source: 'explicit', requested: providers, used: providers, dropped: [] };
+    }
+  } else {
+    if (providers === undefined) {
+      const pick = pinned();
+      ({ providers } = pick); selection = pick.selection; selectionNote = pick.note;
+    }
+    // The hosted allowlist binds every debate whenever it is set (sampling voices are never in it).
+    const notAllowed = allowed ? providers.filter((p) => !allowed.includes(p)) : [];
+    if (notAllowed.length) return { error: `error: provider_not_allowed: provider(s) not offered on this server: ${notAllowed.join(', ')} (call e3d_list_providers). Nothing was charged.` };
+    if (providers.length < 2) return { error: 'error: need at least 2 available providers to debate (call e3d_list_providers); only found: ' + (providers.join(', ') || 'none') };
+    if (providers.length > max) return { error: clamp && max < LIMITS.providers ? `error: at most ${max} providers per debate on this server. Nothing was charged.` : `error: at most ${LIMITS.providers} providers per debate` };
+    const unavailable = providers.filter((p) => !isAvailable(p));
+    if (unavailable.length) {
+      const sampled = unavailable.filter(isSampling);
+      return { error: `error: provider(s) not available here: ${unavailable.join(', ')}${sampled.length ? ' (mcp-sampling needs an MCP client that supports sampling, such as Copilot in VS Code)' : ''}` };
     }
   }
-  if (!Array.isArray(providers) || providers.some((p) => typeof p !== 'string' || !NAME_RE.test(p))) return { error: 'error: providers must be an array of provider names' };
-  providers = [...new Set(providers)];
-  if (clamp) providers = providers.slice(0, clamp.providers);
-  if (providers.length < 2) return { error: 'error: need at least 2 available providers to debate (call e3d_list_providers); only found: ' + (providers.join(', ') || 'none') };
-  if (providers.length > LIMITS.providers) return { error: `error: at most ${LIMITS.providers} providers per debate` };
-  const unavailable = stubbed ? [] : providers.filter((p) => (isSampling(p) ? !samplingOn : !known.find((k) => k.name === p && k.available)));
-  if (unavailable.length) {
-    const sampled = unavailable.filter(isSampling);
-    return { error: `error: provider(s) not available here: ${unavailable.join(', ')}${sampled.length ? ' (mcp-sampling needs an MCP client that supports sampling, such as Copilot in VS Code)' : ''}` };
+  if (panelClient) {
+    // Two vendors of one company are not independent opinions: refused before anything is reserved.
+    const f = requireFamilies(providers);
+    if (f) return f;
   }
-  const claudeUp = stubbed || known.some((k) => k.name === 'claude' && k.available);
-  if (synthesizer === undefined) synthesizer = samplingOn && providers.includes('mcp-sampling') ? 'mcp-sampling' : (claudeUp ? 'claude' : providers[0]);
-  return { question, mode, rounds, maxWords, providers, synthesizer, selection, selectionNote };
+  const synthesizer = chooseSynthesizer(providers, samplingOn);
+  if (panel) panel = { ...panel, families: familiesOf(providers), synthesizer };
+  return { question, mode, rounds, maxWords, providers, synthesizer, selection, selectionNote, ...(panel ? { panel } : {}) };
 }
 
 // The tool error for a refused metering.begin().
@@ -192,7 +260,7 @@ async function executeDebate(plan, handle, ctx, { progress, onStarted, signal } 
     const qfile = join(dir, 'question.md');
     await writeFile(qfile, question);
     const cliArgs = ['--question-file', qfile, '--providers', providers.join(','), '--rounds', String(rounds),
-      '--max-words', String(maxWords), '--out-dir', join(dir, 'out'), ...(synthesizer !== 'claude' ? ['--synthesizer', synthesizer] : [])];
+      '--max-words', String(maxWords), '--out-dir', join(dir, 'out'), '--synthesizer', synthesizer];
     let step = 0;
     const tag = `debate-${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 8)}`;
     const usesSampling = providers.some(isSampling) || isSampling(synthesizer);
@@ -253,7 +321,7 @@ async function executeDebate(plan, handle, ctx, { progress, onStarted, signal } 
 async function toolDebate(args, progress, ctx) {
   const plan = await planDebate(args, ctx);
   if (plan.error) return text(plan.error, true);
-  const { question, mode, rounds, maxWords, providers, synthesizer, selection, selectionNote } = plan;
+  const { question, mode, rounds, maxWords, providers, synthesizer, selection, selectionNote, panel } = plan;
 
   // Refuse BEFORE spending if the worst case for this request would break today's cap.
   const principal = ctx?.principal ?? 'local';
@@ -281,6 +349,7 @@ async function toolDebate(args, progress, ctx) {
     ...(samplingModels.length ? { models: samplingModels } : {}),
     independent: indep.independent, warnings: indep.warnings,
     ...(indep.families.length ? { families: indep.families } : {}),
+    ...(panel ? { panel } : {}),
     usage: { model_calls: spent.calls, est_input_tokens: spent.inTokens, est_output_tokens: spent.outTokens, estimate: true },
     budget,
     ...(billing ? { billing } : {}),
@@ -362,16 +431,36 @@ async function toolDebateResult(args, _progress, ctx) {
   return { content: [{ type: 'text', text: renderStored(d) }], structuredContent: out };
 }
 
+// e3d_list_providers spends nothing, so its panel lookup may be cached briefly (30 s per principal); a debate never uses it.
+const listPanelCache = new Map();
+async function accountPanelLine(principal) {
+  const hit = listPanelCache.get(principal);
+  if (hit && hit.until > Date.now()) return hit.line;
+  const r = await panelClient.resolve(principal);
+  const line = r.ok ? `Your account's panel: ${r.providers.map((p) => p.id).join(', ') || 'none'} (${r.source === 'account' ? 'your choice' : 'the default'}; change it in Settings > Debate panel)`
+    : "Your account's panel: could not be read right now; debates are refused until it can be.";
+  if (r.ok) {
+    listPanelCache.set(principal, { line, until: Date.now() + 30000 });
+    while (listPanelCache.size > 1000) listPanelCache.delete(listPanelCache.keys().next().value);
+  }
+  return line;
+}
+
 async function toolListProviders(_args, _progress, ctx) {
   const known = await configuredProviders();
   const samplingOn = sampling.available(ctx?.session);
-  const lines = known.map(providerLine);
-  if (samplingOn) {
+  const allowed = PANEL_CONFIG.allowed;
+  // With the hosted allowlist, only the providers this server offers are listed (sampling voices never are).
+  const lines = (allowed ? known.filter((k) => allowed.includes(k.name)) : known).map(providerLine);
+  if (samplingOn && !allowed) {
     lines.push("mcp-sampling: available (this client's own models via MCP sampling, e.g. Copilot in VS Code)");
     lines.push('mcp-sampling-b: available (a second model family from the same client, if it allows one)');
   }
-  const pick = chooseVoices({ known, samplingOn });
-  lines.push('', `Default voices for e3d_debate: ${pick.providers.join(', ') || 'none'} (${pick.note})`);
+  if (panelClient && ctx?.principal) lines.push('', await accountPanelLine(ctx.principal));
+  else {
+    const pick = chooseVoices({ known, samplingOn });
+    lines.push('', `Default voices for e3d_debate: ${pick.providers.join(', ') || 'none'} (${pick.note})`);
+  }
   return text(lines.join('\n') || 'no providers found');
 }
 
@@ -674,6 +763,14 @@ if (process.argv.includes('--print-config')) {
   process.exit(0);
 }
 
+if (!PANEL_CONFIG.ok) {
+  process.stderr.write(`[e3d-mcp] refusing to start: ${PANEL_CONFIG.errors.join('; ')}\n`);
+  process.exit(2);
+}
+if (PANEL_CONFIG.panel && !HTTP_MODE) {
+  process.stderr.write('[e3d-mcp] E3D_MCP_PANEL is only supported in hosted mode (--http) with E3D_MCP_AUTH_URL; unset it for stdio.\n');
+  process.exit(2);
+}
 if (AUTH_HOOK && !HTTP_MODE) {
   process.stderr.write('[e3d-mcp] E3D_MCP_AUTH_URL is only supported in hosted mode (--http); unset it for stdio.\n');
   process.exit(2);
@@ -698,7 +795,7 @@ async function runAsyncDebate({ plan, handle, principal, onStarted, progress, si
 // A web run's plan: the same validation and customer maxima as e3d_debate_start; no client, so no sampling.
 async function planWebRun(fields) {
   const ctx = { session: { clientInfo: null, capabilities: {}, rootsReady: null }, principal: null };
-  const plan = await planDebate({ question: fields.question, providers: fields.providers, rounds: fields.rounds, max_words: fields.max_words }, ctx, { clamp: runsConfig.customer });
+  const plan = await planDebate({ question: fields.question, providers: fields.providers, rounds: fields.rounds, max_words: fields.max_words }, ctx, { clamp: runsConfig.customer, web: true });
   if (plan.error) return plan;
   return { plan, worst: worstCase({ providers: plan.providers.length, rounds: plan.rounds, maxWords: plan.maxWords, questionChars: plan.question.length }) };
 }
@@ -713,6 +810,8 @@ async function startAuthHook() {
   if (errors.length) throw new Error(`external auth hook: refusing to start: ${errors.join('; ')}`);
   if (process.env.E3D_MCP_AUTH_TOKENS) log('warning: E3D_MCP_AUTH_TOKENS is ignored because E3D_MCP_AUTH_URL is set (keys are checked by the auth service)');
   const external = createExternalAuth({ log });
+  // E3D_MCP_PANEL=1: every hosted debate asks billing for the account's panel first (refused on any failure).
+  if (PANEL_CONFIG.panel) panelClient = createPanelClient({ log });
   const outbox = createOutbox({ dir: usage.dir, auth: external, log });
   external.attachOutbox(outbox);
   metering = createMetering({ localUsage: usage, external, outbox, log, dir: usage.dir });
@@ -763,7 +862,7 @@ if (HTTP_MODE) {
   const stop = async () => { if (stopping) return; stopping = true; log('shutting down'); setTimeout(() => process.exit(0), 10000).unref(); hook?.readiness.stop(); hook?.outbox.stop(); runs?.stop(); await runServer?.close(); await server.close(); await sampling.stop(); process.exit(0); };
   process.on('SIGTERM', stop);
   process.on('SIGINT', stop);
-  log(`ready (hosted; limits: ${JSON.stringify(LIMITS)})`);
+  log(`ready (hosted; limits: ${JSON.stringify(LIMITS)}; allowed providers: ${PANEL_CONFIG.allowed ? PANEL_CONFIG.allowed.join(',') : 'any available'}; account panels: ${panelClient ? 'on' : 'off'})`);
 } else {
   const rl = createInterface({ input: process.stdin });
   const pending = new Set();

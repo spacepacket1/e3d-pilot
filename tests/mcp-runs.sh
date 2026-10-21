@@ -166,9 +166,14 @@ dresult R1 "$TOK_B" "$SB" "$ID" > /dev/null; assert_eq "$(ledger | jq '.received
 assert_eq "$(rtext "$(dresult R1 "$TOK_A" "$SA" "../../etc/passwd")")" "$unknown" "malformed ids are not_found"
 echo "ok - another principal gets not_found, identical to an unknown id, including through the service fallback (negative-cached)"
 
-# --- customer maxima clamp caller arguments (defaults: 2 rounds, 300 words, 3 providers) ---
+# --- customer maxima (defaults: 2 rounds, 300 words, 3 providers): rounds and words are clamped; a longer provider list is
+# refused before anything is reserved, never truncated (a truncated list would drop a vendor the caller asked for) ---
 echo ok > "$MODE"; : > "$ARGS"
+n0="$(n_res)"
 r="$(dstart R1 "$TOK_A" "$SA" "$(jq -nc --arg q "$Q" '{question:$q,mode:"thorough",rounds:3,max_words:600,providers:["claude","codex","gemini","grok"]}')")"
+assert_eq "$(rerr "$r")" "true" "four providers are refused, not truncated"; assert_contains "$(rtext "$r")" "at most 3 providers per debate"
+assert_eq "$(n_res)" "$n0" "nothing reserved for a refused list"; assert_eq "$(wc -c < "$ARGS" | tr -d ' ')" "0" "nothing ran"
+r="$(dstart R1 "$TOK_A" "$SA" "$(jq -nc --arg q "$Q" '{question:$q,mode:"thorough",rounds:3,max_words:600,providers:["claude","codex","gemini"]}')")"
 assert_eq "$(rerr "$r")" "false" "clamped, not refused: $(rtext "$r")"; wait_status R1 "$TOK_A" "$SA" "$(res "$r" | jq -r .debate_id)" done
 a="$(tail -1 "$ARGS")"; assert_contains "$a" "--rounds 2"; assert_contains "$a" "--max-words 300"; assert_contains "$a" "--providers claude,codex,gemini "
 : > "$ARGS"
@@ -180,7 +185,7 @@ r="$(tool R1 "$TOK_A" "$SA" e3d_debate "$(jq -nc --arg q "$Q" '{question:$q,roun
 assert_eq "$(rerr "$r")" "false"; a="$(tail -1 "$ARGS")"; assert_contains "$a" "--rounds 3"; assert_contains "$a" "--max-words 600"; assert_contains "$a" "--providers claude,codex,gemini,grok "
 sc="$(res "$r")"; assert_contains "$(jq -r .final_answer <<< "$sc")" "ACONTENT-$MARK"; assert_eq "$(jq -r '.dissent.summary' <<< "$sc")" "Codex prefers SQLite."
 assert_eq "$(jq -r '[.mode, .rounds_requested, .billing.stored] | join(",")' <<< "$sc")" "quick,3,true" "e3d_debate unchanged (finalized)"
-echo "ok - customer maxima clamp async arguments; the synchronous e3d_debate is unchanged"
+echo "ok - customer maxima clamp async rounds and words and refuse a longer provider list; the synchronous e3d_debate is unchanged"
 
 # --- a reserve refusal leaves no run and holds nothing ---
 SBR="$(sid_of R1 "$TOK_BROKE")"; runs0="$(runs_in R1)"
