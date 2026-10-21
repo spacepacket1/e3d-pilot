@@ -221,9 +221,10 @@
     "annotations": {
       "openWorldHint": false,
       "readOnlyHint": true,
-      "title": "List debate providers"
+      "title": "List debate providers",
+      "destructiveHint": false
     },
-    "description": "List the model providers configured on this machine and whether each is available to join a debate.",
+    "description": "List the model providers this server can use and whether each is available to join a debate. Free.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {},

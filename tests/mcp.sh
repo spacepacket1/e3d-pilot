@@ -105,6 +105,8 @@ r="$(call_debate garbled '{"question":"q"}')"
 # read-only; it deletes nothing, so destructiveHint must be an explicit false (the MCP default for a non-read-only tool is true).
 tools_json="$(printf '%s\n' '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' | "$SERVER" 2>/dev/null)"
 [[ "$(jq -r '.result.tools[] | select(.name=="e3d_debate") | [.annotations.readOnlyHint, .annotations.destructiveHint, .annotations.openWorldHint, .annotations.idempotentHint] | map(tostring) | join(",")' <<< "$tools_json")" == "false,false,true,false" ]] || fail "e3d_debate annotations: not read-only, not destructive, open world, not idempotent"
+[[ "$(jq -r '[.result.tools[] | select(.name=="e3d_list_providers" or .name=="e3d_usage" or .name=="e3d_debate_status" or .name=="e3d_debate_result") | select((.annotations.destructiveHint | type) != "boolean") | .name] | join(",")' <<< "$tools_json")" == "" ]] || fail "the hosted read-only tools must declare destructiveHint false explicitly"
+[[ "$(jq -r '.result.tools[] | select(.name=="e3d_list_providers") | .description | test("this machine")' <<< "$tools_json")" == "false" ]] || fail "e3d_list_providers must not describe itself as local to a machine"
 [[ "$(jq -r '[.result.tools[] | select(.annotations.readOnlyHint == false) | select((.annotations.destructiveHint | type) != "boolean") | .name] | join(",")' <<< "$tools_json")" == "" ]] || fail "every non-read-only tool must declare destructiveHint explicitly"
 
 # ---- housekeeping: print-config matches README, provider wording, doctor ending, redaction ----
