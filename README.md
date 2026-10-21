@@ -587,8 +587,8 @@ Existing open e3d-pilot PRs should be adopted only through an explicit adoption 
 
 Built-in adapters are `claude`, `codex`, `local`, `devin`, `grok-build`, the
 opt-in `gemini` trial adapter, two cloud adapters, `bedrock` and
-`azure-openai`, and two direct API adapters, `anthropic-api` and `openai-api`
-(no CLI needed, for servers and containers); check them with `e3d-pilot providers list`.
+`azure-openai`, and four direct API adapters, `anthropic-api`, `openai-api`,
+`gemini-api` and `xai-api` (no CLI needed, for servers and containers); check them with `e3d-pilot providers list`.
 `grok-build` is selected the same way as the others: name it in `providers.*`.
 It is available when the `grok` binary is on `PATH` (override with
 `GROK_BUILD_BIN`).
@@ -678,9 +678,15 @@ export ANTHROPIC_API_KEY=...        # or ANTHROPIC_API_KEY_FILE=/path/to/file (t
 export ANTHROPIC_API_MODEL=claude-sonnet-5-5    # optional; this is the default
 export OPENAI_API_KEY=...           # or OPENAI_API_KEY_FILE=...
 export OPENAI_API_MODEL=...         # required: there is deliberately no default, because model names change
+export GEMINI_API_KEY=...           # or GEMINI_API_KEY_FILE=...   (gemini-api: Google Gemini)
+export GEMINI_API_MODEL=...         # required, no default
+export XAI_API_KEY=...              # or XAI_API_KEY_FILE=...      (xai-api: xAI Grok)
+export XAI_API_MODEL=...            # required, no default
 ```
 
-Keys are sent from a mode-0600 header file, never on the command line, and are never printed or sent by `providers list` (it only checks that the key is set and the API is reachable). Optional: `ANTHROPIC_API_MAX_TOKENS` (4096), `OPENAI_API_MAX_TOKENS`, `ANTHROPIC_API_BASE_URL` / `OPENAI_API_BASE_URL` (any compatible endpoint), and the usual `E3D_PILOT_PROVIDER_TOKEN_LIMIT` ceiling. These calls are billed to the key's owner.
+`gemini-api` and `xai-api` use each vendor's OpenAI-compatible chat-completions endpoint (`GEMINI_API_BASE_URL` default `https://generativelanguage.googleapis.com/v1beta/openai`, `XAI_API_BASE_URL` default `https://api.x.ai/v1`) with a Bearer key. `gemini-api` is separate from the `gemini` CLI trial adapter. With all four, a debate counts four vendor families (Anthropic, OpenAI, Google, xAI).
+
+Keys are sent from a mode-0600 header file, never on the command line, and are never printed or sent by `providers list` (it only checks that the key is set and the API is reachable). Optional: `ANTHROPIC_API_MAX_TOKENS` (4096), `OPENAI_API_MAX_TOKENS`, `GEMINI_API_MAX_TOKENS`, `XAI_API_MAX_TOKENS` (the last three are sent as `max_tokens`), `ANTHROPIC_API_BASE_URL` / `OPENAI_API_BASE_URL` / `GEMINI_API_BASE_URL` / `XAI_API_BASE_URL` (any compatible endpoint), and the usual `E3D_PILOT_PROVIDER_TOKEN_LIMIT` ceiling. These calls are billed to the key's owner.
 
 **local** — calls an OpenAI-compatible endpoint. Useful for a self-hosted model (e.g. Qwen via Ollama) as a third negotiate reviewer:
 

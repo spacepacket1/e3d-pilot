@@ -6,6 +6,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ANTH="$ROOT/lib/providers/anthropic-api"
 OAI="$ROOT/lib/providers/openai-api"
+XAI="$ROOT/lib/providers/xai-api"
+GEM="$ROOT/lib/providers/gemini-api"
 TMP="$(mktemp -d)"
 SERVER_PID=""
 trap '[[ -n "$SERVER_PID" ]] && kill "$SERVER_PID" 2>/dev/null || true; rm -rf "$TMP"' EXIT
@@ -17,11 +19,13 @@ assert_not_contains() { [[ "$1" != *"$2"* ]] || fail "${3:-assert_not_contains}:
 
 AKEY="sk-ant-SECRETKEY-1234567890abcdef"
 OKEY="sk-oai-SECRETKEY-1234567890abcdef"
+XKEY="xai-SECRETKEY-1234567890abcdef"
+GKEY="AIza-SECRETKEY-1234567890abcdef"
 printf 'What is 2+2?\n' > "$TMP/prompt.md"
 
 # ---------------- registration ----------------
 list="$("$ROOT/bin/e3d-pilot" providers list)"
-assert_contains "$list" "anthropic-api"; assert_contains "$list" "openai-api"
+assert_contains "$list" "anthropic-api"; assert_contains "$list" "openai-api"; assert_contains "$list" "xai-api"; assert_contains "$list" "gemini-api"
 grep -q "'anthropic-api', 'openai-api'" "$ROOT/lib/mcp/voices.js" || fail "voices.js CLI_ORDER must list the API providers"
 
 # ---------------- fake server: both APIs ----------------
@@ -46,7 +50,8 @@ const srv = http.createServer((req, res) => {
       if (model === 'blocks') return send(200, { model: 'claude-blocks', content: [{ type: 'thinking', thinking: 'hmm' }, { type: 'text', text: 'Four' }, { type: 'text', text: ', obviously.' }], usage: { input_tokens: 7, output_tokens: 3 } });
       return send(200, { model: parsed.model, content: [{ type: 'text', text: answer }], usage: { input_tokens: 7, output_tokens: 2 } });
     }
-    if (req.url === '/v1/chat/completions') {
+    if (req.url === '/v1/chat/completions' || req.url === '/v1beta/openai/chat/completions') {
+      if (model === 'ratelimited' && req.url.startsWith('/v1beta')) return send(429, [{ error: { message: 'Rate limit exceeded, retry later' } }]);
       if (model === 'ratelimited') return send(429, { error: { message: 'Rate limit exceeded, retry later' } });
       if (model === 'empty') return send(200, { choices: [{ message: { content: '' } }], usage: { total_tokens: 1 } });
       if (model === 'huge') return send(200, { choices: [{ message: { content: 'x' } }], usage: { total_tokens: 900000 } });
@@ -65,6 +70,8 @@ PORT="$(cat "$TMP/port")"; [[ -n "$PORT" ]] || fail "fake API server did not sta
 BASE="http://127.0.0.1:$PORT"
 A() { env -u ANTHROPIC_API_KEY -u ANTHROPIC_API_KEY_FILE -u ANTHROPIC_API_MODEL -u ANTHROPIC_API_MAX_TOKENS ANTHROPIC_API_BASE_URL="$BASE" "$@"; }
 O() { env -u OPENAI_API_KEY -u OPENAI_API_KEY_FILE -u OPENAI_API_MODEL -u OPENAI_API_MAX_TOKENS OPENAI_API_BASE_URL="$BASE/v1" "$@"; }
+X() { env -u XAI_API_KEY -u XAI_API_KEY_FILE -u XAI_API_MODEL -u XAI_API_MAX_TOKENS XAI_API_BASE_URL="$BASE/v1" "$@"; }
+G() { env -u GEMINI_API_KEY -u GEMINI_API_KEY_FILE -u GEMINI_API_MODEL -u GEMINI_API_MAX_TOKENS GEMINI_API_BASE_URL="$BASE/v1beta/openai" "$@"; }
 lastreq() { tail -1 "$TMP/api.log"; }
 
 # ================= anthropic-api =================
@@ -140,6 +147,63 @@ out="$(O OPENAI_API_KEY="$OKEY" OPENAI_API_MODEL=empty "$OAI" "$TMP/prompt.md" 2
 out="$(O OPENAI_API_KEY="$OKEY" OPENAI_API_MODEL=huge "$OAI" "$TMP/prompt.md" 2>&1)" && fail "ceiling must fail"; assert_contains "$out" "token ceiling exceeded (900000 > 200000)"
 out="$(O E3D_PILOT_DRY_RUN=1 OPENAI_API_KEY="$OKEY" OPENAI_API_MODEL=m "$OAI" "$TMP/prompt.md")"; assert_contains "$out" "redacted"; assert_not_contains "$out" "$OKEY"
 ls "${TMPDIR:-/tmp}" 2>/dev/null | grep -qE '^e3d-pilot-(anthropic|openai)\.' && fail "temp dirs holding the key header must be removed"
+
+
+# ================= xai-api =================
+out="$(X E3D_PILOT_CHECK=1 "$XAI" 2>&1)" && fail "no key must be unavailable"; assert_contains "$out" "XAI_API_KEY"
+out="$(X E3D_PILOT_CHECK=1 XAI_API_KEY="$XKEY" "$XAI" 2>&1)" && fail "no model must be unavailable (there is no default)"; assert_contains "$out" "XAI_API_MODEL"
+out="$(X E3D_PILOT_CHECK=1 XAI_API_BASE_URL="http://127.0.0.1:1" XAI_API_KEY="$XKEY" XAI_API_MODEL=m "$XAI" 2>&1)" && fail "closed port must be unavailable"; assert_contains "$out" "not reachable"
+out="$(X E3D_PILOT_CHECK=1 XAI_API_KEY="$XKEY" XAI_API_MODEL=test-model "$XAI" 2>&1)"; assert_contains "$out" "available (test-model)"; assert_not_contains "$out" "$XKEY"
+: > "$TMP/api.log"
+stdout="$(X XAI_API_KEY="$XKEY" XAI_API_MODEL=test-model "$XAI" "$TMP/prompt.md" 2> "$TMP/e.err")"
+assert_eq "$stdout" "Four."
+req="$(lastreq)"
+assert_eq "$(jq -r .url <<< "$req")" "/v1/chat/completions"
+assert_eq "$(jq -r .auth <<< "$req")" "Bearer $XKEY" "bearer auth"
+assert_eq "$(jq -r '.body | fromjson | .model' <<< "$req")" "test-model"
+assert_eq "$(jq -r '.body | fromjson | has("max_tokens")' <<< "$req")" "false" "no token cap unless asked"
+assert_eq "$(jq -r '.body | fromjson | .messages[0].content' <<< "$req")" "$(cat "$TMP/prompt.md")"
+assert_not_contains "$stdout$(cat "$TMP/e.err")" "$XKEY"
+assert_contains "$(cat "$TMP/e.err")" 'e3d_provider_usage={"provider":"xai-api","model":"test-model","tokens":9'
+X XAI_API_KEY="$XKEY" XAI_API_MODEL=test-model XAI_API_MAX_TOKENS=64 "$XAI" "$TMP/prompt.md" >/dev/null 2>&1
+assert_eq "$(lastreq | jq -r '.body | fromjson | .max_tokens')" "64"
+printf 'export XAI_API_KEY=%s\n' "$XKEY" > "$TMP/key-xai"
+X XAI_API_KEY_FILE="$TMP/key-xai" XAI_API_MODEL=test-model "$XAI" "$TMP/prompt.md" >/dev/null 2>&1
+assert_eq "$(lastreq | jq -r .auth)" "Bearer $XKEY" "XAI_API_KEY_FILE with an export line"
+out="$(X XAI_API_KEY="$XKEY" XAI_API_MODEL=ratelimited "$XAI" "$TMP/prompt.md" 2>&1)" && fail "429 must fail"; assert_contains "$out" "HTTP 429: Rate limit exceeded"; assert_not_contains "$out" "$XKEY"
+out="$(X XAI_API_KEY="$XKEY" XAI_API_MODEL=empty "$XAI" "$TMP/prompt.md" 2>&1)" && fail "empty must fail"; assert_contains "$out" "no message content"
+out="$(X XAI_API_KEY="$XKEY" XAI_API_MODEL=huge "$XAI" "$TMP/prompt.md" 2>&1)" && fail "ceiling must fail"; assert_contains "$out" "token ceiling exceeded (900000 > 200000)"
+out="$(X E3D_PILOT_DRY_RUN=1 XAI_API_KEY="$XKEY" XAI_API_MODEL=m "$XAI" "$TMP/prompt.md")"; assert_contains "$out" "redacted"; assert_not_contains "$out" "$XKEY"
+out="$(X XAI_API_KEY="$XKEY" XAI_API_MODEL=m "$XAI" "$TMP/nope.md" 2>&1)" && fail "missing prompt file must fail"
+
+# ================= gemini-api =================
+out="$(G E3D_PILOT_CHECK=1 "$GEM" 2>&1)" && fail "no key must be unavailable"; assert_contains "$out" "GEMINI_API_KEY"
+out="$(G E3D_PILOT_CHECK=1 GEMINI_API_KEY="$GKEY" "$GEM" 2>&1)" && fail "no model must be unavailable (there is no default)"; assert_contains "$out" "GEMINI_API_MODEL"
+out="$(G E3D_PILOT_CHECK=1 GEMINI_API_BASE_URL="http://127.0.0.1:1" GEMINI_API_KEY="$GKEY" GEMINI_API_MODEL=m "$GEM" 2>&1)" && fail "closed port must be unavailable"; assert_contains "$out" "not reachable"
+out="$(G E3D_PILOT_CHECK=1 GEMINI_API_KEY="$GKEY" GEMINI_API_MODEL=test-model "$GEM" 2>&1)"; assert_contains "$out" "available (test-model)"; assert_not_contains "$out" "$GKEY"
+: > "$TMP/api.log"
+stdout="$(G GEMINI_API_KEY="$GKEY" GEMINI_API_MODEL=test-model "$GEM" "$TMP/prompt.md" 2> "$TMP/e.err")"
+assert_eq "$stdout" "Four."
+req="$(lastreq)"
+assert_eq "$(jq -r .url <<< "$req")" "/v1beta/openai/chat/completions"
+assert_eq "$(jq -r .auth <<< "$req")" "Bearer $GKEY" "bearer auth"
+assert_eq "$(jq -r '.body | fromjson | .model' <<< "$req")" "test-model"
+assert_eq "$(jq -r '.body | fromjson | has("max_tokens")' <<< "$req")" "false" "no token cap unless asked"
+assert_eq "$(jq -r '.body | fromjson | .messages[0].content' <<< "$req")" "$(cat "$TMP/prompt.md")"
+assert_not_contains "$stdout$(cat "$TMP/e.err")" "$GKEY"
+assert_contains "$(cat "$TMP/e.err")" 'e3d_provider_usage={"provider":"gemini-api","model":"test-model","tokens":9'
+G GEMINI_API_KEY="$GKEY" GEMINI_API_MODEL=test-model GEMINI_API_MAX_TOKENS=64 "$GEM" "$TMP/prompt.md" >/dev/null 2>&1
+assert_eq "$(lastreq | jq -r '.body | fromjson | .max_tokens')" "64"
+printf 'export GEMINI_API_KEY=%s\n' "$GKEY" > "$TMP/key-gemini"
+G GEMINI_API_KEY_FILE="$TMP/key-gemini" GEMINI_API_MODEL=test-model "$GEM" "$TMP/prompt.md" >/dev/null 2>&1
+assert_eq "$(lastreq | jq -r .auth)" "Bearer $GKEY" "GEMINI_API_KEY_FILE with an export line"
+out="$(G GEMINI_API_KEY="$GKEY" GEMINI_API_MODEL=ratelimited "$GEM" "$TMP/prompt.md" 2>&1)" && fail "429 must fail"; assert_contains "$out" "HTTP 429: Rate limit exceeded"; assert_not_contains "$out" "$GKEY"
+out="$(G GEMINI_API_KEY="$GKEY" GEMINI_API_MODEL=empty "$GEM" "$TMP/prompt.md" 2>&1)" && fail "empty must fail"; assert_contains "$out" "no message content"
+out="$(G GEMINI_API_KEY="$GKEY" GEMINI_API_MODEL=huge "$GEM" "$TMP/prompt.md" 2>&1)" && fail "ceiling must fail"; assert_contains "$out" "token ceiling exceeded (900000 > 200000)"
+out="$(G E3D_PILOT_DRY_RUN=1 GEMINI_API_KEY="$GKEY" GEMINI_API_MODEL=m "$GEM" "$TMP/prompt.md")"; assert_contains "$out" "redacted"; assert_not_contains "$out" "$GKEY"
+out="$(G GEMINI_API_KEY="$GKEY" GEMINI_API_MODEL=m "$GEM" "$TMP/nope.md" 2>&1)" && fail "missing prompt file must fail"
+ls "${TMPDIR:-/tmp}" 2>/dev/null | grep -qE '^e3d-pilot-(xai|gemini)-api\.' && fail "temp dirs holding the key header must be removed"
+# Gemini may return errors as a one-element array (handled above via the ratelimited case)
 
 # ================= a real debate across both, then through the MCP server =================
 kill "$SERVER_PID" 2>/dev/null || true

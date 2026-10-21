@@ -57,7 +57,7 @@ A tool that is hidden is reported exactly like one that does not exist.
 | `E3D_MCP_TIMEOUT_SEC` | 120 (hosted) | Per-debate timeout; kept low to fit load-balancer timeouts |
 | `E3D_MCP_HTTP_REQUEST_TIMEOUT_SEC` | 900 | Per-request ceiling (504) |
 | `E3D_MCP_PROVIDERS` / `E3D_MCP_AUTO_VOICES` | auto | Pin or cap the debate voices |
-| model providers | | `AZURE_OPENAI_ENDPOINT/_DEPLOYMENT/_API_KEY[_FILE]`, `BEDROCK_MODEL_ID` + `AWS_REGION` (+ AWS credentials), `LOCAL_MODEL_ENDPOINT/_NAME`, `ANTHROPIC_API_KEY[_FILE]`/`ANTHROPIC_API_MODEL`, `OPENAI_API_KEY[_FILE]`/`OPENAI_API_MODEL`; see the main README's Providers section |
+| model providers | | `AZURE_OPENAI_ENDPOINT/_DEPLOYMENT/_API_KEY[_FILE]`, `BEDROCK_MODEL_ID` + `AWS_REGION` (+ AWS credentials), `LOCAL_MODEL_ENDPOINT/_NAME`, `ANTHROPIC_API_KEY[_FILE]`/`ANTHROPIC_API_MODEL`, `OPENAI_API_KEY[_FILE]`/`OPENAI_API_MODEL`, `GEMINI_API_KEY[_FILE]`/`GEMINI_API_MODEL`, `XAI_API_KEY[_FILE]`/`XAI_API_MODEL`; see the main README's Providers section |
 
 ## Budgets and who pays
 
