@@ -22,6 +22,7 @@ const CITES = [
 ];
 const many = (n) => Array.from({ length: n }, (_, i) => ({ url: `https://many${i}.example/p`, title: `Many ${i}`, text: `excerpt ${i}` }));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+let flaky = 0; // ws-flaky: the first search call gets a 503, later ones succeed
 
 function anthropic(model, body, send) {
   const prompt = JSON.stringify(body.messages ?? []);
@@ -37,6 +38,7 @@ function anthropic(model, body, send) {
   ];
   const text = (cites) => ({ type: 'text', text: ANSWER('anthropic-api'), citations: cites.map((c) => ({ type: 'web_search_result_location', url: c.url, title: c.title, cited_text: c.text, encrypted_index: 'EI' })) });
   const usage = (n) => ({ input_tokens: 10, output_tokens: 10, server_tool_use: { web_search_requests: n } });
+  if (model === 'ws-flaky' && flaky++ === 0) return send(503, { type: 'error', error: { type: 'overloaded_error', message: 'Overloaded' } });
   switch (model) {
     case 'ws-error': return send(200, { model, stop_reason: 'end_turn', content: [{ type: 'server_tool_use', id: 's', name: 'web_search', input: { query: 'QUERYSECRET-x' } }, { type: 'web_search_tool_result', tool_use_id: 's', content: { type: 'web_search_tool_result_error', error_code: 'unavailable' } }, { type: 'text', text: 'I could not search.' }], usage: usage(0) });
     case 'ws-maxuses': return send(200, { model, stop_reason: 'end_turn', content: [...search(CITES.slice(0, 1)), { type: 'web_search_tool_result', tool_use_id: 's2', content: { type: 'web_search_tool_result_error', error_code: 'max_uses_exceeded' } }, text(CITES.slice(0, 1))], usage: usage(3) });

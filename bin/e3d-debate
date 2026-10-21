@@ -25,6 +25,11 @@ DEBATE_PROVIDERS=(claude codex)
 DEBATE_ROUNDS=2
 DEBATE_SYNTHESIZER="claude"
 DEBATE_MAX_WORDS=200
+# Transient provider failures (HTTP 429/500/502/503/504 or a curl timeout) are retried this many times, waiting DELAY x attempt seconds.
+DEBATE_PROVIDER_RETRIES="${E3D_DEBATE_PROVIDER_RETRIES:-2}"
+DEBATE_PROVIDER_RETRY_DELAY="${E3D_DEBATE_PROVIDER_RETRY_DELAY:-4}"
+[[ "$DEBATE_PROVIDER_RETRIES" =~ ^[0-9]$ ]] || DEBATE_PROVIDER_RETRIES=2
+[[ "$DEBATE_PROVIDER_RETRY_DELAY" =~ ^[0-9]{1,2}$ ]] || DEBATE_PROVIDER_RETRY_DELAY=4
 # v1 = original prompts (a speaker saw its own answer labelled as a peer's; rounds not described as simultaneous).
 # v2 = own answer labelled YOU, simultaneity stated in round 2+ and in the synthesizer prompt.
 # v3b = experimental rewrite of round 1 and rounds 2+ (docs/prompt-review-2026-10.md R1, R2); v3c = v3b plus the
@@ -181,22 +186,58 @@ ws_call_timeout() {
 # A call without search never sees any of the search settings.
 no_search_env() { env -u E3D_PROVIDER_WEB_SEARCH -u E3D_PROVIDER_WS_OUT -u E3D_PROVIDER_WS_MAX_SEARCHES -u E3D_PROVIDER_WS_ALLOW \
   -u E3D_PROVIDER_WS_DENY -u E3D_PROVIDER_WS_EXCERPT_CHARS -u E3D_PROVIDER_WS_TIMEOUT "$@"; }
-# run_search_call <provider> <round> <prompt> <out> <stderr>: one call with search; if it fails without a good search record,
-# fail closed: ask the same model again WITHOUT search (with the no-web-access wording) and record why.
+# A transient vendor failure (HTTP 429/500/502/503/504, a timeout) is retried a bounded number of times so one busy moment
+# does not drop a model from the debate (DEBATE_PROVIDER_RETRIES, DEBATE_PROVIDER_RETRY_DELAY). Nothing else is retried: a
+# refused key or a bad request will not improve.
+# run_with_retry <provider> <round> <out> <stderr> <command...>: each attempt overwrites <out> and <stderr>.
+run_with_retry() {
+  local provider="$1" round="$2" out="$3" err="$4" attempt=0 rc
+  shift 4
+  while :; do
+    "$@" > "$out" 2> "$err"
+    rc=$?
+    if (( rc != 0 && attempt < DEBATE_PROVIDER_RETRIES )) && provider_failure_transient "$err"; then
+      attempt=$((attempt + 1))
+      echo "note: $provider failed transiently in round $round, retry $attempt of $DEBATE_PROVIDER_RETRIES" >&2
+      sleep $(( DEBATE_PROVIDER_RETRY_DELAY * attempt ))
+      continue
+    fi
+    break
+  done
+  return "$rc"
+}
+# A failed search call is transient when its record says timeout or HTTP 429/5xx, or its stderr matches the general rule.
+ws_failure_transient() { # <record> <stderr>
+  jq -e '.error // "" | test("^(timeout|http_(429|500|502|503|504))$")' "$1" >/dev/null 2>&1 || provider_failure_transient "$2"
+}
+# run_search_call <provider> <round> <prompt> <out> <stderr>: one call with search, retried like any call on a transient
+# vendor failure (same kind of call first: every retry is again a search call with the same caps, and only the last
+# attempt's record counts, so searches are never double counted). If it still fails without a good search record, fail
+# closed: ask the same model again WITHOUT search (with the no-web-access wording; that call has its own retries) and record why.
 run_search_call() {
-  local provider="$1" round="$2" prompt="$3" out="$4" err="$5" raw="$work_dir/ws-raw-r$2-$1.json" st reason
-  rm -f "$raw"
-  env E3D_PROVIDER_WEB_SEARCH=1 E3D_PROVIDER_WS_OUT="$raw" E3D_PROVIDER_WS_MAX_SEARCHES="$WS_MAX_SEARCHES" \
-    E3D_PROVIDER_WS_ALLOW="$(jq -r '.allow | join(",")' <<< "$WS_CFG")" E3D_PROVIDER_WS_DENY="$(jq -r '.deny | join(",")' <<< "$WS_CFG")" \
-    E3D_PROVIDER_WS_EXCERPT_CHARS="$(jq -r .excerptChars <<< "$WS_CFG")" E3D_PROVIDER_WS_TIMEOUT="$(ws_call_timeout)" \
-    "$PROVIDERS_DIR/$provider" "$prompt" > "$out" 2> "$err"
-  st=$?
+  local provider="$1" round="$2" prompt="$3" out="$4" err="$5" raw="$work_dir/ws-raw-r$2-$1.json" st reason attempt=0
+  while :; do
+    rm -f "$raw"
+    env E3D_PROVIDER_WEB_SEARCH=1 E3D_PROVIDER_WS_OUT="$raw" E3D_PROVIDER_WS_MAX_SEARCHES="$WS_MAX_SEARCHES" \
+      E3D_PROVIDER_WS_ALLOW="$(jq -r '.allow | join(",")' <<< "$WS_CFG")" E3D_PROVIDER_WS_DENY="$(jq -r '.deny | join(",")' <<< "$WS_CFG")" \
+      E3D_PROVIDER_WS_EXCERPT_CHARS="$(jq -r .excerptChars <<< "$WS_CFG")" E3D_PROVIDER_WS_TIMEOUT="$(ws_call_timeout)" \
+      "$PROVIDERS_DIR/$provider" "$prompt" > "$out" 2> "$err"
+    st=$?
+    if (( st != 0 && attempt < DEBATE_PROVIDER_RETRIES )) && ! jq -e '.ok == true' "$raw" >/dev/null 2>&1 && ws_failure_transient "$raw" "$err"; then
+      attempt=$((attempt + 1))
+      echo "note: $provider web search call failed transiently in round $round, retry $attempt of $DEBATE_PROVIDER_RETRIES" >&2
+      sleep $(( DEBATE_PROVIDER_RETRY_DELAY * attempt ))
+      continue
+    fi
+    break
+  done
   if (( st != 0 )) && ! jq -e '.ok == true' "$raw" >/dev/null 2>&1; then
     reason="$(jq -r '.error // "error"' "$raw" 2>/dev/null | tr -cd 'A-Za-z0-9_.:-' | head -c 60)"
     jq -nc --arg p "$provider" --argjson r "$round" --arg why "${reason:-error}" '{provider:$p, round:$r, reason:$why}' > "$work_dir/ws-fallback-r$round-$provider.json"
     round_prompt "$provider" "$round" 0 > "$work_dir/round${round}-${provider}.nosearch.prompt.md"
-    no_search_env "$PROVIDERS_DIR/$provider" "$work_dir/round${round}-${provider}.nosearch.prompt.md" > "$out" 2>> "$err"
+    run_with_retry "$provider" "$round" "$out" "$err.fallback" no_search_env "$PROVIDERS_DIR/$provider" "$work_dir/round${round}-${provider}.nosearch.prompt.md"
     st=$?
+    cat "$err.fallback" >> "$err" 2>/dev/null; rm -f "$err.fallback"
   fi
   return "$st"
 }
@@ -416,6 +457,11 @@ round_prompt() {
   fi
 }
 
+# True when a provider's stderr shows a failure worth retrying: an HTTP 429/500/502/503/504 or a curl timeout (exit 28).
+provider_failure_transient() {
+  grep -qE 'HTTP (429|500|502|503|504)\b|curl exit (28|52|56)\b|timed out|Operation timed out' "$1" 2>/dev/null
+}
+
 declare -A LAST_ANSWER
 converged=0
 converged_at_round=0
@@ -434,7 +480,7 @@ for ((round = 1; round <= DEBATE_ROUNDS; round++)); do
       if (( son == 1 )); then
         run_search_call "$provider" "$round" "$prompt_file" "$out_file" "$work_dir/round${round}-${provider}.stderr"
       else
-        no_search_env "$PROVIDERS_DIR/$provider" "$prompt_file" > "$out_file" 2>"$work_dir/round${round}-${provider}.stderr"
+        run_with_retry "$provider" "$round" "$out_file" "$work_dir/round${round}-${provider}.stderr" no_search_env "$PROVIDERS_DIR/$provider" "$prompt_file"
       fi
       echo $? > "$status_file"
     ) &
@@ -526,7 +572,8 @@ if (( fast_synthesis == 1 )); then
   echo "=== Synthesis (fast path -- all participants converged in round $converged_at_round, no synthesizer call) ===" >&2
 else
   set +e
-  "$PROVIDERS_DIR/$DEBATE_SYNTHESIZER" "$synth_prompt" > "$synth_out" 2>"$work_dir/synthesis.stderr"
+  # the synthesizer never searches, even if search settings leaked into this environment
+  no_search_env "$PROVIDERS_DIR/$DEBATE_SYNTHESIZER" "$synth_prompt" > "$synth_out" 2>"$work_dir/synthesis.stderr"
   synth_status=$?
   set -e
   echo "=== Synthesis ($DEBATE_SYNTHESIZER) ===" >&2

@@ -30,6 +30,7 @@ unset ANTHROPIC_API_KEY_FILE OPENAI_API_KEY_FILE XAI_API_KEY_FILE GEMINI_API_KEY
   E3D_DEBATE_SEARCH_MAX_PER_CALL E3D_DEBATE_SEARCH_MAX_CITATIONS E3D_DEBATE_SEARCH_EXCERPT_CHARS E3D_DEBATE_SEARCH_TIMEOUT_SEC \
   E3D_MCP_TIMEOUT_SEC E3D_DEBATE_TIMEOUT_SEC E3D_DEBATE_DECISION_LOG E3D_MCP_PROVIDERS E3D_MCP_DAILY_SEARCHES E3D_MCP_AUTH_URL \
   ANTHROPIC_API_MAX_TOKENS OPENAI_API_MAX_TOKENS XAI_API_MAX_TOKENS GEMINI_API_MAX_TOKENS
+export E3D_DEBATE_PROVIDER_RETRY_DELAY=0 E3D_DEBATE_PROVIDER_RETRIES=2
 E() {
   env TMPDIR="$T/tmp" \
     ANTHROPIC_API_KEY="$AKEY" ANTHROPIC_API_BASE_URL="$BASE" ANTHROPIC_API_MODEL="${AM:-ws-ok}" \
@@ -153,6 +154,22 @@ XM=ws-500 debate "$T/f7" --providers xai-api,openai-api --rounds 1;             
 GM=ws-incomplete debate "$T/f8" --providers gemini-api,openai-api --rounds 1;        check_fallback gemini-api status_failed "$T/f8"
 E3D_DEBATE_SEARCH_TIMEOUT_SEC=1 AM=ws-timeout debate "$T/f9" --providers anthropic-api,openai-api --rounds 1; check_fallback anthropic-api timeout "$T/f9"
 ok "search errors, a 'search disabled' 400, a timeout, an extra tool and endless pause_turn all fail closed with the no-web wording"
+
+# transient failures are retried as the same kind of call first (search again, same caps), then fall back
+XM=ws-500 debate "$T/r1" --providers xai-api,openai-api --rounds 1
+[[ "$(reqs_to /xai/v1/responses | wc -l | tr -d ' ')" == 3 ]] || fail "xai 500: one search call and two search retries before falling back"
+[[ "$(reqs_to /xai/v1/chat/completions | wc -l | tr -d ' ')" == 1 ]] || fail "xai 500: then one call without search"
+grep -q 'note: xai-api web search call failed transiently in round 1, retry 2 of 2' "$T/r1.stderr" || fail "search retry notes"
+check_fallback xai-api http_500 "$T/r1"
+AM=ws-flaky debate "$T/r2" --providers anthropic-api,openai-api --rounds 1
+[[ "$(reqs_to /v1/messages | jq -s '[.[] | .body | fromjson | select(.tools)] | length')" == 2 ]] || fail "flaky: a 503 search call is retried once"
+grep -qF 'Web search was unavailable' "$T/r2/transcript.md" && fail "flaky: a retried search that succeeds must not fall back"
+[[ "$(jq '.searches_used."anthropic-api"' "$T/r2/web-search.json")" == 2 ]] || fail "flaky: searches counted once (only the successful attempt)"
+grep -q 'note: anthropic-api web search call failed transiently in round 1, retry 1 of 2' "$T/r2.stderr" || fail "flaky retry note"
+E3D_DEBATE_PROVIDER_RETRIES=0 XM=ws-500 debate "$T/r3" --providers xai-api,openai-api --rounds 1
+[[ "$(reqs_to /xai/v1/responses | wc -l | tr -d ' ')" == 1 ]] || fail "retries 0: no search retry"
+check_fallback xai-api http_500 "$T/r3"
+ok "transient search failures retried as search first (caps and counts kept), then fail closed to no web access"
 
 # pause_turn is continued with the paused content sent back unchanged
 AM=ws-pause debate "$T/p1" --providers anthropic-api,openai-api --rounds 1

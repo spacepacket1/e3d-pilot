@@ -178,6 +178,9 @@ side after the call.
 - **The question goes to the vendor's search backend.** The models write the queries themselves from the question. We do not
   see or log those queries, and we cannot strip personal data out of them. That is why there is a privacy notice and
   `web_search: false`.
+- **Retries are not counted.** A transient failure is retried as a search call (up to `E3D_DEBATE_PROVIDER_RETRIES`, default
+  2). Only the successful attempt's searches are counted. A timed-out attempt may still have run searches that the vendor
+  bills but we never see.
 - **A fallback call costs one extra model call.** It is not added to the charged `calls`, so pricing does not change.
 - **Gemini and xAI over-cap searches** are billed by the vendor before we can see them. The ALARM and the daily search
   cap bound the damage over a day, not within one call.

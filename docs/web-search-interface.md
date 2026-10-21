@@ -24,6 +24,12 @@ additive: a client or service that ignores the new fields keeps working.
 An invalid domain or number setting turns search off for the debate and prints a warning on stderr. It never refuses the
 debate.
 
+Retries: a search call that fails transiently (HTTP 429/500/502/503/504 or a timeout) is retried as a search call with the
+same caps, `E3D_DEBATE_PROVIDER_RETRIES` times (default 2), with a delay of `E3D_DEBATE_PROVIDER_RETRY_DELAY` x attempt
+seconds (default 4). Only the last attempt's search record counts. If the call still fails, the model is asked again without
+search, and that call has its own retries. stderr notes: `note: <provider> web search call failed transiently in round N,
+retry i of M`.
+
 ## 2. Tool arguments
 
 - `e3d_debate` and `e3d_debate_start` take a new optional boolean, **`web_search`**, which defaults to `true`. Any
