@@ -111,7 +111,8 @@ if [[ -n "$QUESTION_FILE" ]]; then
 fi
 
 case "$DEBATE_PROMPT_VERSION" in v2|v3b|v3c) ;; *) echo "error: --prompts must be v2, v3b or v3c" >&2; exit 1 ;; esac
-[[ -n "$QUESTION" ]] || { echo "error: question required (see --help)" >&2; exit 1; }
+PROMPT_OVERHEAD="${E3D_DEBATE_PROMPT_OVERHEAD:-0}"
+[[ -n "$QUESTION" || "$PROMPT_OVERHEAD" == "1" ]] || { echo "error: question required (see --help)" >&2; exit 1; }
 [[ "$DEBATE_MAX_WORDS" =~ ^[0-9]+$ ]] && (( DEBATE_MAX_WORDS >= 1 )) || { echo "error: --max-words must be a positive integer" >&2; exit 1; }
 [[ "$DEBATE_ROUNDS" =~ ^[0-9]+$ ]] && (( DEBATE_ROUNDS >= 1 )) || { echo "error: --rounds must be a positive integer" >&2; exit 1; }
 (( ${#DEBATE_PROVIDERS[@]} >= 2 )) || { echo "error: need at least 2 --providers to debate" >&2; exit 1; }
@@ -119,6 +120,37 @@ case "$DEBATE_PROMPT_VERSION" in v2|v3b|v3c) ;; *) echo "error: --prompts must b
 for p in "${DEBATE_PROVIDERS[@]}" "$DEBATE_SYNTHESIZER"; do
   [[ -x "$PROVIDERS_DIR/$p" ]] || { echo "error: no such provider adapter: $PROVIDERS_DIR/$p" >&2; exit 1; }
 done
+
+# ---- token pricing (per_token_v1; lib/debate/token-pricing.mjs, docs/token-pricing.md) ----
+# E3D_DEBATE_MAX_TOKENS {provider: n} switches the debate to per-token mode: every call sends that vendor output limit, no call is
+# retried after it may have reached the vendor, there is no web search, no Jev call and no fallback call (so at most one vendor call per
+# round and provider, and one for the synthesis), and usage.json lists every attempted call. E3D_DEBATE_ANSWER_BYTES_MAX {provider: n}
+# cuts each prior answer inserted into a later prompt to that many UTF-8 bytes. Both unset: nothing below changes anything.
+PT_LIB="$REPO_ROOT/lib/debate/token-pricing.mjs"
+PT_ON=0; AB_ON=0; PT_MAX_JSON="{}"; PT_ANS_JSON="{}"
+if [[ "$PROMPT_OVERHEAD" != "1" && ( -n "${E3D_DEBATE_MAX_TOKENS:-}" || -n "${E3D_DEBATE_ANSWER_BYTES_MAX:-}" ) ]]; then
+  command -v node >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 && [[ -f "$PT_LIB" ]] || { echo "error: token limits need node, jq and $PT_LIB" >&2; exit 1; }
+  PT_CFG="$(node "$PT_LIB" config "$DEBATE_SYNTHESIZER" "${DEBATE_PROVIDERS[@]}")" || exit 1
+  [[ "$(jq -r .perToken <<< "$PT_CFG")" == "true" ]] && { PT_ON=1; PT_MAX_JSON="$(jq -c .maxTokens <<< "$PT_CFG")"; }
+  [[ "$(jq -r '.answerBytes != null' <<< "$PT_CFG")" == "true" ]] && { AB_ON=1; PT_ANS_JSON="$(jq -c .answerBytes <<< "$PT_CFG")"; }
+fi
+if (( PT_ON == 1 )); then
+  DEBATE_PROVIDER_RETRIES=0
+  WEB_SEARCH_REQUESTED=0
+fi
+# pt_env <provider>: sets PT_ENV to the one environment assignment that gives that provider's adapter its output limit.
+PT_ENV=()
+pt_env() {
+  PT_ENV=()
+  (( PT_ON == 1 )) || return 0
+  local var
+  case "$1" in
+    anthropic-api) var=ANTHROPIC_API_MAX_TOKENS ;; openai-api) var=OPENAI_API_MAX_TOKENS ;;
+    gemini-api) var=GEMINI_API_MAX_TOKENS ;; xai-api) var=XAI_API_MAX_TOKENS ;;
+    *) echo "error: no output-limit setting for provider $1" >&2; exit 1 ;;
+  esac
+  PT_ENV=("$var=$(jq -r --arg p "$1" '.[$p]' <<< "$PT_MAX_JSON")")
+}
 
 if [[ -n "$LINK_REPO" || -n "$LINK_IDEA" ]]; then
   [[ -n "$LINK_REPO" && -n "$LINK_IDEA" ]] || { echo "error: --repo and --idea must be given together" >&2; exit 1; }
@@ -275,7 +307,7 @@ printf '# Debate\n\n**Prompt version:** %s\n\n**Question:** %s\n\n' "$DEBATE_PRO
 # transcript for later calibration of whether Jev's obviousness judgment is
 # trustworthy enough to ever gate on. Silently skipped with no
 # TYPESAFE_API_KEY; a failed call is logged and otherwise ignored.
-if jev_available; then
+if (( PT_ON == 0 )) && [[ "$PROMPT_OVERHEAD" != "1" ]] && jev_available; then
   jev_state="$(jq -ncS --arg q "$QUESTION" '{question:$q}')"
   jev_questions="$(jq -ncS '{
     obviousness: {
@@ -297,6 +329,11 @@ if jev_available; then
     printf '**Jev pre-screen (shadow mode, informational only):** obviousness noul=%s (1.0 = clearly obvious, 0.0 = clearly needs debate) -- logged for calibration, does not affect whether this debate runs.\n\n' "$jev_noul" >> "$transcript_md"
   fi
 fi
+
+# The transcript as the synthesis prompt sees it: the same, with each answer cut to its provider's answer-bytes limit when one is set
+# (transcript.md, the record, always has the whole answer).
+prompt_transcript_md="$work_dir/transcript.prompt.md"
+cp "$transcript_md" "$prompt_transcript_md"
 
 # --- experimental prompts (v3b / v3c), see docs/prompt-review-2026-10.md R1-R3 ---
 others_of() { local me="$1" o out=""; for o in "${DEBATE_PROVIDERS[@]}"; do [[ "$o" == "$me" ]] || out+="${out:+, }$o"; done; printf '%s' "$out"; }
@@ -329,9 +366,9 @@ v3_round2_prompt() {
   printf 'You are %s, one of %d analysts debating one question. The others are: %s.\n\nTHE QUESTION\n%s\n\nWHAT WAS WRITTEN LAST ROUND\n' "$me" "${#DEBATE_PROVIDERS[@]}" "$(others_of "$me")" "$QUESTION"
   for o in "${DEBATE_PROVIDERS[@]}"; do
     [[ "$o" == "$me" ]] && continue
-    printf -- '--- %s ---\n%s\n' "$o" "${LAST_ANSWER[$o]}"
+    printf -- '--- %s ---\n%s\n' "$o" "${PROMPT_ANSWER[$o]}"
   done
-  printf -- '--- YOU (your own previous answer; you may revise it, you are not debating it) ---\n%s\n\n' "${LAST_ANSWER[$me]}"
+  printf -- '--- YOU (your own previous answer; you may revise it, you are not debating it) ---\n%s\n\n' "${PROMPT_ANSWER[$me]}"
   cat <<EOP
 Every analyst writes each round at the same time. Nobody has seen anyone's text for the current
 round, so respond only to the text above and never accuse someone of something they may have
@@ -443,9 +480,9 @@ round_prompt() {
     printf 'Here is what each participant said in the previous round:\n\n'
     for other in "${DEBATE_PROVIDERS[@]}"; do
       if [[ "$other" == "$provider" ]]; then
-        printf -- '--- YOU (your own answer in the previous round) ---\n%s\n\n' "${LAST_ANSWER[$other]}"
+        printf -- '--- YOU (your own answer in the previous round) ---\n%s\n\n' "${PROMPT_ANSWER[$other]}"
       else
-        printf -- '--- %s (previous round) ---\n%s\n\n' "$other" "${LAST_ANSWER[$other]}"
+        printf -- '--- %s (previous round) ---\n%s\n\n' "$other" "${PROMPT_ANSWER[$other]}"
       fi
     done
     printf 'Every participant writes each round at the same time and cannot see anyone'\''s text from the current round. Do not say someone ignored or failed to address a point unless it was already in the previous round'\''s text above.\n\n'
@@ -462,12 +499,111 @@ provider_failure_transient() {
   grep -qE 'HTTP (429|500|502|503|504)\b|curl exit (28|52|56)\b|timed out|Operation timed out' "$1" 2>/dev/null
 }
 
+# synthesis_prompt <transcript-file> <rounds-ran-note>: the prompt of the synthesis call
+synthesis_prompt() {
+  date_preamble 0
+  ws_peer_notice
+  printf 'Below is the full transcript of a debate between multiple AI models answering one question for a human who needs a single, decisive answer (%s).\n\n' "$2"
+  printf 'Question: %s\n\n' "$QUESTION"
+  if [[ "$DEBATE_PROMPT_VERSION" != "v3c" ]]; then
+    printf 'Note: within each round all participants wrote at the same time, so a participant could not have addressed a point first made in the same round. Do not credit or fault anyone for that.\n\n'
+  fi
+  cat "$1"
+  if [[ "$DEBATE_PROMPT_VERSION" == "v3c" ]]; then
+    v3_synthesis_instructions
+  else
+    printf '\nRead the transcript and produce a final answer. Output exactly this format:\n'
+    printf 'FINAL ANSWER: <2-4 decisive sentences>\n'
+    printf 'CONSENSUS: <full | majority | split>\n'
+    printf 'DISSENT: <one line on any remaining disagreement worth flagging, or "none">\n'
+  fi
+  printf '%s\n' "$SYNTH_CURRENT_DATA_TEXT"
+}
+
+# E3D_DEBATE_PROMPT_OVERHEAD=1: print the byte counts of the fixed text of each prompt kind (round 1, round N, synthesis) built with an
+# empty question and empty answers, as JSON, and stop; no provider is called. The owner copies them into the rate table's
+# promptOverheadBytes. The text per answer slot (headers naming the providers) is included, so the counts depend on --providers,
+# --rounds and --prompts; the synthesis count is the larger of the converged and the full-rounds wording.
+if [[ "$PROMPT_OVERHEAD" == "1" ]]; then
+  declare -A LAST_ANSWER PROMPT_ANSWER
+  for provider in "${DEBATE_PROVIDERS[@]}"; do LAST_ANSWER[$provider]=""; PROMPT_ANSWER[$provider]=""; done
+  QUESTION=""
+  ov1="$(round_prompt "${DEBATE_PROVIDERS[0]}" 1 0 | wc -c | tr -d ' ')"
+  ovn="$(round_prompt "${DEBATE_PROVIDERS[0]}" 2 0 | wc -c | tr -d ' ')"
+  : > "$work_dir/overhead.transcript.md"
+  printf '# Debate\n\n**Prompt version:** %s\n\n**Question:** %s\n\n' "$DEBATE_PROMPT_VERSION" "" > "$work_dir/overhead.transcript.md"
+  for ((round = 1; round <= DEBATE_ROUNDS; round++)); do
+    for provider in "${DEBATE_PROVIDERS[@]}"; do printf '## Round %d -- %s\n\n%s\n\n' "$round" "$provider" "" >> "$work_dir/overhead.transcript.md"; done
+  done
+  ovs_full="$(synthesis_prompt "$work_dir/overhead.transcript.md" "ran the full $DEBATE_ROUNDS rounds without every participant converging" | wc -c | tr -d ' ')"
+  ovs_conv="$(synthesis_prompt "$work_dir/overhead.transcript.md" "converged after round $DEBATE_ROUNDS of a max $DEBATE_ROUNDS -- all participants ended that round agreeing" | wc -c | tr -d ' ')"
+  (( ovs_conv > ovs_full )) && ovs_full="$ovs_conv"
+  jq -nc --arg v "$DEBATE_PROMPT_VERSION" --argjson p "$(printf '%s\n' "${DEBATE_PROVIDERS[@]}" | jq -R . | jq -sc .)" --argjson r "$DEBATE_ROUNDS" \
+    --argjson r1 "$ov1" --argjson rn "$ovn" --argjson sy "$ovs_full" '{prompt_version:$v, providers:$p, rounds:$r, promptOverheadBytes:{round1:$r1, roundN:$rn, synthesis:$sy}}'
+  rm -rf "$work_dir"
+  exit 0
+fi
+
 declare -A LAST_ANSWER
+declare -A PROMPT_ANSWER
+for provider in "${DEBATE_PROVIDERS[@]}"; do LAST_ANSWER[$provider]=""; PROMPT_ANSWER[$provider]=""; done
+# prompt_answer <provider> <text>: the text as later prompts see it (cut to that provider's answer-bytes limit when one is set)
+prompt_answer() {
+  local limit
+  if (( AB_ON == 1 )); then
+    limit="$(jq -r --arg p "$1" '.[$p]' <<< "$PT_ANS_JSON")"
+    printf '%s' "$2" | node "$PT_LIB" truncate "$limit"
+  else
+    printf '%s' "$2"
+  fi
+}
+
+# Usage report (per-token mode): usage.json holds one row per attempted call, rewritten after every round and the synthesis so a
+# debate that is stopped still leaves the rows of the calls that finished.
+PT_USAGE_FILE=""
+if (( PT_ON == 1 )); then
+  [[ -n "$OUT_DIR" ]] && mkdir -p "$OUT_DIR"
+  PT_USAGE_FILE="${OUT_DIR:-$work_dir}/usage.json"
+  : > "$work_dir/usage.rows"
+  printf '[]\n' > "$PT_USAGE_FILE"
+fi
+# pt_usage_row <key> <provider> <prompt-file> <out-file> <stderr-file> <exit-status>
+pt_usage_row() {
+  (( PT_ON == 1 )) || return 0
+  node "$PT_LIB" row "$1" "$2" "$3" "$4" "$5" "$6" "$(jq -r --arg p "$2" '.[$p]' <<< "$PT_MAX_JSON")" >> "$work_dir/usage.rows" 2>/dev/null || true
+}
+pt_usage_write() {
+  (( PT_ON == 1 )) || return 0
+  jq -s 'unique_by(.key)' "$work_dir/usage.rows" > "$PT_USAGE_FILE.tmp" && mv "$PT_USAGE_FILE.tmp" "$PT_USAGE_FILE" || true
+}
+# A debate that is stopped (e3d-mcp sends SIGTERM on a timeout or a cancel) still reports the calls that were under way: each is a
+# row (the vendor's counts when its usage line was already there, else an estimate at its output limit), so a stopped debate is
+# never an undercount. Calls of earlier rounds already have their rows.
+PT_PHASE=""
+pt_on_term() {
+  trap - TERM INT HUP
+  local p r="${PT_PHASE#r}" st
+  if [[ "$PT_PHASE" == synth ]]; then
+    kill "${synth_pid:-0}" 2>/dev/null || true
+    pt_usage_row synth "$DEBATE_SYNTHESIZER" "$synth_prompt" "$synth_out" "$work_dir/synthesis.stderr" inflight
+  elif [[ "$PT_PHASE" == r* ]]; then
+    kill ${pids[@]+"${pids[@]}"} 2>/dev/null || true
+    for p in "${DEBATE_PROVIDERS[@]}"; do
+      st="$(cat "$work_dir/round${r}-${p}.status" 2>/dev/null || echo inflight)"
+      pt_usage_row "r${r}:${p}" "$p" "$work_dir/round${r}-${p}.prompt.md" "$work_dir/round${r}-${p}.out" "$work_dir/round${r}-${p}.stderr" "$st"
+    done
+  fi
+  pt_usage_write
+  exit 143
+}
+(( PT_ON == 1 )) && trap pt_on_term TERM INT HUP
+
 converged=0
 converged_at_round=0
 
 for ((round = 1; round <= DEBATE_ROUNDS; round++)); do
   echo "=== Round $round ===" >&2
+  PT_PHASE="r$round"
   pids=()
   for provider in "${DEBATE_PROVIDERS[@]}"; do
     prompt_file="$work_dir/round${round}-${provider}.prompt.md"
@@ -480,13 +616,20 @@ for ((round = 1; round <= DEBATE_ROUNDS; round++)); do
       if (( son == 1 )); then
         run_search_call "$provider" "$round" "$prompt_file" "$out_file" "$work_dir/round${round}-${provider}.stderr"
       else
-        run_with_retry "$provider" "$round" "$out_file" "$work_dir/round${round}-${provider}.stderr" no_search_env "$PROVIDERS_DIR/$provider" "$prompt_file"
+        pt_env "$provider"
+        run_with_retry "$provider" "$round" "$out_file" "$work_dir/round${round}-${provider}.stderr" no_search_env ${PT_ENV[@]+"${PT_ENV[@]}"} "$PROVIDERS_DIR/$provider" "$prompt_file"
       fi
       echo $? > "$status_file"
     ) &
     pids+=($!)
   done
   for pid in "${pids[@]}"; do wait "$pid" || true; done
+  for provider in "${DEBATE_PROVIDERS[@]}"; do
+    pt_usage_row "r${round}:${provider}" "$provider" "$work_dir/round${round}-${provider}.prompt.md" "$work_dir/round${round}-${provider}.out" \
+      "$work_dir/round${round}-${provider}.stderr" "$(cat "$work_dir/round${round}-${provider}.status" 2>/dev/null || echo 1)"
+  done
+  pt_usage_write
+  PT_PHASE=""
 
   for provider in "${DEBATE_PROVIDERS[@]}"; do
     out_file="$work_dir/round${round}-${provider}.out"
@@ -502,7 +645,9 @@ for ((round = 1; round <= DEBATE_ROUNDS; round++)); do
       answer="$(v3_append_derived_lines "$provider" "$answer")"
     fi
     LAST_ANSWER[$provider]="$answer"
+    PROMPT_ANSWER[$provider]="$(prompt_answer "$provider" "$answer")"
     printf '## Round %d -- %s\n\n%s\n\n' "$round" "$provider" "$answer" >> "$transcript_md"
+    printf '## Round %d -- %s\n\n%s\n\n' "$round" "$provider" "${PROMPT_ANSWER[$provider]}" >> "$prompt_transcript_md"
     printf -- '--- Round %d / %s ---\n%s\n\n' "$round" "$provider" "$answer"
   done
 
@@ -531,25 +676,7 @@ else
 fi
 
 synth_prompt="$work_dir/synthesis.prompt.md"
-{
-  date_preamble 0
-  ws_peer_notice
-  printf 'Below is the full transcript of a debate between multiple AI models answering one question for a human who needs a single, decisive answer (%s).\n\n' "$rounds_ran_note"
-  printf 'Question: %s\n\n' "$QUESTION"
-  if [[ "$DEBATE_PROMPT_VERSION" != "v3c" ]]; then
-    printf 'Note: within each round all participants wrote at the same time, so a participant could not have addressed a point first made in the same round. Do not credit or fault anyone for that.\n\n'
-  fi
-  cat "$transcript_md"
-  if [[ "$DEBATE_PROMPT_VERSION" == "v3c" ]]; then
-    v3_synthesis_instructions
-  else
-    printf '\nRead the transcript and produce a final answer. Output exactly this format:\n'
-    printf 'FINAL ANSWER: <2-4 decisive sentences>\n'
-    printf 'CONSENSUS: <full | majority | split>\n'
-    printf 'DISSENT: <one line on any remaining disagreement worth flagging, or "none">\n'
-  fi
-  printf '%s\n' "$SYNTH_CURRENT_DATA_TEXT"
-} > "$synth_prompt"
+synthesis_prompt "$prompt_transcript_md" "$rounds_ran_note" > "$synth_prompt"
 
 synth_out="$work_dir/synthesis.out"
 
@@ -573,9 +700,22 @@ if (( fast_synthesis == 1 )); then
 else
   set +e
   # the synthesizer never searches, even if search settings leaked into this environment
-  no_search_env "$PROVIDERS_DIR/$DEBATE_SYNTHESIZER" "$synth_prompt" > "$synth_out" 2>"$work_dir/synthesis.stderr"
-  synth_status=$?
+  pt_env "$DEBATE_SYNTHESIZER"
+  if (( PT_ON == 1 )); then
+    # in the background so a SIGTERM is handled (pt_on_term) while the call is under way, not after it
+    PT_PHASE=synth
+    no_search_env ${PT_ENV[@]+"${PT_ENV[@]}"} "$PROVIDERS_DIR/$DEBATE_SYNTHESIZER" "$synth_prompt" > "$synth_out" 2>"$work_dir/synthesis.stderr" &
+    synth_pid=$!
+    wait "$synth_pid"
+    synth_status=$?
+  else
+    no_search_env ${PT_ENV[@]+"${PT_ENV[@]}"} "$PROVIDERS_DIR/$DEBATE_SYNTHESIZER" "$synth_prompt" > "$synth_out" 2>"$work_dir/synthesis.stderr"
+    synth_status=$?
+  fi
   set -e
+  pt_usage_row synth "$DEBATE_SYNTHESIZER" "$synth_prompt" "$synth_out" "$work_dir/synthesis.stderr" "$synth_status"
+  pt_usage_write
+  PT_PHASE=""
   echo "=== Synthesis ($DEBATE_SYNTHESIZER) ===" >&2
 fi
 

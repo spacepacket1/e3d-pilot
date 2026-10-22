@@ -37,13 +37,18 @@ import { webSearchConfig, sanitizeText, cleanUrl, hostOf, API_PROVIDERS, PRIVACY
 import { createExternalAuth, validateConfig as validateAuthConfig } from '../lib/mcp/external-auth.js';
 import { createOutbox, outboxStatus, outboxExport, outboxRetryDead } from '../lib/mcp/outbox.js';
 import { createMetering, createReadiness, modelsFromTranscript, orphanPolicy } from '../lib/mcp/metering.js';
+import { createHash } from 'node:crypto';
 import { createRuns, validateRunsConfig } from '../lib/mcp/runs.js';
 import { startRunServer, validateRunServerConfig } from '../lib/mcp/run-server.js';
+import { validatePricingConfig, createPricingClient, limitsForPlan, pricedError, debateEnvFor, readUsageRows } from '../lib/mcp/pricing.js';
 import { validatePanelConfig, validateRequiredConfig, withRequired, requireAvailable, createPanelClient, checkFamilies, requireFamilies, degrade, explicitPanel, familiesOf } from '../lib/mcp/panel.js';
 
 const HTTP_MODE = process.argv.includes('--http');
 // External auth and metering hook (docs/external-auth.md): hosted --http mode only.
 const AUTH_HOOK = Boolean(process.env.E3D_MCP_AUTH_URL);
+// E3D_MCP_PRICING=per_token (token pricing, lib/mcp/pricing.js): advertises per_token_v1 and honours the run fields billing sends with it.
+const PRICING_CONFIG = validatePricingConfig(process.env, { http: HTTP_MODE, hook: AUTH_HOOK });
+let pricingClient = null; // billing's quote and usage-report client, once the external hook is running under per_token
 // The version comes from package.json, so a development build (0.2.0-dev.N) reports itself correctly.
 const PKG_VERSION = (() => { try { return JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).version; } catch { return '0.0.0-unknown'; } })();
 const SERVER_INFO = { name: 'e3d-pilot', version: PKG_VERSION };
@@ -131,6 +136,7 @@ function renderDebate(d) {
   if (d.panel?.dropped?.length) lines.push(`_Not available for this debate, so not asked: ${d.panel.dropped.join(', ')} (the rest of the panel answered; ${d.panel.synthesizer} wrote the summary)._`, '');
   if (d.dissent.present === false) lines.push('**Dissent:** none', '');
   else lines.push(`**Dissent (report this to the user, do not drop it when summarizing):** ${d.dissent.summary}`, '');
+  if (Number.isSafeInteger(d.billing?.charged_credits)) lines.push(`_Charged ${d.billing.charged_credits} credit${d.billing.charged_credits === 1 ? '' : 's'} (at most ${d.billing.quote_credits} were held)._`, '');
   if (d.positions.length) {
     lines.push('**Each model\'s final position:**');
     for (const p of d.positions) lines.push('', `**${p.provider}:**`, ...p.text.split('\n').map((l) => `> ${l}`));
@@ -320,6 +326,49 @@ function beginError(rsv) {
   return text(`error: daily budget: ${rsv.reason}`, true);
 }
 
+// The connector quote (docs/token-pricing-interface.md section 2), asked with the request id the reserve will use, before it. Answers
+// what metering.begin needs: { ok: true, calls, quote: { maxTokens, answerBytes, ... } } or a refusal that stops the tool call, with
+// nothing reserved. calls is providers x rounds + 1 exactly (billing refuses the reserve otherwise).
+const sleepMs = (ms) => new Promise((r) => setTimeout(r, ms));
+async function connectorQuote(plan, { request_id, principal }) {
+  const refuse = (message, kind = 'billing', code) => ({ ok: false, kind, message, ...(code ? { code } : {}) });
+  const bad = pricedError([...plan.providers, plan.synthesizer], { env: process.env });
+  if (bad) return refuse(`this debate cannot be priced: ${bad}`, 'billing', 'unknown_model_rate');
+  const questionBytes = Buffer.byteLength(plan.question, 'utf8');
+  if (questionBytes > 32000) return refuse('the question is too long to be priced (at most 32000 bytes)', 'billing', 'invalid');
+  const body = { principal, request_id, providers: [...plan.providers], rounds: plan.rounds, max_words: plan.maxWords, question_bytes: questionBytes,
+    question_sha256: createHash('sha256').update(plan.question, 'utf8').digest('hex'), prompt_version: 'v2' };
+  let q;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (attempt) await sleepMs(250 * 2 ** attempt);
+    q = await pricingClient.quote(body);
+    if (q.ok || !q.retry) break;
+  }
+  if (!q.ok) {
+    if (q.code === 'unknown_model_rate') return refuse('a model on this debate has no price; nothing was charged', 'billing', q.code);
+    if (q.code === 'quote_exceeds_limit') return refuse(`this debate could use up to ${q.credits} credits, above the per-debate maximum of ${q.max_credits}; try fewer rounds or a shorter question. Nothing was charged.`, 'billing', q.code);
+    if (q.code) return refuse('the debate could not be priced; nothing was charged', 'billing', q.code);
+    return { ok: false, kind: 'unavailable' };
+  }
+  const limits = limitsForPlan({ max_tokens: q.max_tokens, answer_bytes: q.answer_bytes }, [...plan.providers, plan.synthesizer], { env: process.env });
+  if (limits.error) { log(`pricing: the quote does not cover the plan (${limits.error})`); return { ok: false, kind: 'unavailable' }; }
+  return { ok: true, calls: plan.providers.length * plan.rounds + 1, quote: { maxTokens: limits.maxTokens, answerBytes: limits.answerBytes, credits: q.credits, maxCredits: q.max_credits, rateVersion: q.rate_version } };
+}
+const quoteOf = (plan) => (pricingClient ? (a) => connectorQuote(plan, a) : null);
+
+// Sends usage.json (bin/e3d-debate: one row per attempted call) to billing's POST /usage/v1/report, before finalize. Retries 5xx, 429 and
+// transport failures with the same body; a refusal (400, 409) or a failure after the retries is logged and the debate is still
+// finalized: billing then prices the v1 totals (and alarms), so a lost report never loses the charge or blocks the answer.
+async function reportUsage(handle, file) {
+  if (!pricingClient || !handle.finalize) return;
+  const u = await readUsageRows(file);
+  if (!u.present) { log(`pricing: no usage.json for debate_id=${handle.debate_id}; finalizing without a usage report`); return; }
+  if (u.dropped) log(`pricing: ${u.dropped} malformed usage row(s) dropped debate_id=${handle.debate_id}`);
+  const r = await pricingClient.report({ reservation_id: handle.reservation_id, debate_id: handle.debate_id, rows: u.rows });
+  log(r.ok ? `pricing: usage reported debate_id=${handle.debate_id} rows=${u.rows.length}${r.replay ? ' (replay)' : ''}`
+    : `pricing: usage report not accepted debate_id=${handle.debate_id} (${r.code ?? r.why}${r.why && r.code ? `: ${r.why}` : ''}); finalizing anyway`);
+}
+
 // Runs one reserved debate to its end and commits what actually happened (shared by e3d_debate and the async runner). The
 // caller holds an execution slot (activeDebates). onStarted runs after the durable "models started" marker
 // (metering.start) and before any model is invoked. signal (async runs) stops the debate: a cancelled debate is an error
@@ -327,7 +376,9 @@ function beginError(rsv) {
 // stores (ok outcomes only).
 async function executeDebate(plan, handle, ctx, { progress, onStarted, signal } = {}) {
   const { question, providers, rounds, maxWords, synthesizer } = plan;
-  const webSearchRequested = plan.webSearch !== false;
+  // token pricing: the limits this debate must run under (a web run's plan carries them; a connector debate's come with its quote)
+  const limits = plan.perToken ?? handle.quote ?? null;
+  const webSearchRequested = plan.webSearch !== false && !limits;
   const debateBin = process.env.E3D_MCP_DEBATE_BIN || join(ROOT, 'bin/e3d-debate');
   let settled = false;
   let ran = false;
@@ -351,10 +402,12 @@ async function executeDebate(plan, handle, ctx, { progress, onStarted, signal } 
     await onStarted?.();
     const r = await run(debateBin, cliArgs, {
       timeoutMs, signal,
-      env: { ...process.env, ...samplingEnv, E3D_DEBATE_TIMEOUT_SEC: String(Math.max(Math.floor(timeoutMs / 1000), 1)) },
+      env: { ...process.env, ...samplingEnv, ...debateEnvFor(limits), E3D_DEBATE_TIMEOUT_SEC: String(Math.max(Math.floor(timeoutMs / 1000), 1)) },
       onStderr: (s) => { for (const m of s.matchAll(/^=== (.+?) ===$/gm)) progress?.(++step, m[1]); },
     });
     lastRun = r;
+    // Token pricing: the vendor-reported usage of every attempted call goes to billing BEFORE finalize (a stopped debate included).
+    if (limits) await reportUsage(handle, join(dir, 'out', 'usage.json'));
     // Calls that actually ran are counted from the transcript, whether or not the debate succeeded.
     const transcript = await readFile(join(dir, 'out', 'transcript.md'), 'utf8').catch(() => '');
     const webSearch = readWebSearch(await readFile(join(dir, 'out', 'web-search.json'), 'utf8').catch(() => ''), webSearchRequested);
@@ -407,6 +460,13 @@ async function executeDebate(plan, handle, ctx, { progress, onStarted, signal } 
   }
 }
 
+// Token pricing (interface section 6): the billing object of a per_token debate gains quote_credits, charged_credits and the usage
+// (input_tokens, output_tokens, source vendor | estimate); the pricing object itself is not passed on. Other billing is unchanged.
+function billingResult(b) {
+  const { pricing, ...rest } = b;
+  return pricing ? { ...rest, quote_credits: pricing.quote_credits, charged_credits: pricing.charged_credits, usage: pricing.usage } : rest;
+}
+
 async function toolDebate(args, progress, ctx) {
   const plan = await planDebate(args, ctx);
   if (plan.error) return text(plan.error, true);
@@ -418,7 +478,7 @@ async function toolDebate(args, progress, ctx) {
   // Reserve the worst case first (atomically, so concurrent debates cannot overshoot the cap), then settle to actual use.
   // With the external hook, metering.begin also reserves at the billing service and persists an intent before returning.
   // When the service advertises finalize, the debate (question, providers, rounds) is finalized and stored there at the end.
-  const rsv = await metering.begin(principal, worst, { tool: 'e3d_debate', debate: { question, providers, rounds } });
+  const rsv = await metering.begin(principal, worst, { tool: 'e3d_debate', debate: { question, providers, rounds }, ...(ctx?.principal && quoteOf(plan) ? { quote: quoteOf(plan) } : {}) });
   if (!rsv.ok) return beginError(rsv);
   const { handle } = rsv;
   if (activeDebates >= LIMITS.concurrent) { await metering.abort(handle, 'busy').catch(() => {}); return text(`error: ${LIMITS.concurrent} debates already running; retry shortly`, true); }
@@ -439,10 +499,10 @@ async function toolDebate(args, progress, ctx) {
     independent: indep.independent, warnings: indep.warnings,
     ...(indep.families.length ? { families: indep.families } : {}),
     ...(panel ? { panel } : {}),
-    usage: { model_calls: spent.calls, est_input_tokens: spent.inTokens, est_output_tokens: spent.outTokens, searches: webSearch.searches_used, estimate: true },
+    usage: { model_calls: spent.calls, est_input_tokens: spent.inTokens, est_output_tokens: spent.outTokens, searches: webSearch.searches_used, estimate: billing?.pricing?.usage.source !== 'vendor' },
     web_search: webSearch,
     budget,
-    ...(billing ? { billing } : {}),
+    ...(billing ? { billing: billingResult(billing) } : {}),
     positions,
     ...(args.include_transcript ? { transcript: transcript.trim() } : {}),
   };
@@ -471,7 +531,7 @@ async function toolDebateStart(args, _progress, ctx) {
   if (plan.error) return text(plan.error, true);
   const principal = ctx?.principal ?? 'local';
   const worst = worstFor(plan);
-  const r = await runs.start({ principal, plan, worst });
+  const r = await runs.start({ principal, plan, worst, ...(quoteOf(plan) ? { quote: quoteOf(plan) } : {}) });
   if (!r.ok) return r.kind === 'begin' ? beginError(r.rsv) : text(`error: ${r.kind === 'busy' ? 'busy: ' : ''}${r.message}`, true);
   const out = { debate_id: r.debate_id, status: r.status, poll_after_sec: r.poll_after_sec };
   return { content: [{ type: 'text', text: `Debate started (id ${r.debate_id}, ${r.status}). It runs on the server even if you stop waiting. Check on it with e3d_debate_status in about ${r.poll_after_sec} seconds, then get the answer with e3d_debate_result.` }], structuredContent: out };
@@ -888,6 +948,10 @@ if (!REQUIRED_CONFIG.ok) {
   process.stderr.write(`[e3d-mcp] refusing to start: ${REQUIRED_CONFIG.errors.join('; ')}\n`);
   process.exit(2);
 }
+if (!PRICING_CONFIG.ok) {
+  process.stderr.write(`[e3d-mcp] refusing to start: ${PRICING_CONFIG.errors.join('; ')}\n`);
+  process.exit(2);
+}
 if (PANEL_CONFIG.panel && !HTTP_MODE) {
   process.stderr.write('[e3d-mcp] E3D_MCP_PANEL is only supported in hosted mode (--http) with E3D_MCP_AUTH_URL; unset it for stdio.\n');
   process.exit(2);
@@ -914,10 +978,18 @@ async function runAsyncDebate({ plan, handle, principal, onStarted, progress, si
 }
 
 // A web run's plan: the same validation and customer maxima as e3d_debate_start; no client, so no sampling.
-async function planWebRun(fields) {
+// With the per-token run fields (perToken, already validated by the run listener) the plan is exactly what was quoted: rounds and
+// max_words are never clamped, web search is off (it is not priced), and every provider needs its output limit and answer-bytes limit.
+async function planWebRun(fields, { perToken = null } = {}) {
   const ctx = { session: { clientInfo: null, capabilities: {}, rootsReady: null }, principal: null };
-  const plan = await planDebate({ question: fields.question, providers: fields.providers, rounds: fields.rounds, max_words: fields.max_words, web_search: fields.web_search }, ctx, { clamp: runsConfig.customer, web: true });
+  const clamp = perToken ? { ...runsConfig.customer, rounds: Infinity, max_words: Infinity } : runsConfig.customer;
+  const plan = await planDebate({ question: fields.question, providers: fields.providers, rounds: fields.rounds, max_words: fields.max_words, web_search: perToken ? false : fields.web_search }, ctx, { clamp, web: true });
   if (plan.error) return plan;
+  if (perToken) {
+    const limits = limitsForPlan(perToken, [...plan.providers, plan.synthesizer], { env: process.env });
+    if (limits.error) return { error: `error: invalid: ${limits.error}` };
+    return { plan: { ...plan, perToken: limits }, worst: worstFor(plan) };
+  }
   return { plan, worst: worstFor(plan) };
 }
 
@@ -935,6 +1007,7 @@ async function startAuthHook() {
   const external = createExternalAuth({ log });
   // E3D_MCP_PANEL=1: every hosted debate asks billing for the account's panel first (refused on any failure).
   if (PANEL_CONFIG.panel) panelClient = createPanelClient({ log });
+  if (PRICING_CONFIG.mode === 'per_token') pricingClient = createPricingClient({ log });
   const outbox = createOutbox({ dir: usage.dir, auth: external, log });
   external.attachOutbox(outbox);
   metering = createMetering({ localUsage: usage, external, outbox, log, dir: usage.dir });
@@ -976,7 +1049,7 @@ if (HTTP_MODE) {
     // a separate loopback-only listener; the public one above never serves /internal/*
     if (hook && RUN_SERVER.enabled) {
       runServer = await startRunServer({ port: RUN_SERVER.config.port, token: RUN_SERVER.config.token, failsPerMin: RUN_SERVER.config.failsPerMin,
-        runs, external: hook.external, plan: planWebRun, log });
+        runs, external: hook.external, plan: planWebRun, log, pricing: { mode: PRICING_CONFIG.mode, customer: runsConfig.customer } });
     }
   } catch (e) { process.stderr.write(`[e3d-mcp] ${redact(e.message)}\n`); process.exit(2); }
   if (process.env.E3D_MCP_PORT_FILE) await writeFile(process.env.E3D_MCP_PORT_FILE, String(server.port));
