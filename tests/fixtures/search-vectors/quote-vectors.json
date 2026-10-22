@@ -1,0 +1,25 @@
+{
+  "_about": "Golden quotes of spec 22.5 (billing computes them; e3d-pilot only relays) and the connector quote answers e3d-pilot must handle. SYNC with billing's shared copy.",
+  "golden": {
+    "table": "2026-10-22.1 plus the spec 14 assumptions", "panel": ["anthropic-api", "openai-api", "gemini-api", "xai-api"], "rounds": 2, "maxWords": 300, "questionBytes": 2000,
+    "cases": [
+      { "name": "search off", "searches": null, "s": "18970240000", "credits": 19 },
+      { "name": "all four cap 1", "searches": { "anthropic-api": 1, "openai-api": 1, "gemini-api": 1, "xai-api": 1 }, "s": "36050240000", "credits": 37 },
+      { "name": "all four cap 2", "searches": { "anthropic-api": 2, "openai-api": 2, "gemini-api": 2, "xai-api": 2 }, "s": "52010240000", "credits": 53 },
+      { "name": "three searchers cap 2", "searches": { "anthropic-api": 2, "openai-api": 2, "xai-api": 2 }, "s": "44810240000", "credits": 45 },
+      { "name": "all four cap 3", "searches": { "anthropic-api": 3, "openai-api": 3, "gemini-api": 3, "xai-api": 3 }, "s": "70370240000", "credits": 71 }
+    ]
+  },
+  "answers": [
+    { "name": "v2 answer with search", "asked": { "anthropic-api": 2, "openai-api": 2 }, "search": { "enabled": true, "max_searches": { "anthropic-api": 2, "openai-api": 2 }, "cite_bytes": 1000, "search_credits_max": 26, "credits_off": 19 },
+      "expect": { "maxSearches": { "anthropic-api": 2, "openai-api": 2 }, "citeBytes": 1000, "creditsOff": 19, "searchCreditsMax": 26 } },
+    { "name": "effective map narrower than asked", "asked": { "anthropic-api": 2, "openai-api": 2 }, "search": { "enabled": true, "max_searches": { "anthropic-api": 1 }, "cite_bytes": 0 }, "expect": { "maxSearches": { "anthropic-api": 1 }, "citeBytes": 0 } },
+    { "name": "missing search object means off", "asked": { "anthropic-api": 2 }, "search": null, "expect": null },
+    { "name": "disabled means off", "asked": { "anthropic-api": 2 }, "search": { "enabled": false, "max_searches": {}, "cite_bytes": 0 }, "expect": null },
+    { "name": "empty effective map means off", "asked": { "anthropic-api": 2 }, "search": { "enabled": true, "max_searches": {}, "cite_bytes": 1000 }, "expect": null },
+    { "name": "a provider that was not asked for", "asked": { "anthropic-api": 2 }, "search": { "enabled": true, "max_searches": { "openai-api": 2 }, "cite_bytes": 1000 }, "expect": null },
+    { "name": "cap out of range", "asked": { "anthropic-api": 2 }, "search": { "enabled": true, "max_searches": { "anthropic-api": 11 }, "cite_bytes": 1000 }, "expect": null },
+    { "name": "cite_bytes missing", "asked": { "anthropic-api": 2 }, "search": { "enabled": true, "max_searches": { "anthropic-api": 2 } }, "expect": null },
+    { "name": "search is not an object", "asked": { "anthropic-api": 2 }, "search": "yes", "expect": null }
+  ]
+}

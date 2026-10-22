@@ -91,6 +91,18 @@ if ws_enabled; then
     ws_fail gemini-api "http_$http_code" "$msg"
   fi
   jq -e 'type == "object"' "$work/response.json" >/dev/null 2>&1 || ws_fail gemini-api bad_response
+  # input_tokens: the prompt plus the search-result (tool-use) tokens the vendor reports; output_tokens: everything else it billed in the total,
+  # so thinking is included and nothing is undercounted. Field names are the Interactions API's usage object; a call whose usage lacks them
+  # reports null and falls back to bytes. Whether Gemini counts search-result tokens in this usage is [VERIFY] (spec 3, 15).
+  WS_USAGE_JSON="$(jq -c --arg m "$GEMINI_API_MODEL" '(.usage // {}) as $u
+    | (($u.total_input_tokens // $u.input_tokens // $u.prompt_tokens) | if type == "number" then . else null end) as $in
+    | (($u.total_tool_use_tokens // $u.tool_use_prompt_tokens // 0) | if type == "number" then . else 0 end) as $tool
+    | (if $in == null then null else $in + $tool end) as $i
+    | (if $i == null then null elif ($u.total_tokens | type) == "number" then ([($u.total_tokens - $i), (($u.total_output_tokens // $u.output_tokens // 0) | if type == "number" then . else 0 end)] | max)
+       elif ($u.total_output_tokens // $u.output_tokens | type) == "number" then (($u.total_output_tokens // $u.output_tokens) + ($u.total_thought_tokens // 0)) else null end) as $o
+    | {provider:"gemini-api",model:(.model // $m),tokens:($u.total_tokens // null),
+       searches:(([$u.grounding_tool_count[]? | select(.type == "google_search") | .count] | add) // ([.steps[]? | select(.type == "google_search_call") | (.arguments.queries // []) | length] | add) // 0),
+       input_tokens:$i, output_tokens:$o}' "$work/response.json")"
   [[ "$(jq -r '.status // "completed"' "$work/response.json")" == "completed" ]] || ws_fail gemini-api "status_$(jq -r '.status' "$work/response.json" | tr -cd 'a-z_' | head -c 20)"
   [[ "$(jq '(.errors // []) | length' "$work/response.json")" == 0 ]] || ws_fail gemini-api response_errors
   # Only model output, thoughts and the search tool's own steps may appear: anything else means another tool ran. Fail closed.
@@ -103,7 +115,7 @@ if ws_enabled; then
   searches="$(jq '([.usage.grounding_tool_count[]? | select(.type == "google_search") | .count] | add) // ([.steps[]? | select(.type == "google_search_call") | (.arguments.queries // []) | length] | add) // 0' "$work/response.json")"
   cites="$(jq -c '[.steps[]? | select(.type == "model_output") | .content[]? | .annotations[]? | select(.type == "url_citation") | {url: (.url // ""), title: ((.title // "") | tostring), excerpt: ""}] | .[0:60]' "$work/response.json")"
   ws_record "$searches" "$cites"
-  printf 'e3d_provider_usage=%s\n' "$(jq -c --arg m "$GEMINI_API_MODEL" --argjson s "$searches" '{provider:"gemini-api",model:(.model // $m),tokens:(.usage.total_tokens // null),searches:$s}' "$work/response.json")" >&2
+  ws_usage_once "$WS_USAGE_JSON"
   printf '%s\n' "$content"
   if [[ "$PROVIDER_TOKEN_LIMIT" =~ ^[0-9]+$ ]] && (( PROVIDER_TOKEN_LIMIT > 0 && tokens > PROVIDER_TOKEN_LIMIT )); then
     printf 'error: gemini-api provider token ceiling exceeded (%s > %s)\n' "$tokens" "$PROVIDER_TOKEN_LIMIT" >&2

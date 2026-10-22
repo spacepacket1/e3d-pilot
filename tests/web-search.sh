@@ -311,7 +311,7 @@ ok "web_search:false, argument validation, daily search cap"
 tl="$(printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{}}}' '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' | E node "$ROOT/bin/e3d-mcp" 2>/dev/null)"
 jq -e 'select(.id==2) | .result.tools[] | select(.name=="e3d_debate") | (.description | test("question text may be sent to a search provider")) and (.description | test("web_search: false")) and .inputSchema.properties.web_search.type == "boolean" and .outputSchema.properties.web_search.type == "object"' <<< "$tl" >/dev/null || fail "e3d_debate privacy notice / schema"
 # e3d_debate_start (listed only with the hosted async service) carries the same notice
-[[ "$(grep -cF "when the debate finishes. ' + PRIVACY_NOTICE" "$ROOT/bin/e3d-mcp")" == 1 ]] || fail "e3d_debate_start notice"
+[[ "$(grep -cF "when the debate finishes. ' + SEARCH_NOTICE" "$ROOT/bin/e3d-mcp")" == 1 ]] || fail "e3d_debate_start notice"
 grep -q "web_search: { type: 'boolean'" "$ROOT/bin/e3d-mcp" || fail "web_search argument"
 [[ "$(grep -c "web_search: { type: 'boolean'" "$ROOT/bin/e3d-mcp")" == 2 ]] || fail "web_search on e3d_debate and e3d_debate_start"
 ok "privacy notice and schemas"

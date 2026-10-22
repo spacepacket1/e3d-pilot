@@ -74,6 +74,15 @@ if ws_enabled; then
         + (if ($allow | length) > 0 then {allowed_domains: $allow} elif ($deny | length) > 0 then {blocked_domains: $deny} else {} end)]}' > "$work/payload.json"
   max_continuations="${ANTHROPIC_API_MAX_PAUSE_CONTINUATIONS:-2}"
   [[ "$max_continuations" =~ ^[0-9]+$ ]] && (( max_continuations <= 5 )) || max_continuations=2
+  # per-token pricing: one call is one request, so a paused turn is never continued (the continuation would be a second billed request)
+  ws_per_token && max_continuations=0
+  # the usage line of everything received so far: input_tokens counts every billed class and the search results as the vendor reports them
+  anth_usage_json() {
+    jq -sc --arg m "$ANTHROPIC_API_MODEL" '{provider:"anthropic-api",model:(.[-1].model // $m),tokens:(map((.usage.input_tokens // 0) + (.usage.output_tokens // 0)) | add),searches:(map(.usage.server_tool_use.web_search_requests // ([.content[]? | select(.type == "server_tool_use" and .name == "web_search")] | length)) | add)}
+      + (if all(.[]; (.usage.input_tokens | type) == "number" and (.usage.output_tokens | type) == "number")
+         then {input_tokens: (map(.usage.input_tokens + (.usage.cache_creation_input_tokens // 0) + (.usage.cache_read_input_tokens // 0)) | add), output_tokens: (map(.usage.output_tokens) | add)}
+         else {input_tokens: null, output_tokens: null} end)' "$work/all.jsonl"
+  }
   : > "$work/all.jsonl"
   attempt=0
   while :; do
@@ -91,6 +100,7 @@ if ws_enabled; then
       ws_fail anthropic-api "http_$http_code" "$msg"
     fi
     jq -c . "$work/response.json" >> "$work/all.jsonl" || ws_fail anthropic-api bad_response
+    WS_USAGE_JSON="$(anth_usage_json)"
     # Only these blocks may appear: anything else (code execution, client tool use) means another tool ran. Fail closed.
     bad="$(jq -r '[.content[]? | .type as $t | select(($t | IN("text","thinking","redacted_thinking","server_tool_use","web_search_tool_result")) | not) | $t]
       + [.content[]? | select(.type == "server_tool_use" and .name != "web_search") | "server_tool_use:" + (.name // "?")] | unique | join(",")' "$work/response.json")"
@@ -99,6 +109,8 @@ if ws_enabled; then
     serr="$(jq -r '[.content[]? | select(.type == "web_search_tool_result") | .content | select(type == "object" and .type == "web_search_tool_result_error") | .error_code // "unknown"] | map(select(. != "max_uses_exceeded")) | first // empty' "$work/response.json")"
     [[ -z "$serr" ]] || ws_fail anthropic-api "search_error_$serr"
     [[ "$(jq -r '.stop_reason // empty' "$work/response.json")" == "pause_turn" ]] || break
+    # per-token: whatever text came back is the answer (none: no_text below); never a second request
+    ws_per_token && break
     # pause_turn: send the paused assistant content back unchanged (same tools), a bounded number of times.
     (( attempt >= max_continuations )) && ws_fail anthropic-api pause_turn_limit
     attempt=$((attempt + 1))
@@ -112,7 +124,7 @@ if ws_enabled; then
   cites="$(jq -sc --argjson n "$WS_EXCERPT" '[.[].content[]? | select(.type == "text") | .citations[]? | select(.type == "web_search_result_location") | {url: (.url // ""), title: (.title // ""), excerpt: ((.cited_text // "")[0:$n])}]
     + [.[].content[]? | select(.type == "web_search_tool_result") | .content | select(type == "array") | .[] | select(.type == "web_search_result") | {url: (.url // ""), title: (.title // ""), excerpt: ""}] | .[0:60]' "$work/all.jsonl")"
   ws_record "$searches" "$cites"
-  printf 'e3d_provider_usage=%s\n' "$(jq -sc --arg m "$ANTHROPIC_API_MODEL" --argjson t "$tokens" --argjson s "$searches" '{provider:"anthropic-api",model:(.[-1].model // $m),tokens:$t,searches:$s}' "$work/all.jsonl")" >&2
+  ws_usage_once "$(anth_usage_json)"
   printf '%s\n' "$content"
   if [[ "$PROVIDER_TOKEN_LIMIT" =~ ^[0-9]+$ ]] && (( PROVIDER_TOKEN_LIMIT > 0 && tokens > PROVIDER_TOKEN_LIMIT )); then
     printf 'error: anthropic-api provider token ceiling exceeded (%s > %s)\n' "$tokens" "$PROVIDER_TOKEN_LIMIT" >&2

@@ -1,0 +1,30 @@
+{
+  "_about": "per_token_search_v1 contract vectors, e3d-pilot copy (spec docs/token-pricing-search-spec.md 22.5). SYNC: billing's repo owns the shared copy; replace these files with it and update MANIFEST.sha256 (tests/pertoken-search.sh checks the hashes).",
+  "base": { "reservation_id": "rsv_0123456789abcdef", "debate_id": "dbt_0123456789abcdef01234567", "question": "JSON or SQLite?", "providers": ["anthropic-api", "openai-api", "xai-api"],
+    "rounds": 2, "max_words": 300,
+    "max_tokens": { "anthropic-api": 728, "openai-api": 728, "xai-api": 728 }, "answer_bytes": { "anthropic-api": 2912, "openai-api": 2912, "xai-api": 2912 },
+    "max_searches": { "anthropic-api": 2, "openai-api": 2 }, "cite_bytes": 1000 },
+  "customer": { "rounds": 2, "max_words": 300 },
+  "cases": [
+    { "name": "both fields, capable listener", "pricing": "capable", "expect": "ok" },
+    { "name": "no search fields at all (search off)", "pricing": "capable", "delete": ["max_searches", "cite_bytes"], "expect": "ok" },
+    { "name": "max_searches without cite_bytes", "pricing": "capable", "delete": ["cite_bytes"], "expect": "refused" },
+    { "name": "cite_bytes without max_searches", "pricing": "capable", "delete": ["max_searches"], "expect": "refused" },
+    { "name": "per_token listener without the search capability", "pricing": "per_token_only", "expect": "refused" },
+    { "name": "listener without per_token at all", "pricing": "none", "expect": "refused" },
+    { "name": "search fields without the token fields", "pricing": "capable", "delete": ["max_tokens", "answer_bytes"], "expect": "refused" },
+    { "name": "cap zero", "pricing": "capable", "set": { "max_searches": { "anthropic-api": 0 } }, "expect": "refused" },
+    { "name": "cap above 10", "pricing": "capable", "set": { "max_searches": { "anthropic-api": 11 } }, "expect": "refused" },
+    { "name": "cap not an integer", "pricing": "capable", "set": { "max_searches": { "anthropic-api": 1.5 } }, "expect": "refused" },
+    { "name": "cap a string", "pricing": "capable", "set": { "max_searches": { "anthropic-api": "2" } }, "expect": "refused" },
+    { "name": "empty map", "pricing": "capable", "set": { "max_searches": {} }, "expect": "refused" },
+    { "name": "map is an array", "pricing": "capable", "set": { "max_searches": [2] }, "expect": "refused" },
+    { "name": "a provider without token limits", "pricing": "capable", "set": { "max_searches": { "gemini-api": 2 } }, "expect": "refused" },
+    { "name": "cite_bytes negative", "pricing": "capable", "set": { "cite_bytes": -1 }, "expect": "refused" },
+    { "name": "cite_bytes above 20000", "pricing": "capable", "set": { "cite_bytes": 20001 }, "expect": "refused" },
+    { "name": "cite_bytes zero is valid", "pricing": "capable", "set": { "cite_bytes": 0 }, "expect": "ok" },
+    { "name": "cite_bytes a float", "pricing": "capable", "set": { "cite_bytes": 1000.5 }, "expect": "refused" },
+    { "name": "web_search false contradicts max_searches", "pricing": "capable", "set": { "web_search": false }, "expect": "refused" },
+    { "name": "web_search true with max_searches", "pricing": "capable", "set": { "web_search": true }, "expect": "ok" }
+  ]
+}

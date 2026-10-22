@@ -373,8 +373,10 @@ With `E3D_MCP_PRICING=per_token` the server prices debates by tokens for the bil
 | Variable | Default | Meaning |
 |---|---|---|
 | `E3D_MCP_PRICING` | unset | `per_token` turns token pricing on and advertises `per_token_v1`. Hosted mode with the external hook only; needs `E3D_MCP_CUSTOMER_LIMITS` stated (rounds and max_words equal to billing's `PILOT_TOKEN_MAX_ROUNDS` and `PILOT_TOKEN_MAX_WORDS`). |
-| `E3D_MCP_PER_TOKEN_ALLOW_XAI` | unset | `1` offers `xai-api` per token. Off by default: xAI reasoning tokens are billed but not capped by `max_tokens`. |
-| `E3D_DEBATE_MAX_TOKENS` | unset | `e3d-debate` only: `{"<provider>": n}`, the vendor output limit of every call. Switches the debate to per-token mode (API providers only, no retry, no web search, `usage.json` written). e3d-mcp sets it from the quote. |
+| `E3D_MCP_PER_TOKEN_ALLOW_XAI` | unset | `1` offers `xai-api` per token (the owner allows it; the gate stays so it can be dropped at once). xAI reasoning tokens are billed but not capped by `max_tokens`. |
+| `E3D_MCP_PER_TOKEN_SEARCH` | unset | `1` advertises `per_token_search_v1`: web search priced inside per-token pricing (run fields `max_searches` and `cite_bytes`, quote version 2, usage report version 2). Needs `E3D_MCP_PRICING=per_token` and web search on here. Sets the default `E3D_MCP_DAILY_SEARCHES` to 160. See [docs/token-pricing.md](docs/token-pricing.md). |
+| `E3D_DEBATE_MAX_SEARCHES` / `E3D_DEBATE_CITE_BYTES_MAX` | unset | `e3d-debate` only, both or neither, with `E3D_DEBATE_MAX_TOKENS`: `{"<provider>": k}` the searching providers and their quoted per-call cap, and the most bytes of a citation list inserted into a later prompt. e3d-mcp sets them from the quote. |
+| `E3D_DEBATE_MAX_TOKENS` | unset | `e3d-debate` only: `{"<provider>": n}`, the vendor output limit of every call. Switches the debate to per-token mode (API providers only, no retry, no web search unless `E3D_DEBATE_MAX_SEARCHES` says so, `usage.json` written). e3d-mcp sets it from the quote. |
 | `E3D_DEBATE_ANSWER_BYTES_MAX` | unset | `e3d-debate` only: `{"<provider>": n}`, the most UTF-8 bytes of a provider's answer inserted into a later prompt. Works on its own. |
 | `E3D_DEBATE_PROMPT_OVERHEAD` | unset | `1` makes `e3d-debate` print the byte counts of each prompt kind's fixed text and stop. |
 

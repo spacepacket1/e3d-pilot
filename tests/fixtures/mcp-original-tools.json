@@ -30,7 +30,7 @@
           "type": "string"
         },
         "providers": {
-          "description": "Provider names (see e3d_list_providers). Default: the client's own models via MCP sampling (e.g. Copilot) plus detected model CLIs; without sampling, claude + codex.",
+          "description": "Provider names (see e3d_list_providers). Default: this server's own default panel (see e3d_list_providers); never assumed.",
           "items": {
             "type": "string"
           },
