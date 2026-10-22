@@ -1,0 +1,497 @@
+{
+ "_about": "Rows e3d-pilot reports for the fake-vendor fixture scenarios (tests/fixtures/fake-vendor-search.mjs): the input of billing's report-vectors. Each case is one searching call (key r1:<provider>, max_tokens 1000, search mode \"search\"). row null = no row is reported (the vendor never billed it). bytes rows: input_tokens = prompt bytes, output_tokens = max_tokens. SYNC with billing's shared copy.",
+ "cases": [
+  {
+   "name": "anthropic-api 0 search(es)",
+   "provider": "anthropic-api",
+   "model": "a-s0",
+   "cap": 2,
+   "status": 0,
+   "row": {
+    "model": "a-s0",
+    "input_tokens": 108,
+    "output_tokens": 40,
+    "source": "vendor",
+    "searches": 0
+   }
+  },
+  {
+   "name": "anthropic-api 1 search(es)",
+   "provider": "anthropic-api",
+   "model": "a-s1",
+   "cap": 2,
+   "status": 0,
+   "row": {
+    "model": "a-s1",
+    "input_tokens": 908,
+    "output_tokens": 40,
+    "source": "vendor",
+    "searches": 1
+   }
+  },
+  {
+   "name": "anthropic-api 2 search(es)",
+   "provider": "anthropic-api",
+   "model": "a-s2",
+   "cap": 2,
+   "status": 0,
+   "row": {
+    "model": "a-s2",
+    "input_tokens": 1708,
+    "output_tokens": 40,
+    "source": "vendor",
+    "searches": 2
+   }
+  },
+  {
+   "name": "anthropic-api 7 search(es) (over the cap of 2)",
+   "provider": "anthropic-api",
+   "model": "a-s7",
+   "cap": 2,
+   "status": 0,
+   "row": {
+    "model": "a-s7",
+    "input_tokens": 5708,
+    "output_tokens": 40,
+    "source": "vendor",
+    "searches": 7
+   }
+  },
+  {
+   "name": "anthropic-api usage without a search counter and no search items",
+   "provider": "anthropic-api",
+   "model": "a-nocount",
+   "cap": 2,
+   "status": 0,
+   "row": {
+    "model": "a-nocount",
+    "input_tokens": 100,
+    "output_tokens": 40,
+    "source": "vendor",
+    "searches": 0
+   }
+  },
+  {
+   "name": "anthropic-api HTTP 503 (the vendor refused: not billed, no row)",
+   "provider": "anthropic-api",
+   "model": "a-503",
+   "cap": 2,
+   "status": 1,
+   "row": null
+  },
+  {
+   "name": "anthropic-api response lost (timeout): bytes row, search count unknown",
+   "provider": "anthropic-api",
+   "model": "a-hang",
+   "cap": 2,
+   "status": 1,
+   "row": {
+    "model": "unspecified",
+    "source": "bytes",
+    "searches": null
+   }
+  },
+  {
+   "name": "anthropic-api transport error after the request was sent: bytes row, search count unknown",
+   "provider": "anthropic-api",
+   "model": "a-reset",
+   "cap": 2,
+   "status": 1,
+   "row": {
+    "model": "unspecified",
+    "source": "bytes",
+    "searches": null
+   }
+  },
+  {
+   "name": "openai-api 0 search(es)",
+   "provider": "openai-api",
+   "model": "o-s0",
+   "cap": 2,
+   "status": 0,
+   "row": {
+    "model": "o-s0",
+    "input_tokens": 100,
+    "output_tokens": 30,
+    "source": "vendor",
+    "searches": 0
+   }
+  },
+  {
+   "name": "openai-api 1 search(es)",
+   "provider": "openai-api",
+   "model": "o-s1",
+   "cap": 2,
+   "status": 0,
+   "row": {
+    "model": "o-s1",
+    "input_tokens": 900,
+    "output_tokens": 30,
+    "source": "vendor",
+    "searches": 1
+   }
+  },
+  {
+   "name": "openai-api 2 search(es)",
+   "provider": "openai-api",
+   "model": "o-s2",
+   "cap": 2,
+   "status": 0,
+   "row": {
+    "model": "o-s2",
+    "input_tokens": 1700,
+    "output_tokens": 30,
+    "source": "vendor",
+    "searches": 2
+   }
+  },
+  {
+   "name": "openai-api 7 search(es) (over the cap of 2)",
+   "provider": "openai-api",
+   "model": "o-s7",
+   "cap": 2,
+   "status": 0,
+   "row": {
+    "model": "o-s7",
+    "input_tokens": 5700,
+    "output_tokens": 30,
+    "source": "vendor",
+    "searches": 7
+   }
+  },
+  {
+   "name": "openai-api usage without a search counter and no search items",
+   "provider": "openai-api",
+   "model": "o-nocount",
+   "cap": 2,
+   "status": 0,
+   "row": {
+    "model": "o-nocount",
+    "input_tokens": 100,
+    "output_tokens": 30,
+    "source": "vendor",
+    "searches": 0
+   }
+  },
+  {
+   "name": "openai-api HTTP 503 (the vendor refused: not billed, no row)",
+   "provider": "openai-api",
+   "model": "o-503",
+   "cap": 2,
+   "status": 1,
+   "row": null
+  },
+  {
+   "name": "openai-api response lost (timeout): bytes row, search count unknown",
+   "provider": "openai-api",
+   "model": "o-hang",
+   "cap": 2,
+   "status": 1,
+   "row": {
+    "model": "unspecified",
+    "source": "bytes",
+    "searches": null
+   }
+  },
+  {
+   "name": "openai-api transport error after the request was sent: bytes row, search count unknown",
+   "provider": "openai-api",
+   "model": "o-reset",
+   "cap": 2,
+   "status": 1,
+   "row": {
+    "model": "unspecified",
+    "source": "bytes",
+    "searches": null
+   }
+  },
+  {
+   "name": "xai-api 0 search(es)",
+   "provider": "xai-api",
+   "model": "x-s0",
+   "cap": 2,
+   "status": 0,
+   "row": {
+    "model": "x-s0",
+    "input_tokens": 100,
+    "output_tokens": 30,
+    "source": "vendor",
+    "searches": 0
+   }
+  },
+  {
+   "name": "xai-api 1 search(es)",
+   "provider": "xai-api",
+   "model": "x-s1",
+   "cap": 2,
+   "status": 0,
+   "row": {
+    "model": "x-s1",
+    "input_tokens": 900,
+    "output_tokens": 30,
+    "source": "vendor",
+    "searches": 1
+   }
+  },
+  {
+   "name": "xai-api 2 search(es)",
+   "provider": "xai-api",
+   "model": "x-s2",
+   "cap": 2,
+   "status": 0,
+   "row": {
+    "model": "x-s2",
+    "input_tokens": 1700,
+    "output_tokens": 30,
+    "source": "vendor",
+    "searches": 2
+   }
+  },
+  {
+   "name": "xai-api 7 search(es) (over the cap of 2)",
+   "provider": "xai-api",
+   "model": "x-s7",
+   "cap": 2,
+   "status": 0,
+   "row": {
+    "model": "x-s7",
+    "input_tokens": 5700,
+    "output_tokens": 30,
+    "source": "vendor",
+    "searches": 7
+   }
+  },
+  {
+   "name": "xai-api usage without a search counter and no search items",
+   "provider": "xai-api",
+   "model": "x-nocount",
+   "cap": 2,
+   "status": 0,
+   "row": {
+    "model": "x-nocount",
+    "input_tokens": 100,
+    "output_tokens": 30,
+    "source": "vendor",
+    "searches": 0
+   }
+  },
+  {
+   "name": "xai-api HTTP 503 (the vendor refused: not billed, no row)",
+   "provider": "xai-api",
+   "model": "x-503",
+   "cap": 2,
+   "status": 1,
+   "row": null
+  },
+  {
+   "name": "xai-api response lost (timeout): bytes row, search count unknown",
+   "provider": "xai-api",
+   "model": "x-hang",
+   "cap": 2,
+   "status": 1,
+   "row": {
+    "model": "unspecified",
+    "source": "bytes",
+    "searches": null
+   }
+  },
+  {
+   "name": "xai-api transport error after the request was sent: bytes row, search count unknown",
+   "provider": "xai-api",
+   "model": "x-reset",
+   "cap": 2,
+   "status": 1,
+   "row": {
+    "model": "unspecified",
+    "source": "bytes",
+    "searches": null
+   }
+  },
+  {
+   "name": "gemini-api 0 search(es)",
+   "provider": "gemini-api",
+   "model": "g-s0",
+   "cap": 2,
+   "status": 0,
+   "row": {
+    "model": "g-s0",
+    "input_tokens": 100,
+    "output_tokens": 30,
+    "source": "vendor",
+    "searches": 0
+   }
+  },
+  {
+   "name": "gemini-api 1 search(es)",
+   "provider": "gemini-api",
+   "model": "g-s1",
+   "cap": 2,
+   "status": 0,
+   "row": {
+    "model": "g-s1",
+    "input_tokens": 900,
+    "output_tokens": 30,
+    "source": "vendor",
+    "searches": 1
+   }
+  },
+  {
+   "name": "gemini-api 2 search(es)",
+   "provider": "gemini-api",
+   "model": "g-s2",
+   "cap": 2,
+   "status": 0,
+   "row": {
+    "model": "g-s2",
+    "input_tokens": 1700,
+    "output_tokens": 30,
+    "source": "vendor",
+    "searches": 2
+   }
+  },
+  {
+   "name": "gemini-api 7 search(es) (over the cap of 2)",
+   "provider": "gemini-api",
+   "model": "g-s7",
+   "cap": 2,
+   "status": 0,
+   "row": {
+    "model": "g-s7",
+    "input_tokens": 5700,
+    "output_tokens": 30,
+    "source": "vendor",
+    "searches": 7
+   }
+  },
+  {
+   "name": "gemini-api usage without a search counter and no search items",
+   "provider": "gemini-api",
+   "model": "g-nocount",
+   "cap": 2,
+   "status": 0,
+   "row": {
+    "model": "g-nocount",
+    "input_tokens": 100,
+    "output_tokens": 20,
+    "source": "vendor",
+    "searches": 0
+   }
+  },
+  {
+   "name": "gemini-api HTTP 503 (the vendor refused: not billed, no row)",
+   "provider": "gemini-api",
+   "model": "g-503",
+   "cap": 2,
+   "status": 1,
+   "row": null
+  },
+  {
+   "name": "gemini-api response lost (timeout): bytes row, search count unknown",
+   "provider": "gemini-api",
+   "model": "g-hang",
+   "cap": 2,
+   "status": 1,
+   "row": {
+    "model": "unspecified",
+    "source": "bytes",
+    "searches": null
+   }
+  },
+  {
+   "name": "gemini-api transport error after the request was sent: bytes row, search count unknown",
+   "provider": "gemini-api",
+   "model": "g-reset",
+   "cap": 2,
+   "status": 1,
+   "row": {
+    "model": "unspecified",
+    "source": "bytes",
+    "searches": null
+   }
+  },
+  {
+   "name": "openai-api search tool failed after usage (our own check refuses the answer; the vendor billed it)",
+   "provider": "openai-api",
+   "model": "o-failed",
+   "cap": 2,
+   "status": 1,
+   "row": {
+    "model": "o-failed",
+    "input_tokens": 900,
+    "output_tokens": 30,
+    "source": "vendor",
+    "searches": 1
+   }
+  },
+  {
+   "name": "xai-api search tool failed after usage",
+   "provider": "xai-api",
+   "model": "x-failed",
+   "cap": 2,
+   "status": 1,
+   "row": {
+    "model": "x-failed",
+    "input_tokens": 900,
+    "output_tokens": 30,
+    "source": "vendor",
+    "searches": 1
+   }
+  },
+  {
+   "name": "gemini-api interaction failed after usage",
+   "provider": "gemini-api",
+   "model": "g-failed",
+   "cap": 2,
+   "status": 1,
+   "row": {
+    "model": "g-failed",
+    "input_tokens": 100,
+    "output_tokens": 20,
+    "source": "vendor",
+    "searches": 0
+   }
+  },
+  {
+   "name": "anthropic-api search error inside a 200",
+   "provider": "anthropic-api",
+   "model": "a-failed",
+   "cap": 2,
+   "status": 1,
+   "row": {
+    "model": "a-failed",
+    "input_tokens": 108,
+    "output_tokens": 40,
+    "source": "vendor",
+    "searches": 0
+   }
+  },
+  {
+   "name": "anthropic-api paused turn with text: one request, the text is the answer",
+   "provider": "anthropic-api",
+   "model": "a-pause",
+   "cap": 2,
+   "status": 0,
+   "row": {
+    "model": "a-pause",
+    "input_tokens": 908,
+    "output_tokens": 40,
+    "source": "vendor",
+    "searches": 1
+   }
+  },
+  {
+   "name": "anthropic-api paused turn without text: one request, no answer, the billed row stands",
+   "provider": "anthropic-api",
+   "model": "a-pause-empty",
+   "cap": 2,
+   "status": 1,
+   "row": {
+    "model": "a-pause-empty",
+    "input_tokens": 908,
+    "output_tokens": 40,
+    "source": "vendor",
+    "searches": 1
+   }
+  }
+ ]
+}

@@ -126,17 +126,22 @@ done
 # retried after it may have reached the vendor, there is no web search, no Jev call and no fallback call (so at most one vendor call per
 # round and provider, and one for the synthesis), and usage.json lists every attempted call. E3D_DEBATE_ANSWER_BYTES_MAX {provider: n}
 # cuts each prior answer inserted into a later prompt to that many UTF-8 bytes. Both unset: nothing below changes anything.
+# Web search is off in a per-token debate unless the quote priced it: E3D_DEBATE_MAX_SEARCHES {provider: k} (with E3D_DEBATE_CITE_BYTES_MAX n,
+# both or neither) names the providers that may search and the per-call cap each was priced at; the number in the prompt is that cap.
+# Even then a search call is exactly one vendor request: no retry, no continuation, and no second call without search.
 PT_LIB="$REPO_ROOT/lib/debate/token-pricing.mjs"
-PT_ON=0; AB_ON=0; PT_MAX_JSON="{}"; PT_ANS_JSON="{}"
-if [[ "$PROMPT_OVERHEAD" != "1" && ( -n "${E3D_DEBATE_MAX_TOKENS:-}" || -n "${E3D_DEBATE_ANSWER_BYTES_MAX:-}" ) ]]; then
+PT_ON=0; AB_ON=0; PT_MAX_JSON="{}"; PT_ANS_JSON="{}"; PT_SEARCH=0; PT_SEARCH_JSON="{}"; PT_CITE_BYTES=0
+if [[ "$PROMPT_OVERHEAD" != "1" && ( -n "${E3D_DEBATE_MAX_TOKENS:-}" || -n "${E3D_DEBATE_ANSWER_BYTES_MAX:-}" || -n "${E3D_DEBATE_MAX_SEARCHES:-}" || -n "${E3D_DEBATE_CITE_BYTES_MAX:-}" ) ]]; then
   command -v node >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 && [[ -f "$PT_LIB" ]] || { echo "error: token limits need node, jq and $PT_LIB" >&2; exit 1; }
   PT_CFG="$(node "$PT_LIB" config "$DEBATE_SYNTHESIZER" "${DEBATE_PROVIDERS[@]}")" || exit 1
   [[ "$(jq -r .perToken <<< "$PT_CFG")" == "true" ]] && { PT_ON=1; PT_MAX_JSON="$(jq -c .maxTokens <<< "$PT_CFG")"; }
   [[ "$(jq -r '.answerBytes != null' <<< "$PT_CFG")" == "true" ]] && { AB_ON=1; PT_ANS_JSON="$(jq -c .answerBytes <<< "$PT_CFG")"; }
+  [[ "$(jq -r '.maxSearches != null' <<< "$PT_CFG")" == "true" ]] && { PT_SEARCH=1; PT_SEARCH_JSON="$(jq -c .maxSearches <<< "$PT_CFG")"; PT_CITE_BYTES="$(jq -r .citeBytes <<< "$PT_CFG")"; }
 fi
 if (( PT_ON == 1 )); then
   DEBATE_PROVIDER_RETRIES=0
-  WEB_SEARCH_REQUESTED=0
+  # search only for the providers the quote named (the kill switch and --web-search off still win); no quote for search: off, as before
+  (( PT_SEARCH == 1 )) || WEB_SEARCH_REQUESTED=0
 fi
 # pt_env <provider>: sets PT_ENV to the one environment assignment that gives that provider's adapter its output limit.
 PT_ENV=()
@@ -149,8 +154,15 @@ pt_env() {
     gemini-api) var=GEMINI_API_MAX_TOKENS ;; xai-api) var=XAI_API_MAX_TOKENS ;;
     *) echo "error: no output-limit setting for provider $1" >&2; exit 1 ;;
   esac
-  PT_ENV=("$var=$(jq -r --arg p "$1" '.[$p]' <<< "$PT_MAX_JSON")")
+  PT_ENV=("$var=$(jq -r --arg p "$1" '.[$p]' <<< "$PT_MAX_JSON")" E3D_PROVIDER_PER_TOKEN=1)
 }
+# WS_CAP: the per-call search cap each searching provider was quoted at (per-token search); ws_cap_for is the number the prompt tells the
+# model and the adapter enforces: the quote's, never the global E3D_DEBATE_SEARCH_MAX_PER_CALL
+declare -A WS_CAP
+if (( PT_SEARCH == 1 )); then
+  while IFS=$'\t' read -r _p _k; do WS_CAP[$_p]="$_k"; done < <(jq -r 'to_entries[] | [.key, .value] | @tsv' <<< "$PT_SEARCH_JSON")
+fi
+ws_cap_for() { printf '%s' "${WS_CAP[$1]:-$WS_MAX_SEARCHES}"; }
 
 if [[ -n "$LINK_REPO" || -n "$LINK_IDEA" ]]; then
   [[ -n "$LINK_REPO" && -n "$LINK_IDEA" ]] || { echo "error: --repo and --idea must be given together" >&2; exit 1; }
@@ -170,11 +182,11 @@ fi
 # one debate carries the same date.
 DEBATE_DATE="$(date -u +%Y-%m-%d)"
 NO_WEB_ACCESS_TEXT="You have no web access and your knowledge may be out of date. If the question depends on recent events or current data, say so and give your answer conditionally."
-# date_preamble <web-access: 1|0>
+# date_preamble <web-access: 1|0> [max searches]
 date_preamble() {
   printf "Today's date (UTC): %s.\n" "$DEBATE_DATE"
   if [[ "${1:-0}" == "1" ]]; then
-    printf 'You have a web search tool for this answer (at most %s searches). Use it only when current facts matter, and say which facts came from the web.\n' "$WS_MAX_SEARCHES"
+    printf 'You have a web search tool for this answer (at most %s searches). Use it only when current facts matter, and say which facts came from the web.\n' "${2:-$WS_MAX_SEARCHES}"
   else
     printf '%s\n' "$NO_WEB_ACCESS_TEXT"
   fi
@@ -246,11 +258,14 @@ ws_failure_transient() { # <record> <stderr>
 # vendor failure (same kind of call first: every retry is again a search call with the same caps, and only the last
 # attempt's record counts, so searches are never double counted). If it still fails without a good search record, fail
 # closed: ask the same model again WITHOUT search (with the no-web-access wording; that call has its own retries) and record why.
+# Per-token pricing (PT_ON): exactly one request, so no retry (DEBATE_PROVIDER_RETRIES is 0) and no second call without search: a search
+# call that fails leaves that voice without an answer for the round, and only the failure is recorded.
 run_search_call() {
   local provider="$1" round="$2" prompt="$3" out="$4" err="$5" raw="$work_dir/ws-raw-r$2-$1.json" st reason attempt=0
+  pt_env "$provider"
   while :; do
     rm -f "$raw"
-    env E3D_PROVIDER_WEB_SEARCH=1 E3D_PROVIDER_WS_OUT="$raw" E3D_PROVIDER_WS_MAX_SEARCHES="$WS_MAX_SEARCHES" \
+    env E3D_PROVIDER_WEB_SEARCH=1 E3D_PROVIDER_WS_OUT="$raw" E3D_PROVIDER_WS_MAX_SEARCHES="$(ws_cap_for "$provider")" ${PT_ENV[@]+"${PT_ENV[@]}"} \
       E3D_PROVIDER_WS_ALLOW="$(jq -r '.allow | join(",")' <<< "$WS_CFG")" E3D_PROVIDER_WS_DENY="$(jq -r '.deny | join(",")' <<< "$WS_CFG")" \
       E3D_PROVIDER_WS_EXCERPT_CHARS="$(jq -r .excerptChars <<< "$WS_CFG")" E3D_PROVIDER_WS_TIMEOUT="$(ws_call_timeout)" \
       "$PROVIDERS_DIR/$provider" "$prompt" > "$out" 2> "$err"
@@ -265,6 +280,10 @@ run_search_call() {
   done
   if (( st != 0 )) && ! jq -e '.ok == true' "$raw" >/dev/null 2>&1; then
     reason="$(jq -r '.error // "error"' "$raw" 2>/dev/null | tr -cd 'A-Za-z0-9_.:-' | head -c 60)"
+    if (( PT_ON == 1 )); then
+      jq -nc --arg p "$provider" --argjson r "$round" --arg why "${reason:-error}" '{provider:$p, round:$r, reason:$why, fallback_call:false}' > "$work_dir/ws-fallback-r$round-$provider.json"
+      return "$st"
+    fi
     jq -nc --arg p "$provider" --argjson r "$round" --arg why "${reason:-error}" '{provider:$p, round:$r, reason:$why}' > "$work_dir/ws-fallback-r$round-$provider.json"
     round_prompt "$provider" "$round" 0 > "$work_dir/round${round}-${provider}.nosearch.prompt.md"
     run_with_retry "$provider" "$round" "$out" "$err.fallback" no_search_env "$PROVIDERS_DIR/$provider" "$work_dir/round${round}-${provider}.nosearch.prompt.md"
@@ -279,7 +298,8 @@ ws_finish_answer() {
   local provider="$1" round="$2" answer rec="$work_dir/ws-record-r$2-$1.json" fb="$work_dir/ws-fallback-r$2-$1.json" prefix=""
   answer="$(printf '%s' "$3" | node "$WS_LIB" sanitize 2>/dev/null)" || answer="(answer withheld: it could not be sanitised)"
   if [[ -f "$fb" ]]; then
-    prefix="[Web search was unavailable for this answer ($(jq -r .reason "$fb")), so $provider answered without web access.]"
+    # per-token: no fallback call was made, so there is no answer without web access to announce
+    [[ "$(jq -r 'if .fallback_call == false then "false" else "true" end' "$fb")" == "false" ]] || prefix="[Web search was unavailable for this answer ($(jq -r .reason "$fb")), so $provider answered without web access.]"
   elif [[ -f "$work_dir/ws-raw-r$round-$provider.json" ]]; then
     node "$WS_LIB" filter "$work_dir/ws-raw-r$round-$provider.json" "$provider" "$round" > "$rec" 2>/dev/null || rm -f "$rec"
     if [[ -s "$rec" ]]; then
@@ -289,6 +309,8 @@ ws_finish_answer() {
       [[ "$(jq -r .cap_exceeded "$rec")" == "true" ]] && echo "ALARM: web search cap exceeded: provider=$provider round=$round searches=$(jq -r .searches "$rec") cap=$(jq -r .cap "$rec")" >&2
     fi
   fi
+  # the citation list on its own, so a per-token debate can cut it to its quoted byte limit when it rides into a later prompt
+  printf '%s' "$prefix" > "$work_dir/ws-prefix-r$round-$provider.txt"
   if [[ -n "$prefix" ]]; then printf '%s\n\n%s' "$prefix" "$answer"; else printf '%s' "$answer"; fi
 }
 # Round 2+ and the synthesizer, only when a voice could search: the other answers are data, not instructions.
@@ -466,7 +488,7 @@ decision_round() {
 # round_prompt <provider> <round> <web-access 1|0>: the prompt for one call (shared by the first try and a no-search fallback)
 round_prompt() {
   local provider="$1" round="$2" web="$3" other
-  date_preamble "$web"
+  date_preamble "$web" "$([[ "$web" == 1 ]] && ws_cap_for "$provider")"
   (( round >= 2 )) && ws_peer_notice
   if [[ "$DEBATE_PROMPT_VERSION" != "v2" ]]; then
     if (( round == 1 )); then v3_round1_prompt "$provider"; else v3_round2_prompt "$provider"; fi
@@ -538,8 +560,26 @@ if [[ "$PROMPT_OVERHEAD" == "1" ]]; then
   ovs_full="$(synthesis_prompt "$work_dir/overhead.transcript.md" "ran the full $DEBATE_ROUNDS rounds without every participant converging" | wc -c | tr -d ' ')"
   ovs_conv="$(synthesis_prompt "$work_dir/overhead.transcript.md" "converged after round $DEBATE_ROUNDS of a max $DEBATE_ROUNDS -- all participants ended that round agreeing" | wc -c | tr -d ' ')"
   (( ovs_conv > ovs_full )) && ovs_full="$ovs_conv"
+  # E3D_DEBATE_PROMPT_OVERHEAD_SEARCH=1: the same counts for a debate in which a voice may search (the web-access wording with the cap, and the
+  # notice that later prompts carry), and the longest citation list a searching answer can start with, so the owner can set the rate table's
+  # searchCiteBytes (a cut list is never longer than that; what real debates insert is measured from their transcripts)
+  ov_search='null'
+  if [[ "${E3D_DEBATE_PROMPT_OVERHEAD_SEARCH:-0}" == "1" ]]; then
+    WS_ANY=1; WS_MAX_SEARCHES="${E3D_DEBATE_PROMPT_OVERHEAD_SEARCH_CAP:-2}"
+    sov1="$(round_prompt "${DEBATE_PROVIDERS[0]}" 1 1 | wc -c | tr -d ' ')"
+    sovn="$(round_prompt "${DEBATE_PROVIDERS[0]}" 2 1 | wc -c | tr -d ' ')"
+    sovs_full="$(synthesis_prompt "$work_dir/overhead.transcript.md" "ran the full $DEBATE_ROUNDS rounds without every participant converging" | wc -c | tr -d ' ')"
+    sovs_conv="$(synthesis_prompt "$work_dir/overhead.transcript.md" "converged after round $DEBATE_ROUNDS of a max $DEBATE_ROUNDS -- all participants ended that round agreeing" | wc -c | tr -d ' ')"
+    (( sovs_conv > sovs_full )) && sovs_full="$sovs_conv"
+    cite_worst="$(node --input-type=module -e "import { citeList, DEFAULTS } from '$REPO_ROOT/lib/debate/websearch.mjs';
+      const c = Array.from({ length: DEFAULTS.maxCitations }, () => ({ domain: 'a'.repeat(63) + '.' + 'b'.repeat(63) + '.' + 'c'.repeat(63) + '.' + 'd'.repeat(55) + '.com', url: 'https://x.example/' + 'p'.repeat(482) }));
+      process.stdout.write(String(Buffer.byteLength(citeList({ citations: c }), 'utf8')));" 2>/dev/null || echo 0)"
+    ov_search="$(jq -nc --argjson cap "$WS_MAX_SEARCHES" --argjson r1 "$sov1" --argjson rn "$sovn" --argjson sy "$sovs_full" --argjson cw "${cite_worst:-0}" \
+      '{cap:$cap, promptOverheadBytes:{round1:$r1, roundN:$rn, synthesis:$sy}, citeListWorstBytes:$cw}')"
+  fi
   jq -nc --arg v "$DEBATE_PROMPT_VERSION" --argjson p "$(printf '%s\n' "${DEBATE_PROVIDERS[@]}" | jq -R . | jq -sc .)" --argjson r "$DEBATE_ROUNDS" \
-    --argjson r1 "$ov1" --argjson rn "$ovn" --argjson sy "$ovs_full" '{prompt_version:$v, providers:$p, rounds:$r, promptOverheadBytes:{round1:$r1, roundN:$rn, synthesis:$sy}}'
+    --argjson r1 "$ov1" --argjson rn "$ovn" --argjson sy "$ovs_full" --argjson srch "$ov_search" \
+    '{prompt_version:$v, providers:$p, rounds:$r, promptOverheadBytes:{round1:$r1, roundN:$rn, synthesis:$sy}} + (if $srch == null then {} else {search:$srch} end)'
   rm -rf "$work_dir"
   exit 0
 fi
@@ -558,6 +598,22 @@ prompt_answer() {
   fi
 }
 
+# prompt_answer_cited <provider> <round> <answer>: prompt_answer, and under per-token search the citation list the answer starts with is cut
+# to E3D_DEBATE_CITE_BYTES_MAX bytes on its own (the answer text keeps its own answer-bytes limit), so each is bounded once.
+prompt_answer_cited() {
+  local pfx="" cited="" body
+  if (( PT_SEARCH == 1 )) && [[ -s "$work_dir/ws-prefix-r$2-$1.txt" ]]; then
+    pfx="$(cat "$work_dir/ws-prefix-r$2-$1.txt")"
+    if [[ -n "$pfx" && "${3:0:${#pfx}}" == "$pfx" ]]; then
+      body="${3:$(( ${#pfx} + 2 ))}"
+      (( PT_CITE_BYTES > 0 )) && cited="$(printf '%s' "$pfx" | node "$PT_LIB" truncate "$PT_CITE_BYTES")"
+      if [[ -n "$cited" ]]; then printf '%s\n\n%s' "$cited" "$(prompt_answer "$1" "$body")"; else prompt_answer "$1" "$body"; fi
+      return 0
+    fi
+  fi
+  prompt_answer "$1" "$3"
+}
+
 # Usage report (per-token mode): usage.json holds one row per attempted call, rewritten after every round and the synthesis so a
 # debate that is stopped still leaves the rows of the calls that finished.
 PT_USAGE_FILE=""
@@ -568,9 +624,13 @@ if (( PT_ON == 1 )); then
   printf '[]\n' > "$PT_USAGE_FILE"
 fi
 # pt_usage_row <key> <provider> <prompt-file> <out-file> <stderr-file> <exit-status>
+# With per-token search the row carries `searches` (usage report version 2): 0 for a call made without the search tool, else the vendor's own
+# counter (null when there is none). Without it the rows are exactly today's.
 pt_usage_row() {
   (( PT_ON == 1 )) || return 0
-  node "$PT_LIB" row "$1" "$2" "$3" "$4" "$5" "$6" "$(jq -r --arg p "$2" '.[$p]' <<< "$PT_MAX_JSON")" >> "$work_dir/usage.rows" 2>/dev/null || true
+  local mode=""
+  if (( PT_SEARCH == 1 )); then mode=none; [[ "$1" != synth ]] && search_on_for "$2" && mode=search; fi
+  node "$PT_LIB" row "$1" "$2" "$3" "$4" "$5" "$6" "$(jq -r --arg p "$2" '.[$p]' <<< "$PT_MAX_JSON")" "$mode" >> "$work_dir/usage.rows" 2>/dev/null || true
 }
 pt_usage_write() {
   (( PT_ON == 1 )) || return 0
@@ -645,7 +705,7 @@ for ((round = 1; round <= DEBATE_ROUNDS; round++)); do
       answer="$(v3_append_derived_lines "$provider" "$answer")"
     fi
     LAST_ANSWER[$provider]="$answer"
-    PROMPT_ANSWER[$provider]="$(prompt_answer "$provider" "$answer")"
+    PROMPT_ANSWER[$provider]="$(prompt_answer_cited "$provider" "$round" "$answer")"
     printf '## Round %d -- %s\n\n%s\n\n' "$round" "$provider" "$answer" >> "$transcript_md"
     printf '## Round %d -- %s\n\n%s\n\n' "$round" "$provider" "${PROMPT_ANSWER[$provider]}" >> "$prompt_transcript_md"
     printf -- '--- Round %d / %s ---\n%s\n\n' "$round" "$provider" "$answer"
@@ -735,8 +795,8 @@ if [[ $synth_status -eq 0 && -s "$synth_out" ]]; then
     node "$WS_LIB" sanitize < "$synth_out" > "$synth_out.clean" 2>/dev/null && mv "$synth_out.clean" "$synth_out" || printf 'FINAL ANSWER: (withheld: the verdict could not be sanitised)\nCONSENSUS: unknown\nDISSENT: unknown\n' > "$synth_out"
   fi
   if (( WS_ANY == 1 )) && [[ -s "$work_dir/web-search.json" ]]; then
-    jq -r '"WEB SEARCH: on for \(.models_with_search) of \(.models_total) models; \(.searches_total) search(es) used"
-      + (if (.flags.unavailable | length) > 0 then "; unavailable for " + ([.flags.unavailable[] | "\(.provider) in round \(.round) (\(.reason))"] | join(", ")) + ", which answered without web access" else "" end)' "$work_dir/web-search.json"
+    jq -r --arg tail "$( (( PT_ON == 1 )) && echo ', whose search call failed (a per-token debate makes no second call without search)' || echo ', which answered without web access')" '"WEB SEARCH: on for \(.models_with_search) of \(.models_total) models; \(.searches_total) search(es) used"
+      + (if (.flags.unavailable | length) > 0 then "; unavailable for " + ([.flags.unavailable[] | "\(.provider) in round \(.round) (\(.reason))"] | join(", ")) + $tail else "" end)' "$work_dir/web-search.json"
   fi
   cat "$synth_out"
   synth_label="$DEBATE_SYNTHESIZER"

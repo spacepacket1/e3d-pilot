@@ -228,6 +228,7 @@ const ops = {
       order.push(['finalize', r.id]);
       const rep = usageReports.get(r.id);
       answer.pricing = { quote_credits: q.answer.credits, charged_credits: charged, rate_version: q.answer.rate_version,
+        ...(rep && q.search ? { search: searchPriced(q, rep.rows) } : {}),
         usage: rep ? { input_tokens: rep.rows.reduce((t, x) => t + x.input_tokens, 0), output_tokens: rep.rows.reduce((t, x) => t + x.output_tokens, 0), source: rep.rows.some((x) => x.source === 'bytes') ? 'estimate' : 'vendor' }
           : { input_tokens: b.actual.est_input_tokens, output_tokens: b.actual.est_output_tokens, source: 'estimate' } };
     }
@@ -301,19 +302,33 @@ const readBody = (req, cap = 16384) => new Promise((resolve) => {
 // quoted request id must carry units.calls = providers x rounds + 1; a usage report is validated against that manifest and accepted
 // once per reservation; a finalize of a quoted reservation answers with a `pricing` object. Limits per provider come from
 // STUB_PRICING_LIMITS ({"<provider>": {"maxTokens": n, "answerBytes": n}}); a provider not in it has no rate.
+// STUB_SEARCH=1 also answers web search (per_token_search_v1; billing's docs/token-pricing-search-spec.md 22.1): a version 2 quote with `searches`
+// {provider: k} gets a `search` object (effective caps: the providers of STUB_SEARCH_PROVIDERS, default all four, at most 2 per call; cite_bytes
+// STUB_SEARCH_CITE_BYTES, default 1000; 5 credits per searching call on top); a version 2 usage report may carry `searches` per row (a whole number
+// or null) and the finalize answer's pricing gets `search: {searches, charged_credits_search}` (reported searches clamped to each key's cap, 1 credit each).
+// Without STUB_SEARCH a version 2 quote is answered like billing before the feature: no `search` object.
 const PRICING = env.STUB_PRICING === '1';
+const SEARCH = env.STUB_SEARCH === '1';
+const SEARCH_PROVIDERS = env.STUB_SEARCH_PROVIDERS ? env.STUB_SEARCH_PROVIDERS.split(',') : ['anthropic-api', 'openai-api', 'gemini-api', 'xai-api'];
 const RATE_LIMITS = env.STUB_PRICING_LIMITS ? JSON.parse(env.STUB_PRICING_LIMITS) : { 'anthropic-api': { maxTokens: 700, answerBytes: 6000 }, 'openai-api': { maxTokens: 700, answerBytes: 6000 }, 'gemini-api': { maxTokens: 700, answerBytes: 6000 }, 'xai-api': { maxTokens: 700, answerBytes: 6000 } };
 const QUOTE_MAX_CREDITS = int(env.STUB_QUOTE_MAX_CREDITS, 1000);
 const quotes = new Map();       // request_id -> { key, answer, basis, calls, reservation_id }
 const usageReports = new Map(); // reservation_id -> { key, rows, replays }
 const order = [];               // the order of quote, reserve, usage and finalize calls: [call, reservation_id|request_id]
+// reported searches per row, each clamped to its key's cap (the synthesizer and a provider without a cap price 0; null prices 0)
+const searchPriced = (q, rows) => {
+  const priced = rows.reduce((t, x) => t + (x.key === 'synth' ? 0 : Math.min(Number.isSafeInteger(x.searches) ? x.searches : 0, q.search[x.provider] ?? 0)), 0);
+  return { searches: priced, charged_credits_search: priced };
+};
 const manifestOf = (basis) => new Set([...basis.providers.flatMap((p) => Array.from({ length: basis.rounds }, (_, i) => `r${i + 1}:${p}`)), 'synth']);
 async function pricingRoute(req, res, raw, route) {
   if (req.method !== 'POST') return send(res, 405, { error: 'method_not_allowed' });
   if (!authorized(req)) return send(res, 401, { error: 'unauthorized' });
   const header = route === 'quote' ? 'x-e3d-pricing-version' : 'x-e3d-usage-version';
-  if (req.headers[header] !== '1') return send(res, 400, { error: 'unsupported_version' });
+  const version = req.headers[header];
+  if (version !== '1' && version !== '2') return send(res, 400, { error: 'unsupported_version' });
   received[route] = (received[route] ?? 0) + 1;
+  received[`${route}_v${version}`] = (received[`${route}_v${version}`] ?? 0) + 1;
   let b; try { b = JSON.parse(raw || ''); } catch { return send(res, 400, { ok: false, code: 'invalid' }); }
   if (!obj(b)) return send(res, 400, { ok: false, code: 'invalid' });
   if (route === 'quote') {
@@ -325,11 +340,19 @@ async function pricingRoute(req, res, raw, route) {
     const prior = quotes.get(reqId);
     if (prior) return prior.key === key ? send(res, 200, prior.answer) : send(res, 409, { ok: false, code: 'conflict' });
     if (b.providers.some((p) => !RATE_LIMITS[p])) return send(res, 400, { ok: false, code: 'unknown_model_rate' });
-    const credits = b.providers.length * b.rounds * 3 + 2;
-    if (credits > QUOTE_MAX_CREDITS) return send(res, 400, { ok: false, code: 'quote_exceeds_limit', credits, max_credits: QUOTE_MAX_CREDITS });
+    const creditsOff = b.providers.length * b.rounds * 3 + 2;
+    // search (version 2 and STUB_SEARCH only): the effective cap map
+    let effective = null;
+    if (version === '2' && SEARCH && obj(b.searches)) {
+      const e = Object.fromEntries(Object.entries(b.searches).filter(([p, k]) => b.providers.includes(p) && SEARCH_PROVIDERS.includes(p) && n(k, 10, 1)).map(([p, k]) => [p, Math.min(k, 2)]));
+      if (Object.keys(e).length) effective = e;
+    }
+    const credits = creditsOff + (effective ? Object.keys(effective).length * b.rounds * 5 : 0);
+    if (credits > QUOTE_MAX_CREDITS) return send(res, 400, { ok: false, code: 'quote_exceeds_limit', credits, max_credits: QUOTE_MAX_CREDITS, ...(effective ? { credits_off: creditsOff } : {}) });
     const answer = { ok: true, credits, rate_version: 'stub.1', max_credits: QUOTE_MAX_CREDITS,
-      max_tokens: Object.fromEntries(b.providers.map((p) => [p, RATE_LIMITS[p].maxTokens])), answer_bytes: Object.fromEntries(b.providers.map((p) => [p, RATE_LIMITS[p].answerBytes])) };
-    quotes.set(reqId, { key, answer, basis: { providers: [...b.providers], rounds: b.rounds, max_words: b.max_words, question_sha256: b.question_sha256 }, calls: b.providers.length * b.rounds + 1, reservation_id: null });
+      max_tokens: Object.fromEntries(b.providers.map((p) => [p, RATE_LIMITS[p].maxTokens])), answer_bytes: Object.fromEntries(b.providers.map((p) => [p, RATE_LIMITS[p].answerBytes])),
+      ...(version === '2' && SEARCH ? { search: effective ? { enabled: true, max_searches: effective, cite_bytes: int(env.STUB_SEARCH_CITE_BYTES, 1000), search_credits_max: credits - creditsOff, credits_off: creditsOff } : { enabled: false, max_searches: {}, cite_bytes: 0, search_credits_max: 0, credits_off: credits } } : {}) };
+    quotes.set(reqId, { key, answer, search: effective, asked: obj(b.searches) ? b.searches : null, version, basis: { providers: [...b.providers], rounds: b.rounds, max_words: b.max_words, question_sha256: b.question_sha256 }, calls: b.providers.length * b.rounds + 1, reservation_id: null });
     order.push(['quote', reqId]);
     return send(res, 200, answer);
   }
@@ -352,7 +375,8 @@ async function pricingRoute(req, res, raw, route) {
     if (!re.word128.test(x.model ?? '')) return send(res, 400, { ok: false, code: 'invalid', why: 'model' });
     if (!n(x.input_tokens, 1e9) || !n(x.output_tokens, 1e9)) return send(res, 400, { ok: false, code: 'invalid', why: 'tokens' });
     if (!['vendor', 'bytes'].includes(x.source)) return send(res, 400, { ok: false, code: 'invalid', why: 'source' });
-    rows.push({ key: x.key, provider: x.provider, model: x.model, input_tokens: x.input_tokens, output_tokens: x.output_tokens, source: x.source });
+    if (version === '2' && 'searches' in x && x.searches !== null && !n(x.searches, 1e9)) return send(res, 400, { ok: false, code: 'invalid', why: 'searches' });
+    rows.push({ key: x.key, provider: x.provider, model: x.model, input_tokens: x.input_tokens, output_tokens: x.output_tokens, source: x.source, ...(version === '2' && 'searches' in x ? { searches: x.searches } : {}) });
   }
   rows.sort((a, c) => (a.key < c.key ? -1 : a.key > c.key ? 1 : 0));
   const key = hex(JSON.stringify(rows));
@@ -406,7 +430,7 @@ const server = http.createServer(async (req, res) => {
         // no debate content here: ids, states and amounts only
         debates: [...debates.values()].map((d) => ({ debate_id: d.debate_id, reservation_id: d.reservation_id, principal: d.principal, status: d.status, outcome: d.outcome, credits_charged: d.credits_charged, truncated: d.truncated, has_result: d.result != null, transcript_bytes: d.transcript == null ? null : Buffer.byteLength(d.transcript) })),
         finalize_requests: finalizeRequests, effects, received,
-        ...(PRICING ? { pricing: { quotes: [...quotes.entries()].map(([id, x]) => ({ request_id: id, calls: x.calls, reservation_id: x.reservation_id, providers: x.basis.providers, rounds: x.basis.rounds, max_words: x.basis.max_words })),
+        ...(PRICING ? { pricing: { quotes: [...quotes.entries()].map(([id, x]) => ({ request_id: id, calls: x.calls, reservation_id: x.reservation_id, providers: x.basis.providers, rounds: x.basis.rounds, max_words: x.basis.max_words, version: x.version, asked: x.asked, search: x.search })),
           reports: Object.fromEntries([...usageReports.entries()].map(([id, x]) => [id, { rows: x.rows, replays: x.replays }])), order } } : {}),
       });
     }

@@ -33,14 +33,14 @@ import { listPrompts, getPrompt } from '../lib/mcp/prompts.js';
 import { chooseVoices, independence, isSampling } from '../lib/mcp/voices.js';
 import { startHttpServer } from '../lib/mcp/http.js';
 import { createUsage, usageFromTranscript, worstCase, usageTool, usageHandler } from '../lib/mcp/usage.js';
-import { webSearchConfig, sanitizeText, cleanUrl, hostOf, API_PROVIDERS, PRIVACY_NOTICE } from '../lib/debate/websearch.mjs';
+import { webSearchConfig, sanitizeText, cleanUrl, hostOf, API_PROVIDERS, PRIVACY_NOTICE, searchAvailability } from '../lib/debate/websearch.mjs';
 import { createExternalAuth, validateConfig as validateAuthConfig } from '../lib/mcp/external-auth.js';
 import { createOutbox, outboxStatus, outboxExport, outboxRetryDead } from '../lib/mcp/outbox.js';
 import { createMetering, createReadiness, modelsFromTranscript, orphanPolicy } from '../lib/mcp/metering.js';
 import { createHash } from 'node:crypto';
 import { createRuns, validateRunsConfig } from '../lib/mcp/runs.js';
 import { startRunServer, validateRunServerConfig } from '../lib/mcp/run-server.js';
-import { validatePricingConfig, createPricingClient, limitsForPlan, pricedError, debateEnvFor, readUsageRows } from '../lib/mcp/pricing.js';
+import { validatePricingConfig, createPricingClient, limitsForPlan, pricedError, debateEnvFor, readUsageRows, searchCapable, searchCapFromEnv, requestedSearches } from '../lib/mcp/pricing.js';
 import { validatePanelConfig, validateRequiredConfig, withRequired, requireAvailable, createPanelClient, checkFamilies, requireFamilies, degrade, explicitPanel, familiesOf } from '../lib/mcp/panel.js';
 
 const HTTP_MODE = process.argv.includes('--http');
@@ -106,6 +106,8 @@ function parsePositions(transcript) {
 // The web-search lines of a rendered verdict. Sources are plain text: the domain, then the URL as a code span (never a
 // markdown link or image), so nothing loads or hides where it points. Titles and excerpts are left to structuredContent.
 function renderWebSearch(w) {
+  const avail = searchAvailability(process.env);
+  if (!avail.on) return [`_${avail.text}_`, ''];
   if (!w?.requested) return [];
   if (!w.enabled) return ['_Web search: off for this debate, so the answers come from the models\' own knowledge, which may be out of date._', ''];
   const out = [`**Web search:** on for ${w.models_with_search} of ${w.models_total} models; ${w.searches_used} search${w.searches_used === 1 ? '' : 'es'} used. Search results are untrusted internet data.`];
@@ -136,7 +138,7 @@ function renderDebate(d) {
   if (d.panel?.dropped?.length) lines.push(`_Not available for this debate, so not asked: ${d.panel.dropped.join(', ')} (the rest of the panel answered; ${d.panel.synthesizer} wrote the summary)._`, '');
   if (d.dissent.present === false) lines.push('**Dissent:** none', '');
   else lines.push(`**Dissent (report this to the user, do not drop it when summarizing):** ${d.dissent.summary}`, '');
-  if (Number.isSafeInteger(d.billing?.charged_credits)) lines.push(`_Charged ${d.billing.charged_credits} credit${d.billing.charged_credits === 1 ? '' : 's'} (at most ${d.billing.quote_credits} were held)._`, '');
+  if (Number.isSafeInteger(d.billing?.charged_credits)) lines.push(`_Charged ${d.billing.charged_credits} credit${d.billing.charged_credits === 1 ? '' : 's'} (at most ${d.billing.quote_credits} were held)${Number.isSafeInteger(d.billing.searches) && d.billing.searches > 0 ? `, includes ${d.billing.searches} web search${d.billing.searches === 1 ? '' : 'es'}` : ''}._`, '');
   if (d.positions.length) {
     lines.push('**Each model\'s final position:**');
     for (const p of d.positions) lines.push('', `**${p.provider}:**`, ...p.text.split('\n').map((l) => `> ${l}`));
@@ -282,6 +284,9 @@ async function planDebate(args, ctx, { clamp = null, web = false } = {}) {
 function searchPlan(providers, webSearch) {
   const cfg = webSearchConfig(process.env);
   const searching = webSearch && cfg.enabled ? providers.filter((p) => API_PROVIDERS.includes(p) && cfg.providers.includes(p)) : [];
+  // per-token pricing: the cap is the one the quote will ask for (2 unless set), not the global per-call cap, and only a server that can run
+  // priced searches asks for any
+  if (PRICING_CONFIG.mode === 'per_token') return { searchProviders: webSearch && searchCapable(process.env) ? searching.length : 0, maxSearchesPerCall: searchCapFromEnv(process.env) };
   return { searchProviders: searching.length, maxSearchesPerCall: cfg.maxSearches };
 }
 const worstFor = (plan) => worstCase({ providers: plan.providers.length, rounds: plan.rounds, maxWords: plan.maxWords, questionChars: plan.question.length,
@@ -338,6 +343,10 @@ async function connectorQuote(plan, { request_id, principal }) {
   if (questionBytes > 32000) return refuse('the question is too long to be priced (at most 32000 bytes)', 'billing', 'invalid');
   const body = { principal, request_id, providers: [...plan.providers], rounds: plan.rounds, max_words: plan.maxWords, question_bytes: questionBytes,
     question_sha256: createHash('sha256').update(plan.question, 'utf8').digest('hex'), prompt_version: 'v2' };
+  // web search is on unless this call turned it off (web_search: false): ask for the cap on every panel provider this server may search with.
+  // The answer's `search` object is what runs (a missing one means off); without a request the quote is the version 1 one, byte for byte.
+  const searches = plan.webSearch !== false ? requestedSearches(plan.providers, process.env) : null;
+  if (searches) body.searches = searches;
   let q;
   for (let attempt = 0; attempt < 3; attempt++) {
     if (attempt) await sleepMs(250 * 2 ** attempt);
@@ -346,13 +355,15 @@ async function connectorQuote(plan, { request_id, principal }) {
   }
   if (!q.ok) {
     if (q.code === 'unknown_model_rate') return refuse('a model on this debate has no price; nothing was charged', 'billing', q.code);
-    if (q.code === 'quote_exceeds_limit') return refuse(`this debate could use up to ${q.credits} credits, above the per-debate maximum of ${q.max_credits}; try fewer rounds or a shorter question. Nothing was charged.`, 'billing', q.code);
+    if (q.code === 'quote_exceeds_limit') return refuse(`this debate could use up to ${q.credits} credits, above the per-debate maximum of ${q.max_credits}${Number.isSafeInteger(q.credits_off) ? ` (without web search at most ${q.credits_off}: pass web_search: false)` : ''}; try fewer rounds or a shorter question. Nothing was charged.`, 'billing', q.code);
     if (q.code) return refuse('the debate could not be priced; nothing was charged', 'billing', q.code);
     return { ok: false, kind: 'unavailable' };
   }
-  const limits = limitsForPlan({ max_tokens: q.max_tokens, answer_bytes: q.answer_bytes }, [...plan.providers, plan.synthesizer], { env: process.env });
+  const limits = limitsForPlan({ max_tokens: q.max_tokens, answer_bytes: q.answer_bytes, ...(q.search ? { max_searches: q.search.maxSearches, cite_bytes: q.search.citeBytes } : {}) },
+    [...plan.providers, plan.synthesizer], { env: process.env, panel: plan.providers });
   if (limits.error) { log(`pricing: the quote does not cover the plan (${limits.error})`); return { ok: false, kind: 'unavailable' }; }
-  return { ok: true, calls: plan.providers.length * plan.rounds + 1, quote: { maxTokens: limits.maxTokens, answerBytes: limits.answerBytes, credits: q.credits, maxCredits: q.max_credits, rateVersion: q.rate_version } };
+  return { ok: true, calls: plan.providers.length * plan.rounds + 1, quote: { maxTokens: limits.maxTokens, answerBytes: limits.answerBytes, credits: q.credits, maxCredits: q.max_credits, rateVersion: q.rate_version,
+    ...(limits.maxSearches ? { maxSearches: limits.maxSearches, citeBytes: limits.citeBytes, ...(q.search.creditsOff !== undefined ? { creditsOff: q.search.creditsOff } : {}) } : {}) } };
 }
 const quoteOf = (plan) => (pricingClient ? (a) => connectorQuote(plan, a) : null);
 
@@ -378,7 +389,8 @@ async function executeDebate(plan, handle, ctx, { progress, onStarted, signal } 
   const { question, providers, rounds, maxWords, synthesizer } = plan;
   // token pricing: the limits this debate must run under (a web run's plan carries them; a connector debate's come with its quote)
   const limits = plan.perToken ?? handle.quote ?? null;
-  const webSearchRequested = plan.webSearch !== false && !limits;
+  // per-token: search only when the quote priced it (limits.maxSearches); otherwise off, as before
+  const webSearchRequested = plan.webSearch !== false && (!limits || Boolean(limits.maxSearches));
   const debateBin = process.env.E3D_MCP_DEBATE_BIN || join(ROOT, 'bin/e3d-debate');
   let settled = false;
   let ran = false;
@@ -464,7 +476,8 @@ async function executeDebate(plan, handle, ctx, { progress, onStarted, signal } 
 // (input_tokens, output_tokens, source vendor | estimate); the pricing object itself is not passed on. Other billing is unchanged.
 function billingResult(b) {
   const { pricing, ...rest } = b;
-  return pricing ? { ...rest, quote_credits: pricing.quote_credits, charged_credits: pricing.charged_credits, usage: pricing.usage } : rest;
+  return pricing ? { ...rest, quote_credits: pricing.quote_credits, charged_credits: pricing.charged_credits, usage: pricing.usage,
+    ...(pricing.search ? { searches: pricing.search.searches, search_credits: pricing.search.charged_credits_search } : {}) } : rest;
 }
 
 async function toolDebate(args, progress, ctx) {
@@ -610,9 +623,13 @@ async function toolListProviders(_args, _progress, ctx) {
   }
   if (panelClient && ctx?.principal) lines.push('', await accountPanelLine(ctx.principal));
   else {
-    const pick = chooseVoices({ known, samplingOn });
-    lines.push('', `Default voices for e3d_debate: ${pick.providers.join(', ') || 'none'} (${pick.note})`);
+    // the ACTUAL default of this deployment: only offered providers, the required ones first, no more than the server's per-debate maximum
+    const offered = allowed ? known.filter((k) => allowed.includes(k.name)) : known;
+    const pick = chooseVoices({ known: offered, samplingOn: samplingOn && !allowed });
+    const eff = withRequired(pick.providers, REQUIRED).slice(0, LIMITS.providers);
+    lines.push('', `Default voices for e3d_debate: ${eff.join(', ') || 'none'} (${pick.note}${REQUIRED.length ? '; required providers first' : ''})`);
   }
+  lines.push(searchAvailability(process.env).text);
   return text(lines.join('\n') || 'no providers found');
 }
 
@@ -671,20 +688,22 @@ const WEB_SEARCH_SCHEMA = {
   required: ['enabled', 'searches_used', 'citations', 'flags'],
 };
 
+// The privacy notice only where search can actually be on; otherwise the true state (fixed at startup by the environment).
+const SEARCH_NOTICE = searchAvailability(process.env).on ? PRIVACY_NOTICE : searchAvailability(process.env).text;
 const TOOLS = [
   {
     name: 'e3d_debate',
-    description: 'Use when the user asks for a second opinion, wants to compare options, or has to decide between alternatives (for example "JSON or SQLite?", "should we...", architecture or library tradeoffs). Get a multi-model second opinion on a decision or design question. Independent AI models answer, and a synthesizer returns a final answer, a consensus level (full/majority/split), and any dissent, plus each model\'s final position. ALWAYS report the dissent and consensus level to the user -- the disagreement is the point; never present a split verdict as settled. Write a self-contained question: the models cannot see your code. mode "quick" (default): one round, usually well under a minute. mode "thorough": models also critique each other, a few minutes. Use for architectural choices, tradeoffs, and contestable judgment calls -- not for lookups or questions with an obvious answer. Spends the user\'s model credits. ' + PRIVACY_NOTICE,
+    description: 'Use when the user asks for a second opinion, wants to compare options, or has to decide between alternatives (for example "JSON or SQLite?", "should we...", architecture or library tradeoffs). Get a multi-model second opinion on a decision or design question. Independent AI models answer, and a synthesizer returns a final answer, a consensus level (full/majority/split), and any dissent, plus each model\'s final position. ALWAYS report the dissent and consensus level to the user -- the disagreement is the point; never present a split verdict as settled. Write a self-contained question: the models cannot see your code. mode "quick" (default): one round, usually well under a minute. mode "thorough": models also critique each other, a few minutes. Use for architectural choices, tradeoffs, and contestable judgment calls -- not for lookups or questions with an obvious answer. Spends the user\'s model credits. ' + SEARCH_NOTICE,
     inputSchema: {
       type: 'object',
       properties: {
         question: { type: 'string', description: 'The decision or question, with enough context for models that cannot see your code.' },
         mode: { type: 'string', enum: ['quick', 'thorough'], description: 'quick (default): 1 round, short answers, no cross-critique. thorough: 2 rounds where models see and rebut each other.' },
-        providers: { type: 'array', items: { type: 'string' }, description: 'Provider names (see e3d_list_providers). Default: the client\'s own models via MCP sampling (e.g. Copilot) plus detected model CLIs; without sampling, claude + codex.' },
+        providers: { type: 'array', items: { type: 'string' }, description: 'Provider names (see e3d_list_providers). Default: this server\'s own default panel (see e3d_list_providers); never assumed.' },
         rounds: { type: 'integer', minimum: 1, maximum: LIMITS.rounds, description: 'Override the mode\'s round count. Stops early on convergence.' },
         max_words: { type: 'integer', minimum: 20, maximum: LIMITS.maxWords, description: 'Override the mode\'s per-provider per-round answer cap.' },
         include_transcript: { type: 'boolean', description: 'Also return the full transcript (large). Default false.' },
-        web_search: { type: 'boolean', description: 'Let the API models (Anthropic, OpenAI, Google, xAI) search the web for current facts. Default true. false keeps the question away from search providers.' },
+        web_search: { type: 'boolean', description: searchAvailability(process.env).on ? 'Let the API models (Anthropic, OpenAI, Google, xAI) search the web for current facts. Default true. false keeps the question away from search providers.' : 'Web search is off on this server; this setting has no effect.' },
       },
       required: ['question'],
       additionalProperties: false,
@@ -722,7 +741,7 @@ const TOOLS = [
   },
   {
     name: 'e3d_debate_start',
-    description: 'Start a debate that keeps running on the server, so a slow debate is never lost when you stop waiting. Same question and options as e3d_debate. Returns a debate_id right away; check on the debate with e3d_debate_status and get the answer with e3d_debate_result (both work later too, even after a disconnect). Use instead of e3d_debate for "thorough" debates or when your client gives up on long tool calls. Spends the account\'s credits once, when the debate finishes. ' + PRIVACY_NOTICE,
+    description: 'Start a debate that keeps running on the server, so a slow debate is never lost when you stop waiting. Same question and options as e3d_debate. Returns a debate_id right away; check on the debate with e3d_debate_status and get the answer with e3d_debate_result (both work later too, even after a disconnect). Use instead of e3d_debate for "thorough" debates or when your client gives up on long tool calls. Spends the account\'s credits once, when the debate finishes. ' + SEARCH_NOTICE,
     inputSchema: {
       type: 'object',
       properties: {
@@ -732,7 +751,7 @@ const TOOLS = [
         rounds: { type: 'integer', minimum: 1, maximum: LIMITS.rounds, description: 'Override the mode\'s round count (the server may lower it).' },
         max_words: { type: 'integer', minimum: 20, maximum: LIMITS.maxWords, description: 'Override the per-answer word cap (the server may lower it).' },
         include_transcript: { type: 'boolean', description: 'Accepted for compatibility with e3d_debate; ask e3d_debate_result for the transcript instead.' },
-        web_search: { type: 'boolean', description: 'Let the API models (Anthropic, OpenAI, Google, xAI) search the web for current facts. Default true. false keeps the question away from search providers.' },
+        web_search: { type: 'boolean', description: searchAvailability(process.env).on ? 'Let the API models (Anthropic, OpenAI, Google, xAI) search the web for current facts. Default true. false keeps the question away from search providers.' : 'Web search is off on this server; this setting has no effect.' },
       },
       required: ['question'],
       additionalProperties: false,
@@ -823,7 +842,9 @@ const guard = createRepoGuard();
 const jobs = createJobs();
 const pipeline = createPipelineTools({ guard, jobs });
 // stdio: unlimited unless E3D_MCP_DAILY_* are set; hosted (HTTP) mode ships with finite defaults.
-const usage = createUsage({ defaults: HTTP_MODE ? { calls: 100, tokens: 500000 } : { calls: 0, tokens: 0 } });
+// a server that advertises per_token_search_v1 caps web searches at 160 per principal per day unless E3D_MCP_DAILY_SEARCHES says otherwise
+// (the owner's setting: ten worst-case four-vendor debates)
+const usage = createUsage({ defaults: HTTP_MODE ? { calls: 100, tokens: 500000, ...(searchCapable(process.env, { mode: PRICING_CONFIG.mode }) ? { searches: 160 } : {}) } : { calls: 0, tokens: 0 } });
 // Without E3D_MCP_AUTH_URL this is the local usage object unchanged; the hook is attached at hosted startup below.
 let metering = createMetering({ localUsage: usage, log });
 let hookState = null; // { metering, outbox } once the external hook is running (read by e3d_usage)
@@ -983,12 +1004,16 @@ async function runAsyncDebate({ plan, handle, principal, onStarted, progress, si
 async function planWebRun(fields, { perToken = null } = {}) {
   const ctx = { session: { clientInfo: null, capabilities: {}, rootsReady: null }, principal: null };
   const clamp = perToken ? { ...runsConfig.customer, rounds: Infinity, max_words: Infinity } : runsConfig.customer;
-  const plan = await planDebate({ question: fields.question, providers: fields.providers, rounds: fields.rounds, max_words: fields.max_words, web_search: perToken ? false : fields.web_search }, ctx, { clamp, web: true });
+  const plan = await planDebate({ question: fields.question, providers: fields.providers, rounds: fields.rounds, max_words: fields.max_words, web_search: perToken ? Boolean(perToken.max_searches) : fields.web_search }, ctx, { clamp, web: true });
   if (plan.error) return plan;
   if (perToken) {
-    const limits = limitsForPlan(perToken, [...plan.providers, plan.synthesizer], { env: process.env });
+    const limits = limitsForPlan(perToken, [...plan.providers, plan.synthesizer], { env: process.env, panel: plan.providers });
     if (limits.error) return { error: `error: invalid: ${limits.error}` };
-    return { plan: { ...plan, perToken: limits }, worst: worstFor(plan) };
+    // the searches the run will make are exactly the quoted ones: the daily search estimate uses them, and search is off without them
+    const caps = limits.maxSearches;
+    const searchPart = caps ? { webSearch: true, searchProviders: Object.keys(caps).length, maxSearchesPerCall: Math.max(...Object.values(caps)) } : { webSearch: false, searchProviders: 0, maxSearchesPerCall: 0 };
+    const priced = { ...plan, ...searchPart, perToken: limits };
+    return { plan: priced, worst: worstFor(priced) };
   }
   return { plan, worst: worstFor(plan) };
 }
@@ -1049,7 +1074,7 @@ if (HTTP_MODE) {
     // a separate loopback-only listener; the public one above never serves /internal/*
     if (hook && RUN_SERVER.enabled) {
       runServer = await startRunServer({ port: RUN_SERVER.config.port, token: RUN_SERVER.config.token, failsPerMin: RUN_SERVER.config.failsPerMin,
-        runs, external: hook.external, plan: planWebRun, log, pricing: { mode: PRICING_CONFIG.mode, customer: runsConfig.customer } });
+        runs, external: hook.external, plan: planWebRun, log, pricing: { mode: PRICING_CONFIG.mode, customer: runsConfig.customer, search: searchCapable(process.env, { mode: PRICING_CONFIG.mode }) } });
     }
   } catch (e) { process.stderr.write(`[e3d-mcp] ${redact(e.message)}\n`); process.exit(2); }
   if (process.env.E3D_MCP_PORT_FILE) await writeFile(process.env.E3D_MCP_PORT_FILE, String(server.port));
