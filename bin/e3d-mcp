@@ -37,10 +37,11 @@ import { webSearchConfig, sanitizeText, cleanUrl, hostOf, API_PROVIDERS, PRIVACY
 import { createExternalAuth, validateConfig as validateAuthConfig } from '../lib/mcp/external-auth.js';
 import { createOutbox, outboxStatus, outboxExport, outboxRetryDead } from '../lib/mcp/outbox.js';
 import { createMetering, createReadiness, modelsFromTranscript, orphanPolicy } from '../lib/mcp/metering.js';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { createRuns, validateRunsConfig } from '../lib/mcp/runs.js';
 import { startRunServer, validateRunServerConfig } from '../lib/mcp/run-server.js';
 import { validatePricingConfig, createPricingClient, limitsForPlan, pricedError, debateEnvFor, readUsageRows, searchCapable, searchCapFromEnv, requestedSearches } from '../lib/mcp/pricing.js';
+import { agentModeFrom, agentFieldsOf, AGENT_INSTRUCTIONS, SCHEMA_VERSION as AGENT_SCHEMA_VERSION, IDEMPOTENCY_KEY_RE, QUOTE_ID_RE, agentError, errorResult, reasonError, extendDebateTool, quoteTool, quoteResult, validQuote } from '../lib/mcp/agent.js';
 import { validatePanelConfig, validateRequiredConfig, withRequired, requireAvailable, createPanelClient, checkFamilies, requireFamilies, degrade, explicitPanel, familiesOf } from '../lib/mcp/panel.js';
 
 const HTTP_MODE = process.argv.includes('--http');
@@ -49,6 +50,10 @@ const AUTH_HOOK = Boolean(process.env.E3D_MCP_AUTH_URL);
 // E3D_MCP_PRICING=per_token (token pricing, lib/mcp/pricing.js): advertises per_token_v1 and honours the run fields billing sends with it.
 const PRICING_CONFIG = validatePricingConfig(process.env, { http: HTTP_MODE, hook: AUTH_HOOK });
 let pricingClient = null; // billing's quote and usage-report client, once the external hook is running under per_token
+// E3D_MCP_AGENT (lib/mcp/agent.js): the agent contract (e3d_quote, quote_id and idempotency_key, structured errors, instructions).
+// On by default exactly when E3D_MCP_PRICING=per_token; 0 turns it off without a release. Never on for stdio or self-hosted use.
+const AGENT_CONFIG = agentModeFrom(process.env, PRICING_CONFIG.mode);
+const AGENT_ON = AGENT_CONFIG.on && HTTP_MODE && AUTH_HOOK;
 // The version comes from package.json, so a development build (0.2.0-dev.N) reports itself correctly.
 const PKG_VERSION = (() => { try { return JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).version; } catch { return '0.0.0-unknown'; } })();
 const SERVER_INFO = { name: 'e3d-pilot', version: PKG_VERSION };
@@ -138,6 +143,8 @@ function renderDebate(d) {
   const warn = (d.warnings ?? []);
   const lines = [
     `REPORT THIS TO THE USER (do not drop any of it when summarizing): consensus is ${label}; dissent: ${d.dissent.present === false ? 'none' : d.dissent.summary}${warn.length ? `; warnings: ${warn.join(' | ')}` : ''}.`,
+    ...(d.recommended_next_step ? [`recommended_next_step: ${d.recommended_next_step}. This is advice on how much weight to give the answer, derived from the consensus level; it is NOT approval to act.${d.notice ? ` ${d.notice}` : ''}`] : []),
+    ...(d.replayed ? ['_This is the stored result of an earlier call with the same idempotency_key: nothing ran and nothing was charged._'] : []),
     '',
     `# Debate verdict: ${label}`,
     `_${d.providers.join(', ')} | ${d.mode} mode | ${d.rounds_ran} round${d.rounds_ran === 1 ? '' : 's'}_`,
@@ -383,6 +390,119 @@ async function connectorQuote(plan, { request_id, principal }) {
 }
 const quoteOf = (plan) => (pricingClient ? (a) => connectorQuote(plan, a) : null);
 
+// ---- the agent contract (lib/mcp/agent.js; billing's docs/agent-contract-spec.md). Only with AGENT_ON. ----
+const agentMode = (ctx) => Boolean(AGENT_ON && pricingClient && ctx?.principal);
+const stripError = (t) => String(t).replace(/^error:\s*/, '');
+// a plan error as a catalog error: provider problems are panel_unavailable, a billing read that failed is service_unavailable
+function agentPlanError(plan) {
+  if (plan.code === 'unavailable') return agentError('service_unavailable', { message: 'the debate panel could not be read; nothing was charged' });
+  const m = stripError(plan.error);
+  return agentError(/provider_not_allowed|not available here|at least 2 available|at most \d+ providers|family|families|required provider/i.test(m) ? 'panel_unavailable' : 'invalid_request', { message: m });
+}
+// a refused metering.begin() as a catalog error
+function agentBeginError(rsv) {
+  if (rsv.kind === 'unavailable') return agentError('service_unavailable', { message: 'billing is temporarily unavailable; nothing was charged' });
+  if (rsv.kind === 'invalid') return agentError('invalid_request', { message: rsv.reason });
+  if (rsv.kind === 'local') return agentError('budget_exhausted', { message: `this server's daily budget for the key: ${rsv.reason}` });
+  // the legacy quote's refusal codes (connectorQuote) and the reserve's `reason` / hook code
+  if (rsv.code === 'unknown_model_rate') return agentError('panel_unavailable', { message: 'a model on this debate has no price; nothing was charged' });
+  if (rsv.code === 'quote_exceeds_limit') return agentError('quote_exceeds_limit', { message: rsv.message });
+  if (rsv.code === 'invalid') return agentError('invalid_request', { message: rsv.message });
+  return reasonError({ reason: rsv.reason, code: rsv.code, retry_after_seconds: rsv.retry_after_seconds });
+}
+// the arguments only an agent-mode server accepts
+function agentArgsError(args) {
+  const { idempotency_key: key, quote_id: qid } = args;
+  if (key !== undefined && (typeof key !== 'string' || !IDEMPOTENCY_KEY_RE.test(key))) return agentError('idempotency_key_invalid');
+  if (qid !== undefined && (typeof qid !== 'string' || !QUOTE_ID_RE.test(qid))) return agentError('invalid_request', { message: 'quote_id must be the id e3d_quote returned' });
+  if (qid !== undefined && key === undefined) return agentError('invalid_request', { message: 'quote_id needs an idempotency_key: a quote is single use and is bound to the first key that runs it' });
+  return null;
+}
+// what billing's agent quote and begin are asked: the run as it will execute, never its text (only a hash and a size)
+function agentRunBody(plan, principal) {
+  const searches = plan.webSearch !== false ? requestedSearches(plan.providers, process.env) : null;
+  return { principal, providers: [...plan.providers], rounds: plan.rounds, max_words: plan.maxWords, question_bytes: Buffer.byteLength(plan.question, 'utf8'),
+    question_sha256: createHash('sha256').update(plan.question, 'utf8').digest('hex'), prompt_version: 'v2', ...(searches ? { searches } : {}) };
+}
+const unexpected = () => agentError('internal_error', { message: 'billing answered with something unexpected' });
+// The limits a debate runs under, from an agent quote that carries them (max_tokens, answer_bytes and, with search, cite_bytes), else null.
+function limitsFromAgentQuote(q, plan) {
+  const isO = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
+  if (!isO(q.max_tokens) || !isO(q.answer_bytes)) return null;
+  const fields = { max_tokens: q.max_tokens, answer_bytes: q.answer_bytes, ...(q.search?.enabled === true && isO(q.search.max_searches) ? { max_searches: q.search.max_searches, cite_bytes: q.search.cite_bytes } : {}) };
+  const l = limitsForPlan(fields, [...plan.providers, plan.synthesizer], { env: process.env, panel: plan.providers });
+  return l.error ? null : { ok: true, calls: plan.providers.length * plan.rounds + 1, quote: { maxTokens: l.maxTokens, answerBytes: l.answerBytes, credits: q.max_credits, maxCredits: q.max_credits, rateVersion: q.rate_version,
+    ...(l.maxSearches ? { maxSearches: l.maxSearches, citeBytes: l.citeBytes } : {}) } };
+}
+
+// e3d_quote: free, read-only. The quote row is billing's; nothing is held.
+async function toolQuote(args, _progress, ctx) {
+  if (!agentMode(ctx)) return text('error: unknown tool: e3d_quote', true);
+  const plan = await planDebate(args, ctx);
+  if (plan.error) return errorResult(agentPlanError(plan));
+  const bad = pricedError([...plan.providers, plan.synthesizer], { env: process.env });
+  if (bad) return errorResult(agentError('panel_unavailable', { message: `this debate cannot be priced: ${bad}` }));
+  const body = agentRunBody(plan, ctx.principal);
+  if (body.question_bytes > 32000) return errorResult(agentError('question_too_large'));
+  const r = await pricingClient.agentQuote(body);
+  if (!r.ok) return errorResult(r.error);
+  if (!validQuote(r.body)) return errorResult(unexpected());
+  log(`agent: quote issued principal=${ctx.principal} quote_id=${r.body.quote.quote_id} max_credits=${r.body.quote.max_credits}`);
+  return quoteResult(r.body, r.body.quote.search?.enabled === true);
+}
+
+// The stored result of a finished run (begin answered `replayed`): returned as the tool result, nothing runs, nothing is charged.
+function agentReplay(b, plan, args) {
+  const a = agentFieldsOf(b.agent);
+  if (b.outcome === 'timeout') return errorResult(agentError('debate_timeout', { message: 'the first attempt with this idempotency_key timed out; nothing more was charged. Use a new key to try again' }));
+  if (b.outcome !== 'ok') return errorResult(agentError('debate_failed', { message: 'the first attempt with this idempotency_key did not finish; nothing more was charged. Use a new key to try again' }));
+  const d = b.debate, res = d?.result;
+  if (!a || !res || typeof res.final_answer !== 'string') return errorResult(agentError('internal_error', { message: 'the stored result of this idempotency_key is not available' }));
+  const none = typeof res.dissent !== 'string' || /^["'`]*(none)?[."'`]*$/i.test(res.dissent.trim());
+  const result = {
+    final_answer: res.final_answer, consensus: res.consensus,
+    dissent: { present: !none, summary: none ? 'none' : res.dissent },
+    positions: (Array.isArray(res.positions) ? res.positions : []).map((p) => ({ provider: p.provider, text: p.position })),
+    mode: args.mode ?? 'quick', providers: Array.isArray(d.providers) && d.providers.length ? d.providers : plan.providers, rounds_ran: Number.isSafeInteger(d.rounds) ? d.rounds : plan.rounds,
+    warnings: [], replayed: true, ...(typeof b.debate_id === 'string' ? { debate_id: b.debate_id } : {}),
+    ...(res.web_search && typeof res.web_search === 'object' ? { web_search: res.web_search } : {}),
+    ...a,
+  };
+  return { content: [{ type: 'text', text: renderDebate(result) }], structuredContent: result };
+}
+
+// Everything an agent-mode e3d_debate call with an idempotency_key does before it reserves: quote (when no quote_id came), begin, and
+// the limits the run executes under. Returns { error }, { replay } or { meta } for metering.begin (request_id = the quote id).
+async function agentPrepare(args, plan, principal) {
+  const bad = pricedError([...plan.providers, plan.synthesizer], { env: process.env });
+  if (bad) return { error: agentError('panel_unavailable', { message: `this debate cannot be priced: ${bad}` }) };
+  const body = agentRunBody(plan, principal);
+  if (body.question_bytes > 32000) return { error: agentError('question_too_large') };
+  let quoteId = args.quote_id; let aq = null;
+  if (!quoteId) {
+    const r = await pricingClient.agentQuote(body);
+    if (!r.ok) return { error: r.error };
+    if (!validQuote(r.body)) return { error: unexpected() };
+    aq = r.body.quote; quoteId = aq.quote_id;
+  }
+  // a quote the caller brought is checked by billing at begin; its search flag is what this server would have asked for
+  const searchEnabled = aq ? aq.search?.enabled === true : Boolean(body.searches);
+  // The limits (max_tokens, answer_bytes, cite_bytes) are not in the agent quote answer; when billing does not send them they are read
+  // from the connector quote (a separate, unused row), before anything is claimed, and must describe the same price.
+  let lim = aq ? limitsFromAgentQuote(aq, plan) : null;
+  if (!lim) {
+    lim = await connectorQuote(plan, { request_id: randomUUID(), principal });
+    if (!lim.ok) return { error: agentBeginError(lim) };
+    if ((aq && (lim.quote.credits !== aq.max_credits || lim.quote.rateVersion !== aq.rate_version)) || Boolean(lim.quote.maxSearches) !== searchEnabled) return { error: agentError('quote_changed') };
+  }
+  const br = await pricingClient.agentBegin({ principal, idempotency_key: args.idempotency_key, quote_id: quoteId, question_sha256: body.question_sha256, providers: body.providers, rounds: body.rounds, max_words: body.max_words, search_enabled: searchEnabled });
+  if (!br.ok) return { error: br.error };
+  if (br.body.status === 'replayed') { log(`agent: replayed principal=${principal} quote_id=${quoteId}`); return { replay: agentReplay(br.body, plan, args) }; }
+  if (br.body.status !== 'new' || br.body.request_id !== quoteId) return { error: unexpected() };
+  log(`agent: begin new principal=${principal} quote_id=${quoteId}`);
+  return { meta: { request_id: quoteId, quote: async () => lim } };
+}
+
 // Sends usage.json (bin/e3d-debate: one row per attempted call) to billing's POST /usage/v1/report, before finalize. Retries 5xx, 429 and
 // transport failures with the same body; a refusal (400, 409) or a failure after the retries is logged and the debate is still
 // finalized: billing then prices the v1 totals (and alarms), so a lost report never loses the charge or blocks the answer.
@@ -495,31 +615,43 @@ async function executeDebate(plan, handle, ctx, { progress, onStarted, signal } 
 // Token pricing (interface section 6): the billing object of a per_token debate gains quote_credits, charged_credits and the usage
 // (input_tokens, output_tokens, source vendor | estimate); the pricing object itself is not passed on. Other billing is unchanged.
 function billingResult(b) {
-  const { pricing, ...rest } = b;
+  const { pricing, agent: _agent, ...rest } = b;
   return pricing ? { ...rest, quote_credits: pricing.quote_credits, charged_credits: pricing.charged_credits, usage: pricing.usage,
     ...(pricing.search ? { searches: pricing.search.searches, search_credits: pricing.search.charged_credits_search } : {}) } : rest;
 }
 
 async function toolDebate(args, progress, ctx) {
+  const agent = agentMode(ctx);
+  if (agent) { const e = agentArgsError(args); if (e) return errorResult(e); }
   const plan = await planDebate(args, ctx);
-  if (plan.error) return text(plan.error, true);
+  if (plan.error) return agent ? errorResult(agentPlanError(plan)) : text(plan.error, true);
   const { question, mode, rounds, maxWords, providers, synthesizer, selection, selectionNote, panel } = plan;
 
   // Refuse BEFORE spending if the worst case for this request would break today's cap.
   const principal = ctx?.principal ?? 'local';
   const worst = worstFor(plan);
+  // With an idempotency_key (agent mode): quote, claim the key at billing (a repeat of a finished run returns its stored result here), and reserve under the quote's id.
+  let agentMeta = null;
+  if (agent && args.idempotency_key !== undefined) {
+    const prep = await agentPrepare(args, plan, principal);
+    if (prep.error) return errorResult(prep.error);
+    if (prep.replay) return prep.replay;
+    agentMeta = prep.meta;
+  }
   // Reserve the worst case first (atomically, so concurrent debates cannot overshoot the cap), then settle to actual use.
   // With the external hook, metering.begin also reserves at the billing service and persists an intent before returning.
   // When the service advertises finalize, the debate (question, providers, rounds) is finalized and stored there at the end.
-  const rsv = await metering.begin(principal, worst, { tool: 'e3d_debate', debate: { question, providers, rounds }, ...(ctx?.principal && quoteOf(plan) ? { quote: quoteOf(plan) } : {}) });
-  if (!rsv.ok) return beginError(rsv);
+  const rsv = await metering.begin(principal, worst, { tool: 'e3d_debate', debate: { question, providers, rounds }, ...(agentMeta ?? (ctx?.principal && quoteOf(plan) ? { quote: quoteOf(plan) } : {})) });
+  if (!rsv.ok) return agent ? errorResult(agentBeginError(rsv)) : beginError(rsv);
   const { handle } = rsv;
-  if (activeDebates >= LIMITS.concurrent) { await metering.abort(handle, 'busy').catch(() => {}); return text(`error: ${LIMITS.concurrent} debates already running; retry shortly`, true); }
+  if (activeDebates >= LIMITS.concurrent) { await metering.abort(handle, 'busy').catch(() => {}); return agent ? errorResult(agentError('concurrency_limit', { message: `${LIMITS.concurrent} debates already running on this server` })) : text(`error: ${LIMITS.concurrent} debates already running; retry shortly`, true); }
   activeDebates++;
   let x;
   try { x = await executeDebate(plan, handle, ctx, { progress }); } finally { activeDebates--; runs?.pump(); }
-  if (x.startFailed) return text('error: billing: temporarily unavailable', true);
+  if (x.startFailed) return agent ? errorResult(agentError('service_unavailable', { message: 'billing is temporarily unavailable' })) : text('error: billing: temporarily unavailable', true);
   const { r, timeoutMs, transcript, spent, verdict, roundsRan, positions, samplingModels, budget, billing, webSearch } = x;
+  if (agent && r.timedOut) return errorResult(agentError('debate_timeout', { message: `the debate timed out after ${timeoutMs / 1000} s and was stopped; ${spent.calls} model call(s) had already answered and were counted. Use a new idempotency_key with mode quick or fewer models` }));
+  if (agent && (r.code !== 0 || !verdict)) return errorResult(agentError('debate_failed', { message: `the debate did not finish (exit ${r.code}); use a new idempotency_key to try again` }));
   if (r.timedOut) return text(`error: debate timed out after ${timeoutMs / 1000}s and was stopped. ${spent.calls} model call(s) had already answered and are counted against today's budget (${budget?.remaining_calls ?? 'no limit'} calls left). Try mode "quick", fewer providers, or a shorter question.`, true);
   if (r.code !== 0 || !verdict) return text(`error: debate failed (exit ${r.code})\n${redact(r.err.slice(-1500))}`, true);
 
@@ -529,13 +661,14 @@ async function toolDebate(args, progress, ctx) {
     mode, providers, rounds_requested: rounds, rounds_ran: roundsRan || rounds,
     selection, selection_note: selectionNote, synthesizer,
     ...(samplingModels.length ? { models: samplingModels } : {}),
-    independent: indep.independent, warnings: [...indep.warnings, ...searchSetupWarnings(webSearch)],
+    independent: indep.independent, warnings: [...indep.warnings, ...searchSetupWarnings(webSearch), ...(agent && !billing?.agent ? ['The billing result for this run is not available yet, so cost, dissent_items and recommended_next_step are missing: treat the advice as no_op and read the dissent above.'] : [])],
     ...(indep.families.length ? { families: indep.families } : {}),
     ...(panel ? { panel } : {}),
     usage: { model_calls: spent.calls, est_input_tokens: spent.inTokens, est_output_tokens: spent.outTokens, searches: webSearch.searches_used, estimate: billing?.pricing?.usage.source !== 'vendor' },
     web_search: webSearch,
     budget,
     ...(billing ? { billing: billingResult(billing) } : {}),
+    ...(agent ? (billing?.agent ? billing.agent : { schema_version: AGENT_SCHEMA_VERSION }) : {}),
     positions,
     ...(args.include_transcript ? { transcript: transcript.trim() } : {}),
   };
@@ -887,6 +1020,7 @@ async function refreshRoots(session = stdioConn.session) {
 
 const HANDLERS = {
   e3d_debate: toolDebate,
+  e3d_quote: toolQuote,
   e3d_debate_start: toolDebateStart,
   e3d_debate_status: toolDebateStatus,
   e3d_debate_result: toolDebateResult,
@@ -897,6 +1031,9 @@ const HANDLERS = {
   ...actions.handlers,
   e3d_usage: usageHandler(usage, () => hookState),
 };
+
+// A tool the connection may use. e3d_quote is free and only prices what e3d_debate runs, so whoever may debate may quote.
+const permits = (conn, name) => !conn.allowed || conn.allowed.has(name) || (name === 'e3d_quote' && conn.allowed.has('e3d_debate'));
 
 async function handle(msg, conn = stdioConn) {
   const { id, method, params } = msg;
@@ -914,7 +1051,8 @@ async function handle(msg, conn = stdioConn) {
         protocolVersion: SUPPORTED_PROTOCOLS.includes(want) ? want : SUPPORTED_PROTOCOLS[0],
         capabilities: { tools: { listChanged: false }, prompts: { listChanged: false } },
         serverInfo: SERVER_INFO,
-        instructions: conn.hosted
+        instructions: conn.hosted && AGENT_ON ? AGENT_INSTRUCTIONS
+          : conn.hosted
           ? 'Use e3d_debate for contestable decisions where independent model perspectives and recorded dissent add value; always report its dissent, and never present a split verdict as settled. It uses a shared usage budget (see e3d_usage); do not use it for simple lookups.'
           : 'Use e3d_debate for contestable decisions where independent model perspectives and recorded dissent add value; always report its dissent. It costs credits; do not use it for simple lookups. The e3d_pilot_* tools run a human-gated pipeline: propose an idea, a human approves it (e3d_pilot_approve tells you how; never approve on your own), e3d_pilot_implement drafts and negotiates a spec and pauses, e3d_pilot_code_plan shows the plan, and only after the user agrees does e3d_pilot_execute write code and open a draft PR. Tools marked FREE spend nothing; tools marked SPENDS MODEL CREDITS do. Merging is never available here.',
       });
@@ -931,12 +1069,14 @@ async function handle(msg, conn = stdioConn) {
     case 'tools/list': {
       // the async debate tools exist only while the service advertises finalize and fetch
       const gated = asyncEnabled() ? TOOLS : TOOLS.filter((t) => !ASYNC_TOOLS.has(t.name));
-      return reply({ tools: conn.allowed ? gated.filter((t) => conn.allowed.has(t.name)) : gated });
+      // agent mode (hosted, per-token): e3d_debate takes quote_id and idempotency_key, and e3d_quote is offered (to whoever may debate)
+      const listed = AGENT_ON && conn.hosted ? gated.flatMap((t) => (t.name === 'e3d_debate' ? [extendDebateTool(t), ...(permits(conn, 'e3d_quote') ? [quoteTool(t)] : [])] : [t])) : gated;
+      return reply({ tools: conn.allowed ? listed.filter((t) => permits(conn, t.name)) : listed });
     }
     case 'tools/call': {
       const handler = HANDLERS[params?.name];
       // A tool outside this connection's allowlist (or a gated one) is reported exactly like one that does not exist.
-      if (!handler || (conn.allowed && !conn.allowed.has(params.name)) || (ASYNC_TOOLS.has(params.name) && !asyncEnabled())) return fail(-32602, `unknown tool: ${params?.name}`);
+      if (!handler || !permits(conn, params.name) || (params.name === 'e3d_quote' && !(AGENT_ON && conn.hosted)) || (ASYNC_TOOLS.has(params.name) && !asyncEnabled())) return fail(-32602, `unknown tool: ${params?.name}`);
       const token = params?._meta?.progressToken;
       const progress = token === undefined || conn.hosted ? undefined : (n, message) =>
         conn.send({ jsonrpc: '2.0', method: 'notifications/progress', params: { progressToken: token, progress: n, message } });
@@ -987,6 +1127,10 @@ if (!PANEL_CONFIG.ok) {
 }
 if (!REQUIRED_CONFIG.ok) {
   process.stderr.write(`[e3d-mcp] refusing to start: ${REQUIRED_CONFIG.errors.join('; ')}\n`);
+  process.exit(2);
+}
+if (!AGENT_CONFIG.ok) {
+  process.stderr.write(`[e3d-mcp] refusing to start: ${AGENT_CONFIG.errors.join('; ')}\n`);
   process.exit(2);
 }
 if (!PRICING_CONFIG.ok) {
@@ -1049,7 +1193,7 @@ async function startAuthHook() {
   if (REQUIRED.length && Number.isInteger(customerMax) && REQUIRED.length > customerMax) errors.push(`E3D_MCP_REQUIRED_PROVIDERS names ${REQUIRED.length} providers; at most ${customerMax} per started debate (E3D_MCP_CUSTOMER_LIMITS providers)`);
   if (errors.length) throw new Error(`external auth hook: refusing to start: ${errors.join('; ')}`);
   if (process.env.E3D_MCP_AUTH_TOKENS) log('warning: E3D_MCP_AUTH_TOKENS is ignored because E3D_MCP_AUTH_URL is set (keys are checked by the auth service)');
-  const external = createExternalAuth({ log });
+  const external = createExternalAuth({ log, agent: AGENT_ON });
   // E3D_MCP_PANEL=1: every hosted debate asks billing for the account's panel first (refused on any failure).
   if (PANEL_CONFIG.panel) panelClient = createPanelClient({ log });
   if (PRICING_CONFIG.mode === 'per_token') pricingClient = createPricingClient({ log });
@@ -1103,7 +1247,7 @@ if (HTTP_MODE) {
   const stop = async () => { if (stopping) return; stopping = true; log('shutting down'); setTimeout(() => process.exit(0), 10000).unref(); hook?.readiness.stop(); hook?.outbox.stop(); runs?.stop(); await runServer?.close(); await server.close(); await sampling.stop(); process.exit(0); };
   process.on('SIGTERM', stop);
   process.on('SIGINT', stop);
-  log(`ready (hosted; limits: ${JSON.stringify(LIMITS)}; allowed providers: ${PANEL_CONFIG.allowed ? PANEL_CONFIG.allowed.join(',') : 'any available'}; account panels: ${panelClient ? 'on' : 'off'}${REQUIRED.length ? `; required providers: ${REQUIRED.join(',')}` : ''})`);
+  log(`ready (hosted; agent contract: ${AGENT_ON ? 'on' : 'off'}; limits: ${JSON.stringify(LIMITS)}; allowed providers: ${PANEL_CONFIG.allowed ? PANEL_CONFIG.allowed.join(',') : 'any available'}; account panels: ${panelClient ? 'on' : 'off'}${REQUIRED.length ? `; required providers: ${REQUIRED.join(',')}` : ''})`);
 } else {
   const rl = createInterface({ input: process.stdin });
   const pending = new Set();
