@@ -278,8 +278,7 @@ assert_eq "$(code "$r")" "400" "fields sent to a listener without per_token_v1 a
 echo "ok - without E3D_MCP_PRICING: no capability, the new fields are refused (400 invalid), and a body without them runs as before"
 
 # --- a server WITH E3D_MCP_PRICING=per_token ---
-# E3D_MCP_AGENT=0 pins the pre-agent surface (error texts "error: ...", no e3d_quote); tests/agent-mcp.sh covers the default (agent mode on)
-start_server pt E3D_MCP_PRICING=per_token E3D_MCP_CUSTOMER_LIMITS='rounds=2,max_words=300,providers=3' E3D_MCP_AGENT=0
+start_server pt E3D_MCP_PRICING=per_token E3D_MCP_CUSTOMER_LIMITS='rounds=2,max_words=300,providers=3'
 RPORT="$(cat "$TMP/pt.runport")"; RUN="http://127.0.0.1:$RPORT/internal/runs"
 learn pt
 health="$(rpost '{}')"

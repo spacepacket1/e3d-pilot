@@ -487,8 +487,8 @@ async function agentPrepare(args, plan, principal) {
   }
   // a quote the caller brought is checked by billing at begin; its search flag is what this server would have asked for
   const searchEnabled = aq ? aq.search?.enabled === true : Boolean(body.searches);
-  // The limits (max_tokens, answer_bytes, cite_bytes) are not in the agent quote answer; when billing does not send them they are read
-  // from the connector quote (a separate, unused row), before anything is claimed, and must describe the same price.
+  // TEMPORARY FALLBACK, remove once billing's agent quote carries max_tokens, answer_bytes and search.cite_bytes (e3d-pilot-cloud PR #144):
+  // until then the limits are read from a connector quote (a separate, unused row), before anything is claimed, and must describe the same price.
   let lim = aq ? limitsFromAgentQuote(aq, plan) : null;
   if (!lim) {
     lim = await connectorQuote(plan, { request_id: randomUUID(), principal });
@@ -621,7 +621,10 @@ function billingResult(b) {
 }
 
 async function toolDebate(args, progress, ctx) {
-  const agent = agentMode(ctx);
+  // `agent` = this call uses the agent contract (a quote_id or an idempotency_key was sent): structured errors, the advice line, warnings.
+  // A call with neither is the legacy path: its error texts and success text are exactly as before; only additive structuredContent fields are added.
+  const agentOn = agentMode(ctx);
+  const agent = agentOn && (args.idempotency_key !== undefined || args.quote_id !== undefined);
   if (agent) { const e = agentArgsError(args); if (e) return errorResult(e); }
   const plan = await planDebate(args, ctx);
   if (plan.error) return agent ? errorResult(agentPlanError(plan)) : text(plan.error, true);
@@ -668,11 +671,12 @@ async function toolDebate(args, progress, ctx) {
     web_search: webSearch,
     budget,
     ...(billing ? { billing: billingResult(billing) } : {}),
-    ...(agent ? (billing?.agent ? billing.agent : { schema_version: AGENT_SCHEMA_VERSION }) : {}),
+    ...(agentOn ? (billing?.agent ? billing.agent : { schema_version: AGENT_SCHEMA_VERSION }) : {}),
     positions,
     ...(args.include_transcript ? { transcript: transcript.trim() } : {}),
   };
-  return { content: [{ type: 'text', text: renderDebate(result) }], structuredContent: result };
+  // the legacy path's text is unchanged: the advice line is only for calls that use the contract
+  return { content: [{ type: 'text', text: renderDebate(agent ? result : { ...result, recommended_next_step: undefined, notice: undefined }) }], structuredContent: result };
 }
 
 // ---- async debates (hosted, external hook only; lib/mcp/runs.js): start, check on, and get the result later ----

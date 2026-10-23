@@ -268,8 +268,9 @@ res="$(tool ag "$SID" e3d_debate "$(jq -nc --arg q "$Q nokey" --argjson p "$PR" 
 assert_eq "$(jq -r '.result.isError // false' <<< "$res")" "false" "$(jq -c . <<< "$res")"
 assert_eq "$(ledger | jq '.received.agent_begin')" "$ab" "no begin without a key"; assert_eq "$(ledger | jq '.received.agent_quote')" "$aq" "no agent quote without a key"
 assert_eq "$(ledger | jq '[.pricing.quotes[] | select(.agent == null)] | length')" "$(( legacy + 1 ))" "the connector quote, as before"
+assert_not_contains "$(jq -r '.result.content[0].text' <<< "$res")" "recommended_next_step" "the legacy success text is unchanged"
 assert_eq "$(jq -c '.result.structuredContent | [.billing.quote_credits, .billing.charged_credits, (.billing | has("agent")), .recommended_next_step, (has("replayed"))]' <<< "$res")" '[14,4,false,"escalate_to_human",false]' "billing object unchanged; agent fields added"
-echo "ok - without an idempotency_key: the connector quote and reserve as before, the result gains the agent fields"
+echo "ok - without an idempotency_key: the connector quote and reserve as before, the success text is unchanged and structuredContent gains the agent fields"
 
 # ---------------------------------------------------------------- errors: every catalog code, through every place billing can say it
 CODES="key_revoked key_unknown key_cap_per_run key_cap_daily key_cap_total key_cap_period account_cap_daily insufficient_credits quote_required quote_expired quote_mismatch quote_used quote_changed quote_exceeds_limit idempotency_key_invalid idempotency_conflict in_progress rate_limited concurrency_limit panel_unavailable question_too_large kill_switch service_capacity pricing_paused too_many_failed_runs terms_required account_suspended account_closing invalid_request unsupported_version unauthorized not_found service_unavailable internal_error"
@@ -300,13 +301,16 @@ for pair in "limit_reached key_cap_daily 41200" "limit_reached key_cap_per_run" 
   assert_eq "$(jq -c '.result.structuredContent.error | [.code, .retry_after_seconds, (has("remediation") and has("docs_url") and has("message") and (.retryable | type == "boolean"))]' <<< "$res")" "$(jq -nc --arg r "$reason" --arg w "$wait_s" '[$r, (if $w != "" then ($w|tonumber) else null end), true]')" "reserve refusal $hook/$reason"
   assert_eq "$(jq -r '.result.content[0].text | startswith("'"$reason"':")' <<< "$res")" "true"
 done
-# the same refusal without a key (the connector path) is the same structured error
+# the same refusals without a key or quote_id (the legacy path) keep today's text and carry no structured error
 stubpost reserve-refuse '{"code":"insufficient_credits","reason":"insufficient_credits","count":1}'
 res="$(tool ag "$SID" e3d_debate "$(jq -nc --arg q "$Q" --argjson p "$PR" '{question:$q,providers:$p,rounds:1}')")"
-assert_eq "$(jq -c '.result | [.isError, .structuredContent.error.code, .structuredContent.error.retryable]' <<< "$res")" '[true,"insufficient_credits",false]'
-# a hook code with no reason (an older billing) maps to its closest entry
+assert_eq "$(jq -c '.result | [.isError, (.content[0].text | startswith("error: billing: ")), has("structuredContent")]' <<< "$res")" '[true,true,false]' "legacy refusal: the old text, no structuredContent"
 stubpost reserve-refuse '{"code":"limit_reached","reason":"","count":1}'
 res="$(tool ag "$SID" e3d_debate "$(jq -nc --arg q "$Q" --argjson p "$PR" '{question:$q,providers:$p,rounds:1}')")"
+assert_eq "$(jq -r '.result.content[0].text' <<< "$res")" "error: billing: refused (stub)"
+# a hook code with no reason (an older billing) maps to its closest entry, on the contract path
+stubpost reserve-refuse '{"code":"limit_reached","reason":"","count":1}'
+res="$(tool ag "$SID" e3d_debate "$(jq -nc --arg q "$Q" --argjson p "$PR" --arg k "key-old-$(openssl rand -hex 4)" '{question:$q,providers:$p,rounds:1,idempotency_key:$k}')")"
 assert_eq "$(jq -r '.result.structuredContent.error.code' <<< "$res")" "limit_reached"
 echo "ok - reserve refusals: the catalog reason and retry_after_seconds, the hook code when there is none, with and without a key"
 
