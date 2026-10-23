@@ -223,6 +223,15 @@ ok "invalid domain config fails closed"
 E3D_DEBATE_WEB_SEARCH=off debate "$T/s5" --providers anthropic-api,openai-api --rounds 1
 [[ "$(reqs_to /v1/messages | head -1 | jq -c '.body | fromjson | keys')" == '["max_tokens","messages","model"]' ]] || fail "search-off anthropic request shape"
 [[ "$(reqs_to /v1/chat/completions | head -1 | jq -c '.body | fromjson | keys')" == '["messages","model"]' ]] || fail "search-off openai request shape"
+# Claude 5 models think by default and the thinking tokens spend max_tokens: send thinking off for them, nothing for other models
+E3D_DEBATE_WEB_SEARCH=off AM=claude-sonnet-5-5 debate "$T/s5b" --providers anthropic-api,openai-api --rounds 1
+[[ "$(reqs_to /v1/messages | head -1 | jq -c '.body | fromjson | .thinking')" == '{"type":"between_tools"}' ]] || fail "claude 5 model: thinking off (plain request)"
+AM=claude-sonnet-5-5 debate "$T/s5d" --providers anthropic-api,openai-api --rounds 1
+[[ "$(reqs_to /v1/messages | jq -s '[.[] | .body | fromjson | select(.tools) | .thinking.type] | unique' -c)" == '["between_tools"]' ]] || fail "claude 5 model: thinking off (search request)"
+E3D_DEBATE_WEB_SEARCH=off AM=claude-sonnet-5-5 ANTHROPIC_API_THINKING= debate "$T/s5e" --providers anthropic-api,openai-api --rounds 1
+[[ "$(reqs_to /v1/messages | head -1 | jq -c '.body | fromjson | has("thinking")')" == false ]] || fail "ANTHROPIC_API_THINKING empty sends nothing"
+ok "Claude 5 models send thinking off"
+
 p0="$(reqs_to /v1/messages | head -1 | jq -r '.body | fromjson | .messages[0].content')"
 [[ "$(sed -n 4p <<< "$p0")" == "You are one of several AI models independently answering a question, before comparing notes with the others in later rounds." ]] || fail "search-off prompt body changed"
 ok "search off: original request shape and prompt plus the date line"
