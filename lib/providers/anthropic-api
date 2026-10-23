@@ -4,6 +4,7 @@ set -euo pipefail
 # Anthropic Messages API provider (curl + jq; no SDK, no `claude` CLI needed), for servers and containers.
 #   ANTHROPIC_API_KEY        or ANTHROPIC_API_KEY_FILE (a file holding the key, or an `export ANTHROPIC_API_KEY=...` line)
 #   ANTHROPIC_API_MODEL      default claude-sonnet-5-5
+#   ANTHROPIC_API_THINKING   optional; default "between_tools" (thinking off) for Claude 5 models, nothing for others; empty sends nothing
 #   ANTHROPIC_API_MAX_TOKENS default 4096
 #   ANTHROPIC_API_BASE_URL   default https://api.anthropic.com
 # The key is sent from a 0600 header file, never on the command line, and is never printed.
@@ -47,6 +48,13 @@ if [[ -z "$(anthropic_key)" ]]; then
   exit "$PROVIDER_EXIT_UNAVAILABLE"
 fi
 
+# Claude 5 models think before answering by default, and thinking tokens count against max_tokens: at a small cap the whole
+# budget can go to thinking and the response holds no text. "between_tools" is how those models turn thinking off.
+# ANTHROPIC_API_THINKING overrides it (set it empty to send nothing, e.g. for an older model).
+if [[ -n "${ANTHROPIC_API_THINKING+x}" ]]; then ANTHROPIC_THINKING="$ANTHROPIC_API_THINKING"
+elif [[ "$ANTHROPIC_API_MODEL" =~ ^claude-[a-z]+-5 ]]; then ANTHROPIC_THINKING="between_tools"
+else ANTHROPIC_THINKING=""; fi
+
 PROMPT_FILE="${1:-}"
 provider_require_prompt_file "$PROMPT_FILE"
 
@@ -68,10 +76,11 @@ if ws_enabled; then
   # tool; max_uses is the cap; one domain list natively (allow wins), the other is post-filtered by e3d-debate.
   ws_settings || ws_fail anthropic-api invalid_domain_config
   jq -n --rawfile content "$PROMPT_FILE" --arg model "$ANTHROPIC_API_MODEL" --arg max "${ANTHROPIC_API_MAX_TOKENS:-4096}" \
-    --arg sys "$WS_SYSTEM_TEXT" --argjson uses "$WS_MAX" --argjson allow "$WS_ALLOW" --argjson deny "$WS_DENY" \
+    --arg think "$ANTHROPIC_THINKING" --arg sys "$WS_SYSTEM_TEXT" --argjson uses "$WS_MAX" --argjson allow "$WS_ALLOW" --argjson deny "$WS_DENY" \
     '{model: $model, max_tokens: ($max | tonumber), system: $sys, messages: [{role: "user", content: $content}],
       tools: [{type: "web_search_20250305", name: "web_search", max_uses: $uses}
-        + (if ($allow | length) > 0 then {allowed_domains: $allow} elif ($deny | length) > 0 then {blocked_domains: $deny} else {} end)]}' > "$work/payload.json"
+        + (if ($allow | length) > 0 then {allowed_domains: $allow} elif ($deny | length) > 0 then {blocked_domains: $deny} else {} end)]}
+      + (if $think != "" then {thinking: {type: $think}} else {} end)' > "$work/payload.json"
   max_continuations="${ANTHROPIC_API_MAX_PAUSE_CONTINUATIONS:-2}"
   [[ "$max_continuations" =~ ^[0-9]+$ ]] && (( max_continuations <= 5 )) || max_continuations=2
   # per-token pricing: one call is one request, so a paused turn is never continued (the continuation would be a second billed request)
@@ -133,8 +142,8 @@ if ws_enabled; then
   exit "$PROVIDER_EXIT_OK"
 fi
 
-jq -n --rawfile content "$PROMPT_FILE" --arg model "$ANTHROPIC_API_MODEL" --arg max "${ANTHROPIC_API_MAX_TOKENS:-4096}" \
-  '{model: $model, max_tokens: ($max | tonumber), messages: [{role: "user", content: $content}]}' > "$work/payload.json"
+jq -n --rawfile content "$PROMPT_FILE" --arg model "$ANTHROPIC_API_MODEL" --arg max "${ANTHROPIC_API_MAX_TOKENS:-4096}" --arg think "$ANTHROPIC_THINKING" \
+  '{model: $model, max_tokens: ($max | tonumber), messages: [{role: "user", content: $content}]} + (if $think != "" then {thinking: {type: $think}} else {} end)' > "$work/payload.json"
 
 set +e
 http_code="$(curl -sS -m "${ANTHROPIC_API_TIMEOUT:-180}" -o "$work/response.json" -w '%{http_code}' \
