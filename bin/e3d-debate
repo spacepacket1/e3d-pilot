@@ -129,10 +129,20 @@ done
 # Web search is off in a per-token debate unless the quote priced it: E3D_DEBATE_MAX_SEARCHES {provider: k} (with E3D_DEBATE_CITE_BYTES_MAX n,
 # both or neither) names the providers that may search and the per-call cap each was priced at; the number in the prompt is that cap.
 # Even then a search call is exactly one vendor request: no retry, no continuation, and no second call without search.
+# The node the helper libraries run on must meet package.json engines (>=18). node_old_reason prints why it does not (empty when fine).
+NODE_MIN_MAJOR=18
+node_old_reason() {
+  local v major
+  v="$(node --version 2>/dev/null)" || { echo "node did not run ($(command -v node 2>/dev/null || echo 'not on PATH'))"; return; }
+  major="${v#v}"; major="${major%%.*}"
+  [[ "$major" =~ ^[0-9]+$ ]] && (( major >= NODE_MIN_MAJOR )) && return 0
+  echo "node $v at $(command -v node) is older than $NODE_MIN_MAJOR; put a Node $NODE_MIN_MAJOR+ directory first on PATH"
+}
 PT_LIB="$REPO_ROOT/lib/debate/token-pricing.mjs"
 PT_ON=0; AB_ON=0; PT_MAX_JSON="{}"; PT_ANS_JSON="{}"; PT_SEARCH=0; PT_SEARCH_JSON="{}"; PT_CITE_BYTES=0
 if [[ "$PROMPT_OVERHEAD" != "1" && ( -n "${E3D_DEBATE_MAX_TOKENS:-}" || -n "${E3D_DEBATE_ANSWER_BYTES_MAX:-}" || -n "${E3D_DEBATE_MAX_SEARCHES:-}" || -n "${E3D_DEBATE_CITE_BYTES_MAX:-}" ) ]]; then
   command -v node >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 && [[ -f "$PT_LIB" ]] || { echo "error: token limits need node, jq and $PT_LIB" >&2; exit 1; }
+  PT_NODE_BAD="$(node_old_reason)"; [[ -z "$PT_NODE_BAD" ]] || { echo "error: token limits need Node $NODE_MIN_MAJOR or newer: $PT_NODE_BAD" >&2; exit 1; }
   PT_CFG="$(node "$PT_LIB" config "$DEBATE_SYNTHESIZER" "${DEBATE_PROVIDERS[@]}")" || exit 1
   [[ "$(jq -r .perToken <<< "$PT_CFG")" == "true" ]] && { PT_ON=1; PT_MAX_JSON="$(jq -c .maxTokens <<< "$PT_CFG")"; }
   [[ "$(jq -r '.answerBytes != null' <<< "$PT_CFG")" == "true" ]] && { AB_ON=1; PT_ANS_JSON="$(jq -c .answerBytes <<< "$PT_CFG")"; }
@@ -201,7 +211,22 @@ WS_LIB="$REPO_ROOT/lib/debate/websearch.mjs"
 WS_ON=0; WS_ANY=0; WS_PROVIDERS=" "; WS_MAX_SEARCHES=3; WS_CFG='{}'
 declare -a WS_SEARCHING=()
 if [[ "$WEB_SEARCH_REQUESTED" == "1" ]]; then
-  if command -v node >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 && [[ -f "$WS_LIB" ]] && WS_CFG="$(node "$WS_LIB" config 2>/dev/null)" && [[ -n "$WS_CFG" ]]; then
+  WS_REASON=""
+  if ! command -v node >/dev/null 2>&1; then WS_REASON="node is not on PATH"
+  elif ! command -v jq >/dev/null 2>&1; then WS_REASON="jq is not on PATH"
+  elif [[ ! -f "$WS_LIB" ]]; then WS_REASON="$WS_LIB is missing"
+  elif WS_REASON="$(node_old_reason)"; [[ -n "$WS_REASON" ]]; then :
+  else
+    WS_ERR_FILE="$(mktemp)"
+    if WS_CFG="$(node "$WS_LIB" config 2>"$WS_ERR_FILE")" && [[ -n "$WS_CFG" ]]; then :
+    else
+      WS_REASON="$(grep -m1 . "$WS_ERR_FILE" | cut -c1-200 || true)"
+      [[ -n "$WS_REASON" ]] || WS_REASON="node $WS_LIB config failed"
+      WS_REASON="$WS_REASON (node $(node --version 2>/dev/null) at $(command -v node))"
+    fi
+    rm -f "$WS_ERR_FILE"
+  fi
+  if [[ -z "$WS_REASON" ]]; then
     if [[ "$(jq -r .enabled <<< "$WS_CFG")" == "true" ]]; then
       WS_ON=1
       WS_PROVIDERS=" $(jq -r '.providers | join(" ")' <<< "$WS_CFG") "
@@ -211,7 +236,7 @@ if [[ "$WEB_SEARCH_REQUESTED" == "1" ]]; then
     fi
   else
     WS_CFG='{}'
-    echo "warning: web search is off for this debate (node, jq or $WS_LIB is missing)" >&2
+    echo "warning: web search is off for this debate: $WS_REASON" >&2
   fi
 fi
 search_on_for() { (( WS_ON == 1 )) && [[ "$WS_PROVIDERS" == *" $1 "* ]]; }

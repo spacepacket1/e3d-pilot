@@ -29,6 +29,8 @@ server yet; the application half was run locally (see "What was tested").
 
 ## Spending limits
 
+Node: e3d-mcp runs its child scripts with the directory of its own node first on PATH, so `@NODE@` (an absolute Node 18+ path) is also what `bin/e3d-debate` uses. On releases before this behavior, add `PATH=<node dir>:/usr/local/bin:/usr/bin:/bin` to `pilot.env`, or the sandbox may resolve `node` to an old `/usr/bin/node` and silently turn web search off. After a deploy, `e3d-mcp --doctor` shows the node used by children and whether `websearch.mjs config` runs.
+
 Defaults in `pilot.env.example`: per token name, **20 model calls and 150,000 estimated tokens per day**, 10 requests/minute.
 A quick debate is 3 calls, so a token can run about 6 quick debates a day. There is **no global cap**: three tokens means three
 budgets. Keep the list short, and watch the provider dashboards for the first week, because the token counts are estimates.

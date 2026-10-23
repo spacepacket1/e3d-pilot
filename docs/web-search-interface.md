@@ -174,3 +174,18 @@ transformed, exactly as before.
   > say so and give your answer conditionally.
 
 The constants live in `lib/debate/websearch.mjs` (`PRIVACY_NOTICE`, `NO_WEB_ACCESS_TEXT`).
+
+
+## Deployment: which node the engine uses
+
+`bin/e3d-debate` is a bash script that runs `lib/debate/websearch.mjs` with plain `node` (Node 18 or newer, see `engines` in
+package.json). e3d-mcp now starts every child process with the directory of its own node binary first on PATH (`process.execPath`), so a
+service started with an absolute node path (for example `/opt/node20/bin/node`) uses that node for the scripts too. A hosted install that
+runs an older e3d-mcp must put the Node 18+ directory first on PATH in the service env file (`PATH=/opt/node20/bin:...`, see
+`deploy/pilot-e3d-ai/pilot.env.example`).
+
+If search cannot be set up, the debate still runs without it and says why: the engine prints `warning: web search is off for this debate:
+<reason>`, e3d-mcp logs it (`[e3d-mcp] engine warning: ...`), and the result carries `web_search.flags.unavailable` entries
+`{provider, round: 0, reason: "search_setup_failed", detail}` plus a line in `warnings[]`. A node older than 18 is named in the reason;
+with per-token limits (`E3D_DEBATE_MAX_TOKENS` and friends) the engine refuses to start instead. `e3d-mcp --doctor` prints the node the
+children use and whether `websearch.mjs config` runs on it.

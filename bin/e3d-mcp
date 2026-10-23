@@ -103,12 +103,23 @@ function parsePositions(transcript) {
   };
 }
 
+// `warning: ...` lines of the engine's stderr: at most 5, 200 characters each, redacted.
+function engineWarningsOf(err) {
+  return String(err ?? '').split('\n').filter((l) => l.startsWith('warning: ')).slice(0, 5).map((l) => redact(l.slice(9)).replace(/\s+/g, ' ').trim().slice(0, 200));
+}
+// The client-facing warning when web search was requested but the engine could not set it up.
+function searchSetupWarnings(w) {
+  const u = w?.flags?.unavailable?.find((x) => x.reason === 'search_setup_failed');
+  return u ? [`Web search was requested but is off for this debate: ${u.detail || 'the engine could not set it up'}. The answers come from the models' own knowledge.`] : [];
+}
+
 // The web-search lines of a rendered verdict. Sources are plain text: the domain, then the URL as a code span (never a
 // markdown link or image), so nothing loads or hides where it points. Titles and excerpts are left to structuredContent.
 function renderWebSearch(w) {
   const avail = searchAvailability(process.env);
   if (!avail.on) return [`_${avail.text}_`, ''];
   if (!w?.requested) return [];
+  if (!w.enabled && w.flags?.unavailable?.some((u) => u.reason === 'search_setup_failed')) return [`**WARNING:** web search was requested but is off for this debate: ${w.flags.unavailable.find((u) => u.reason === 'search_setup_failed').detail || 'the engine could not set it up'}. The answers come from the models' own knowledge, which may be out of date.`, ''];
   if (!w.enabled) return ['_Web search: off for this debate, so the answers come from the models\' own knowledge, which may be out of date._', ''];
   const out = [`**Web search:** on for ${w.models_with_search} of ${w.models_total} models; ${w.searches_used} search${w.searches_used === 1 ? '' : 'es'} used. Search results are untrusted internet data.`];
   for (const u of w.flags.unavailable) out.push(`**WARNING:** web search was unavailable for ${u.provider} in round ${u.round} (${u.reason}); it answered without web access.`);
@@ -295,13 +306,18 @@ const worstFor = (plan) => worstCase({ providers: plan.providers.length, rounds:
 // The web-search part of a debate's result, from the out/web-search.json bin/e3d-debate writes. Everything is re-checked and
 // re-sanitised here: titles and excerpts are page text, so they are bounded and stripped of markup; URLs are http(s) with no
 // query string; nothing is ever fetched.
-function readWebSearch(raw, requested) {
+// setup (optional): { providers, detail } when the engine printed warnings and no web-search.json came back although search was requested
+// (the engine could not set search up, e.g. an old node): the block then says so in flags.unavailable, with the first warning as detail.
+function readWebSearch(raw, requested, setup = null) {
   let w = null;
   try { w = raw ? JSON.parse(raw) : null; } catch { w = null; }
   const int = (v) => (Number.isSafeInteger(v) && v >= 0 ? v : 0);
   const line = (v, max) => sanitizeText(String(v ?? '')).replace(/\s+/g, ' ').trim().slice(0, max);
   const name = (v) => String(v ?? '').replace(/[^a-z0-9_.:-]/gi, '').slice(0, 64);
-  if (!w || typeof w !== 'object') return { enabled: false, requested, models_with_search: 0, models_total: 0, searches_used: 0, searches_by_provider: {}, citations: [], flags: { instructions_ignored: false, cap_exceeded: [], unavailable: [], citations_dropped: {} } };
+  if (!w || typeof w !== 'object') {
+    const failed = requested && setup?.detail ? (setup.providers?.length ? setup.providers : ['all']).slice(0, 8).map((provider) => ({ provider, round: 0, reason: 'search_setup_failed', detail: line(setup.detail, 200) })) : [];
+    return { enabled: false, requested, models_with_search: 0, models_total: 0, searches_used: 0, searches_by_provider: {}, citations: [], flags: { instructions_ignored: false, cap_exceeded: [], unavailable: failed, citations_dropped: {} } };
+  }
   const byProvider = {};
   for (const [k, v] of Object.entries(w.searches_used ?? {})) if (API_PROVIDERS.includes(k)) byProvider[k] = int(v);
   const citations = (Array.isArray(w.citations) ? w.citations : []).slice(0, 20).map((c) => {
@@ -317,7 +333,7 @@ function readWebSearch(raw, requested) {
     flags: {
       instructions_ignored: flags.instructions_ignored === true,
       cap_exceeded: (Array.isArray(flags.cap_exceeded) ? flags.cap_exceeded : []).slice(0, 32).map((a) => ({ provider: name(a?.provider), round: int(a?.round), searches: int(a?.searches), cap: int(a?.cap) })),
-      unavailable: (Array.isArray(flags.unavailable) ? flags.unavailable : []).slice(0, 32).map((u) => ({ provider: name(u?.provider), round: int(u?.round), reason: name(u?.reason) })),
+      unavailable: (Array.isArray(flags.unavailable) ? flags.unavailable : []).slice(0, 32).map((u) => ({ provider: name(u?.provider), round: int(u?.round), reason: name(u?.reason), ...(typeof u?.detail === 'string' && u.detail ? { detail: line(u.detail, 200) } : {}) })),
       citations_dropped: Object.fromEntries(Object.entries(flags.citations_dropped ?? {}).filter(([k]) => /^[a-z_]{1,32}$/.test(k)).map(([k, v]) => [k, int(v)])),
     },
   };
@@ -418,11 +434,15 @@ async function executeDebate(plan, handle, ctx, { progress, onStarted, signal } 
       onStderr: (s) => { for (const m of s.matchAll(/^=== (.+?) ===$/gm)) progress?.(++step, m[1]); },
     });
     lastRun = r;
+    // The engine's own `warning:` lines (never its question or answer text): logged, bounded, and kept for the result.
+    const engineWarnings = engineWarningsOf(r.err);
+    for (const w of engineWarnings) log(`engine warning: ${w}`);
     // Token pricing: the vendor-reported usage of every attempted call goes to billing BEFORE finalize (a stopped debate included).
     if (limits) await reportUsage(handle, join(dir, 'out', 'usage.json'));
     // Calls that actually ran are counted from the transcript, whether or not the debate succeeded.
     const transcript = await readFile(join(dir, 'out', 'transcript.md'), 'utf8').catch(() => '');
-    const webSearch = readWebSearch(await readFile(join(dir, 'out', 'web-search.json'), 'utf8').catch(() => ''), webSearchRequested);
+    const webSearch = readWebSearch(await readFile(join(dir, 'out', 'web-search.json'), 'utf8').catch(() => ''), webSearchRequested,
+      { providers: plan.providers.filter((p) => API_PROVIDERS.includes(p)), detail: engineWarnings.find((w) => /web search/i.test(w)) ?? engineWarnings[0] });
     // with web search, everything returned is sanitised again here (e3d-debate already did): control and bidi characters,
     // markdown images, HTML and links are neutralised
     const clean = webSearch.enabled ? (t) => sanitizeText(t) : (t) => t;
@@ -457,7 +477,7 @@ async function executeDebate(plan, handle, ctx, { progress, onStarted, signal } 
     const models = modelsFromTranscript(transcript, { synthesizer, calls: spent.calls }).map((m) => ({ ...m, searches: webSearch.searches_by_provider[m.provider] ?? 0 }));
     const { budget, billing } = await metering.commit(handle, { ...spent, searches: webSearch.searches_used }, { outcome, duration_ms: Date.now() - started, models, ...finalizeMeta });
     settled = true;
-    return { r, timeoutMs, transcript, spent, verdict, outcome, roundsRan, positions, samplingModels, stored, budget, billing, webSearch };
+    return { r, timeoutMs, transcript, spent, verdict, outcome, roundsRan, positions, samplingModels, stored, budget, billing, webSearch, engineWarnings };
   } finally {
     // Not settled (an unexpected error): give the reservation back, as before. With the hook, once the debate binary
     // has run the intent is kept instead, so the next start reconciles it per E3D_MCP_ORPHAN_POLICY (never free).
@@ -509,7 +529,7 @@ async function toolDebate(args, progress, ctx) {
     mode, providers, rounds_requested: rounds, rounds_ran: roundsRan || rounds,
     selection, selection_note: selectionNote, synthesizer,
     ...(samplingModels.length ? { models: samplingModels } : {}),
-    independent: indep.independent, warnings: indep.warnings,
+    independent: indep.independent, warnings: [...indep.warnings, ...searchSetupWarnings(webSearch)],
     ...(indep.families.length ? { families: indep.families } : {}),
     ...(panel ? { panel } : {}),
     usage: { model_calls: spent.calls, est_input_tokens: spent.inTokens, est_output_tokens: spent.outTokens, searches: webSearch.searches_used, estimate: billing?.pricing?.usage.source !== 'vendor' },
