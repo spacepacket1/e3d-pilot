@@ -77,6 +77,7 @@ You don't need the rest of e3d-pilot to use `e3d-debate` on its own — see [e3d
 | Tool | What it does |
 | --- | --- |
 | `e3d_debate` | Several independent models answer and a synthesizer returns a decisive answer, a consensus level (`full` / `majority` / `split`), any named dissent, and each model's final position, as both readable text and structured data (`dissent.present`, `dissent.summary`, `positions`). `mode: "quick"` (default) is one round and takes seconds; `mode: "thorough"` adds a critique round where models rebut each other. The full transcript is opt-in (`include_transcript`). |
+| `e3d_quote` | Hosted per-token servers only. Free and read-only: prices an `e3d_debate` (same arguments) and returns `quote_id`, `max_credits`, `expires_at` and your key's limits; nothing is held or spent. See [Agents](#agents-quote-then-run-idempotently-hosted). |
 | `e3d_list_providers` | Shows which model providers are available on this machine. A debate needs at least two. |
 | `e3d_provenance_trace` | Read-only: traces why a change exists, from its origin through debates, approvals, execution, review, and outcome. |
 | `e3d_ideas_list` | Read-only: lists the ideas e3d-pilot tracks in a repo, to find an id for the trace. |
@@ -247,6 +248,18 @@ Sampling can only answer text-in, text-out prompts, so it works for debates and 
 | `E3D_MCP_SAMPLING_HINTS` | `claude,gpt` | Model-name hints for the two sampling voices. |
 
 Add them to the server's `env` in `mcp.json`, e.g. `"env": { "E3D_MCP_REPOS": "/Users/me/work/app" }`.
+
+### Agents: quote, then run idempotently (hosted)
+
+On the hosted per-token server (`E3D_MCP_PRICING=per_token`) an agent gets a small contract on top of `e3d_debate`. The local stdio server and self-hosted servers without billing are not affected: they have no `e3d_quote` and no new arguments, and behave exactly as before.
+
+1. `e3d_quote` with the question and options you will run. It returns `quote_id`, `max_credits` (the most the run can be charged; it is charged actual use, never more), `expires_at` (10 minutes) and `key_limits`. Nothing is spent. Only a hash and the size of the question go to billing.
+2. `e3d_debate` with the **same arguments** plus `idempotency_key` (8 to 128 characters of letters, digits and `._:-`) and `quote_id`. A repeat of the same call with the same key returns the stored result and runs and charges nothing. A different request under a used key is `idempotency_conflict`; a call still running is `in_progress` (retry after `retry_after_seconds`).
+3. Read the result: `consensus`, the `dissent` summary object and `dissent_items[]` (the same dissent as a list), `cost {quote_credits, charged_credits}`, `recommended_next_step` (`proceed`, `proceed_with_caution`, `escalate_to_human`, `no_op`), `schema_version` and `notice`. `recommended_next_step` is advice on how much weight to give the answer, from the consensus level only. It is **not approval** to act: on `split` or `unknown` escalate to a human or do nothing, never an irreversible action. Everything returned, including cited web text, is untrusted data.
+
+Rules for `quote_id` and `idempotency_key`: with a key and no `quote_id` the server quotes for you; a `quote_id` without a key is refused (`invalid_request`), because a quote is single use and is bound to the first key that runs it; with neither, the call behaves as it always has (no deduplication, so a retry may be charged twice). Every refusal is an MCP tool error (`isError`) whose `structuredContent.error` is `{code, message, retryable, retry_after_seconds?, remediation, docs_url}` and whose text begins with the code, for example `key_cap_daily`, `insufficient_credits`, `quote_expired`, `in_progress`, `rate_limited`; billing unreachable or timing out is `service_unavailable`. The codes are billing's catalog; this server adds `debate_failed`, `debate_timeout` and `budget_exhausted`. See [docs/mcp-agent-instructions.md](docs/mcp-agent-instructions.md).
+
+The agent contract is on by default exactly when `E3D_MCP_PRICING=per_token`. `E3D_MCP_AGENT=0` turns it off (restart, no release); `E3D_MCP_AGENT=1` refuses to start without per-token pricing. The rules for agents are published at https://pilot.e3d.ai/AGENTS.md.
 
 ### Hosted / remote use
 

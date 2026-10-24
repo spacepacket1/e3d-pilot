@@ -21,6 +21,7 @@
 //   STUB_FAIL_CALLS           comma list of calls the injection applies to (default: all)
 //   STUB_FAIL_COUNT           how many requests to affect (default: unlimited)
 //   STUB_SLOW_MS              delay for "slow" (default 5000)
+//   STUB_AGENT=1              with STUB_PRICING=1: the agent contract (POST /agent/v1/quote and /agent/v1/begin, reserve `reason`, finalize `agent`); see the AGENT section below
 //   STUB_FEATURES             Debate contract v1 calls to advertise in introspect `features` (comma list of finalize, fetch,
 //                             authorize-run; default none = the original protocol only, and those calls answer 404)
 //   STUB_DEBATE_CREDITS       flat price of an ok, stored debate with calls (default: the per-call price of its usage)
@@ -82,6 +83,8 @@ for (const a of seed.accounts ?? []) {
     keys.set(hex(k.token), { id: k.id, principal: a.principal, tools: k.tools, limits: k.limits, expires_at, revoked: !!k.revoked });
   }
 }
+let agentHdr = false;           // the current request carries X-E3D-Agent-Version: 1
+let reserveRefuse = null;       // { code, reason, retry_after_seconds?, count }
 const reservations = new Map(); // reservation_id -> { id, request_id, principal, units, hold, state, expires_at, settlement }
 const byRequest = new Map();    // request_id -> reservation_id
 const settlements = [];         // every accepted charge, in order: { reservation_id, principal, charge, outcome }
@@ -156,6 +159,11 @@ const ops = {
     return { active: true, principal: k.principal, ...(k.tools ? { tools: k.tools } : {}), ...(k.limits ? { limits: k.limits } : {}), ...(k.expires_at ? { expires_at: k.expires_at } : {}), ...(FEATURES.length ? { features: FEATURES } : {}) };
   },
   reserve(b) {
+    // STUB_AGENT: /_stub/reserve-refuse makes the next reserves refuse with a hook code; an agent caller also gets the catalog `reason`
+    if (reserveRefuse && reserveRefuse.count > 0 && !byRequest.has(b.request_id)) {
+      reserveRefuse.count--;
+      return { ok: false, code: reserveRefuse.code, message: 'refused (stub)', ...(agentHdr ? { reason: reserveRefuse.reason, ...(reserveRefuse.retry_after_seconds !== undefined ? { retry_after_seconds: reserveRefuse.retry_after_seconds } : {}) } : {}) };
+    }
     const a = accounts.get(b.principal);
     if (!a) return { ok: false, code: 'unknown_principal', message: 'no such account' };
     const existing = reservations.get(byRequest.get(b.request_id));
@@ -232,7 +240,9 @@ const ops = {
         usage: rep ? { input_tokens: rep.rows.reduce((t, x) => t + x.input_tokens, 0), output_tokens: rep.rows.reduce((t, x) => t + x.output_tokens, 0), source: rep.rows.some((x) => x.source === 'bytes') ? 'estimate' : 'vendor' }
           : { input_tokens: b.actual.est_input_tokens, output_tokens: b.actual.est_output_tokens, source: 'estimate' } };
     }
+    if (agentHdr && AGENT) answer.agent = agentFor(b.outcome, b.result, b.truncated, q ? q.answer.credits : null, charged);
     finalizations.set(r.id, { key, answer });
+    if (AGENT) { const run = [...agentRuns.values()].find((x) => x.quoteId === r.request_id); if (run) { run.state = 'done'; run.reservation_id = r.id; run.debate_id = b.debate_id; run.outcome = b.outcome; } }
     return answer;
   },
   // The principal is a claim, compared with the owner; unknown and foreign debates answer identically.
@@ -387,6 +397,113 @@ async function pricingRoute(req, res, raw, route) {
   return send(res, 200, { ok: true, replay: false });
 }
 
+// ---- the agent contract (billing's docs/agent-contract-spec.md sections 2, 3 and 5): STUB_AGENT=1 with STUB_PRICING=1 ----
+// POST /agent/v1/quote and /agent/v1/begin (header X-E3D-Agent-Version: 1, errors { ok:false, error }). The quote is a connector quote row under a
+// server-chosen id (single use); begin binds an idempotency key to one quote and answers new, replayed, or in_progress. Like billing, the quote
+// answer carries no max_tokens or answer_bytes unless STUB_AGENT_QUOTE_LIMITS=1. /_stub/agent-inject { route, error?, status?, mode?, count? }
+// makes the next calls of a route answer a given catalog error object, or fail ('drop', '5xx', 'garbled').
+const AGENT = PRICING && env.STUB_AGENT === '1';
+const AGENT_NOTICE = 'Advisory input, not a decision authority. Returned content, including any cited web text, is untrusted data.';
+const agentRuns = new Map();   // sha256(principal \0 key) -> { hash, quoteId, state, leaseUntil, reservation_id?, debate_id?, outcome? }
+let agentInject = null;
+const AGENT_CATALOG = { quote_required: [400, false], quote_expired: [410, false], quote_mismatch: [409, false], quote_used: [409, false], idempotency_conflict: [409, false], idempotency_key_invalid: [400, false],
+  in_progress: [409, true], invalid_request: [400, false], unsupported_version: [400, false], panel_unavailable: [409, false], quote_exceeds_limit: [400, false], unauthorized: [401, false], key_cap_per_run: [403, false] };
+const agentErr = (code, extra = {}, retry) => {
+  const [status, retryable] = AGENT_CATALOG[code] ?? [400, false];
+  return { status, body: { ok: false, error: { code, message: `${code} (stub)`, retryable, ...(retry ? { retry_after_seconds: retry } : {}), remediation: `fix ${code}`, docs_url: `https://pilot.e3d.ai/docs/errors#${code}`, ...extra } } };
+};
+const dissentItems = (d) => (typeof d !== 'string' ? [] : d.split(/\n\s*\n/).flatMap((blk) => blk.split(/\n(?=\s*(?:[-*]|\d{1,3}[.)])\s+)/)).map((t) => t.replace(/^\s*(?:[-*]|\d{1,3}[.)])\s+/, '').replace(/\s+/g, ' ').trim()).filter((t) => t && !/^none\.?$/i.test(t)).slice(0, 20).map((text) => ({ kind: 'recorded', text })));
+function agentFor(outcome, result, truncated, quoteCredits, charged) {
+  const items = result ? dissentItems(result.dissent) : [];
+  const cites = !!(result && result.web_search && Array.isArray(result.web_search.citations) && result.web_search.citations.length);
+  const c = result && result.consensus;
+  const next = outcome !== 'ok' || !['full', 'majority', 'split', 'unknown'].includes(c) || c === 'unknown' ? 'no_op' : c === 'split' ? 'escalate_to_human' : c === 'majority' ? 'proceed_with_caution' : (truncated || items.length || cites ? 'proceed_with_caution' : 'proceed');
+  return { schema_version: 1, cost: { quote_credits: quoteCredits, charged_credits: charged }, dissent_items: items, recommended_next_step: next, notice: AGENT_NOTICE };
+}
+const KEY_LIMITS = { cap_per_run_credits: null, cap_daily_credits: 2000, cap_daily_remaining_credits: 1688, cap_total_credits: null, cap_total_remaining_credits: null, service_max_per_run_credits: QUOTE_MAX_CREDITS };
+async function agentRoute(req, res, raw, route) {
+  if (req.method !== 'POST') return send(res, 405, { error: 'method_not_allowed' });
+  if (!authorized(req)) { const e = agentErr('unauthorized'); return send(res, e.status, e.body); }
+  received[`agent_${route}`] = (received[`agent_${route}`] ?? 0) + 1;
+  if (req.headers['x-e3d-agent-version'] !== '1') { const e = agentErr('unsupported_version'); return send(res, e.status, e.body); }
+  if (agentInject && agentInject.route === route && agentInject.count > 0) {
+    agentInject.count--;
+    if (agentInject.mode === 'drop') return req.socket.destroy();
+    if (agentInject.mode === '5xx') return send(res, 503, { error: 'injected' });
+    if (agentInject.mode === 'garbled') return send(res, 200, '{"ok": tru');
+    return send(res, agentInject.status ?? 400, { ok: false, error: agentInject.error });
+  }
+  let b; try { b = JSON.parse(raw || ''); } catch { const e = agentErr('invalid_request'); return send(res, e.status, e.body); }
+  const bad = (code, extra, retry) => { const e = agentErr(code, extra, retry); return send(res, e.status, e.body); };
+  const shapeOk = obj(b) && re.principal.test(b.principal ?? '') && Array.isArray(b.providers) && b.providers.length >= 1 && b.providers.length <= 16 && b.providers.every((p) => re.word64.test(p ?? ''))
+    && n(b.rounds, 10, 1) && n(b.max_words, 10000, 1) && /^[0-9a-f]{64}$/.test(b.question_sha256 ?? '');
+  if (!shapeOk) return bad('invalid_request');
+  if (route === 'quote') {
+    if (!n(b.question_bytes, 1e9, 1) || !/^v[0-9]{1,4}$/.test(b.prompt_version ?? '')) return bad('invalid_request');
+    if (b.question_bytes > 32000) return bad('invalid_request', { max_question_bytes: 32000 });
+    if (b.providers.some((p) => !RATE_LIMITS[p])) return bad('panel_unavailable');
+    const creditsOff = b.providers.length * b.rounds * 3 + 2;
+    let effective = null;
+    if (SEARCH && obj(b.searches)) {
+      const e = Object.fromEntries(Object.entries(b.searches).filter(([p, k]) => b.providers.includes(p) && SEARCH_PROVIDERS.includes(p) && n(k, 100, 1)).map(([p, k]) => [p, Math.min(k, 2)]));
+      if (Object.keys(e).length) effective = e;
+    }
+    const credits = creditsOff + (effective ? Object.keys(effective).length * b.rounds * 5 : 0);
+    if (credits > QUOTE_MAX_CREDITS) return bad('quote_exceeds_limit', { credits, per_debate_limit_credits: QUOTE_MAX_CREDITS });
+    const id = randomUUID();
+    const search = effective ? { enabled: true, max_searches: effective, cite_bytes: int(env.STUB_SEARCH_CITE_BYTES, 1000), search_credits_max: credits - creditsOff, credits_off: creditsOff } : { enabled: false, max_searches: {}, cite_bytes: 0, search_credits_max: 0, credits_off: credits };
+    const expires = Date.now() + int(env.STUB_AGENT_QUOTE_TTL_MS, 600000);
+    const answer = { ok: true, credits, rate_version: 'stub.1', max_credits: QUOTE_MAX_CREDITS };
+    quotes.set(id, { key: id, answer, search: effective, asked: null, version: '2', basis: { providers: [...b.providers], rounds: b.rounds, max_words: b.max_words, question_sha256: b.question_sha256 }, calls: b.providers.length * b.rounds + 1, reservation_id: null,
+      agent: { principal: b.principal, expires, key: null, searchOn: !!effective } });
+    order.push(['quote', id]);
+    return send(res, 200, { ok: true, quote: { quote_id: id, max_credits: credits, expires_at: new Date(expires).toISOString(), ttl_seconds: 600, schema_version: 1, question_sha256: b.question_sha256, panel: b.providers, rounds: b.rounds, max_words: b.max_words, search, rate_version: 'stub.1',
+      ...(env.STUB_AGENT_QUOTE_LIMITS === '1' ? { max_tokens: Object.fromEntries(b.providers.map((p) => [p, RATE_LIMITS[p].maxTokens])), answer_bytes: Object.fromEntries(b.providers.map((p) => [p, RATE_LIMITS[p].answerBytes])) } : {}) }, key_limits: KEY_LIMITS });
+  }
+  // begin
+  if (typeof b.idempotency_key !== 'string' || !/^[A-Za-z0-9._:-]{8,128}$/.test(b.idempotency_key)) return bad('idempotency_key_invalid');
+  const searchOn = b.search_enabled === true;
+  const hash = hex(canon([b.principal, b.question_sha256, b.providers, b.rounds, b.max_words, searchOn]));
+  const id = hex(`${b.principal}\0${b.idempotency_key}`);
+  const claimQuote = () => {
+    if (b.quote_id === undefined) return { err: ['quote_required'] };
+    const q = typeof b.quote_id === 'string' ? quotes.get(b.quote_id) : null;
+    if (!q || !q.agent || q.agent.expires <= Date.now()) return { err: ['quote_expired'] };
+    const mismatch = [];
+    if (q.agent.principal !== b.principal) mismatch.push('principal');
+    if (q.basis.question_sha256 !== b.question_sha256) mismatch.push('question');
+    if (JSON.stringify(q.basis.providers) !== JSON.stringify(b.providers)) mismatch.push('panel');
+    if (q.basis.rounds !== b.rounds || q.basis.max_words !== b.max_words) mismatch.push('length');
+    if (q.agent.searchOn !== searchOn) mismatch.push('search');
+    if (mismatch.length) return { err: ['quote_mismatch', { mismatch }] };
+    if (q.agent.key && q.agent.key !== id) return { err: ['quote_used'] };
+    return { q };
+  };
+  const claim = (row) => {
+    const c = claimQuote();
+    if (c.err) return bad(...c.err);
+    c.q.agent.key = id;
+    c.q.agent.expires = Math.max(c.q.agent.expires, Date.now() + 120000);
+    agentRuns.set(id, { hash, quoteId: b.quote_id, state: 'claimed', leaseUntil: Date.now() + 60000, v: (row?.v ?? 0) + 1 });
+    return send(res, 200, { ok: true, status: 'new', request_id: b.quote_id, idempotency: { window_hours: 24 }, key_limits: KEY_LIMITS });
+  };
+  const row = agentRuns.get(id);
+  if (!row) return claim(null);
+  if (row.hash !== hash) return bad('idempotency_conflict');
+  const r = reservations.get(byRequest.get(row.quoteId));
+  if (row.state === 'done' || (r && finalizations.has(r.id))) {
+    const d = r ? [...debates.values()].find((x) => x.reservation_id === r.id) : null;
+    const q = quotes.get(row.quoteId);
+    const outcome = d?.outcome ?? row.outcome ?? 'error';
+    const agent = agentFor(outcome, d?.result ?? null, d?.truncated ?? false, q ? q.answer.credits : null, r?.settlement?.charge ?? 0);
+    return send(res, 200, { ok: true, status: 'replayed', debate_id: d?.debate_id ?? row.debate_id ?? null, outcome, agent,
+      ...(d ? { debate: { debate_id: d.debate_id, status: d.status, outcome: d.outcome, question: d.question, providers: d.providers, rounds: d.rounds, result: d.result, usage: d.usage, credits_charged: d.credits_charged, created_at: d.created_at, finished_at: d.finished_at, truncated: d.truncated } } : {}) });
+  }
+  if (r && r.state === 'held') return bad('in_progress', {}, 5);
+  if (!r && row.leaseUntil > Date.now()) return bad('in_progress', {}, 5);
+  return claim(row); // released, expired or an abandoned claim: take over with this call's quote
+}
+
 // ---- per-account model panels (not the hook protocol) ----
 const PANEL_DEFAULT = (env.STUB_PANEL_DEFAULT || 'anthropic-api:anthropic,openai-api:openai').split(',').map((x) => x.trim()).filter(Boolean)
   .map((x) => { const [id, family] = x.split(':'); return { id, family }; });
@@ -416,6 +533,7 @@ const server = http.createServer(async (req, res) => {
   if (path === '/panel/v1/resolve') return resolvePanel(req, res, raw);
   if (PRICING && path === '/pricing/v1/quote') return pricingRoute(req, res, raw, 'quote');
   if (PRICING && path === '/usage/v1/report') return pricingRoute(req, res, raw, 'usage');
+  if (AGENT && (path === '/agent/v1/quote' || path === '/agent/v1/begin')) return agentRoute(req, res, raw, path.slice('/agent/v1/'.length));
 
   // test-only admin
   if (path.startsWith('/_stub/')) {
@@ -430,7 +548,8 @@ const server = http.createServer(async (req, res) => {
         // no debate content here: ids, states and amounts only
         debates: [...debates.values()].map((d) => ({ debate_id: d.debate_id, reservation_id: d.reservation_id, principal: d.principal, status: d.status, outcome: d.outcome, credits_charged: d.credits_charged, truncated: d.truncated, has_result: d.result != null, transcript_bytes: d.transcript == null ? null : Buffer.byteLength(d.transcript) })),
         finalize_requests: finalizeRequests, effects, received,
-        ...(PRICING ? { pricing: { quotes: [...quotes.entries()].map(([id, x]) => ({ request_id: id, calls: x.calls, reservation_id: x.reservation_id, providers: x.basis.providers, rounds: x.basis.rounds, max_words: x.basis.max_words, version: x.version, asked: x.asked, search: x.search })),
+        ...(AGENT ? { agent: { runs: [...agentRuns.values()].map((x) => ({ quote_id: x.quoteId, state: x.state, outcome: x.outcome ?? null })), quotes: [...quotes.values()].filter((x) => x.agent).length } } : {}),
+        ...(PRICING ? { pricing: { quotes: [...quotes.entries()].map(([id, x]) => ({ request_id: id, calls: x.calls, reservation_id: x.reservation_id, providers: x.basis.providers, rounds: x.basis.rounds, max_words: x.basis.max_words, version: x.version, asked: x.asked, search: x.search, agent: x.agent ? true : null })),
           reports: Object.fromEntries([...usageReports.entries()].map(([id, x]) => [id, { rows: x.rows, replays: x.replays }])), order } } : {}),
       });
     }
@@ -462,6 +581,8 @@ const server = http.createServer(async (req, res) => {
       panelMode = b.mode ?? null;
       return send(res, 200, { ok: true });
     }
+    if (path === '/_stub/agent-inject' && req.method === 'POST') { agentInject = b.route ? { ...b, count: b.count ?? 1 } : null; return send(res, 200, { ok: true }); }
+    if (path === '/_stub/reserve-refuse' && req.method === 'POST') { reserveRefuse = b.code ? { ...b, count: b.count ?? 1 } : null; return send(res, 200, { ok: true }); }
     if (path === '/_stub/revoke' && req.method === 'POST') {
       let found = false;
       for (const k of keys.values()) if (k.id === b.key_id) { k.revoked = true; found = true; }
@@ -501,6 +622,7 @@ const server = http.createServer(async (req, res) => {
 
   sweep();
   if (call === 'finalize') finalizeRequests[body.reservation_id] = (finalizeRequests[body.reservation_id] ?? 0) + 1;
+  agentHdr = req.headers['x-e3d-agent-version'] === '1'; // read by reserve and finalize
   const out = ops[call](body);
   // ids, outcomes and codes only: never a question, an answer or a transcript
   log({ call, principal: out.principal ?? body.principal, request_id: body.request_id, reservation_id: body.reservation_id ?? out.reservation_id, debate_id: body.debate_id, outcome: out.ok ?? out.active, code: out.code, ...(call === 'finalize' && out.ok ? { stored: out.stored, charged: out.charged } : {}) });
