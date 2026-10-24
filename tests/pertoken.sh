@@ -157,7 +157,13 @@ row="$(jq -c '.[] | select(.key == "r1:openai-api")' "$TMP/fhang/usage.json")"
 assert_eq "$(jq -c '[.source, .output_tokens]' <<< "$row")" '["bytes",456]' "a lost response is charged at its output limit, never an undercount"
 assert_eq "$(jq -c 'select(.body.model == "gpt-hang")' "$VREQ" | wc -l | tr -d ' ')" "1" "a timed out call is not retried"
 run_fail fempty gpt-empty
-assert_eq "$(jq -c '.[] | select(.key == "r1:openai-api") | [.source, .input_tokens, .output_tokens]' "$TMP/fempty/usage.json")" '["vendor",13,17]' "a call that failed after the vendor returned usage keeps its vendor row"
+# a 200 with no text is retried once (E3D_DEBATE_NO_TEXT_RETRIES, same request, same limit); both attempts are counted in the call's ONE row
+assert_eq "$(jq -c 'select(.body.model == "gpt-empty")' "$VREQ" | wc -l | tr -d ' ')" "2" "one retry of a 200 with no text"
+assert_eq "$(jq -c 'select(.body.model == "gpt-empty") | .body.max_completion_tokens' "$VREQ" | sort -u | tr '\n' ' ')" "456 " "the retry never raises the output limit"
+assert_eq "$(jq -c '.[] | select(.key == "r1:openai-api") | [.source, .input_tokens, .output_tokens]' "$TMP/fempty/usage.json")" '["vendor",26,34]' "a call that failed after the vendor returned usage keeps its vendor rows, summed over its attempts"
+: > "$VREQ"
+dbt "$TMP/fempty0" E3D_DEBATE_MAX_TOKENS="$MAXT" OPENAI_API_MODEL=gpt-empty E3D_DEBATE_PROVIDER_RETRY_DELAY=0 E3D_DEBATE_NO_TEXT_RETRIES=0 -- --rounds 1 "Which?" || true
+assert_eq "$(jq -c '.[] | select(.key == "r1:openai-api") | [.source, .input_tokens, .output_tokens]' "$TMP/fempty0/usage.json")" '["vendor",13,17]' "no retry with E3D_DEBATE_NO_TEXT_RETRIES=0: one vendor row"
 echo "ok - failures: no retry after a possible vendor call, no row for a call the vendor refused, bytes rows when usage is missing, max_tokens when the response was lost"
 
 # a stopped debate (SIGTERM, as e3d-mcp sends on a timeout) still reports the calls that were under way

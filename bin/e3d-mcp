@@ -153,7 +153,7 @@ function renderDebate(d) {
   for (const w of d.warnings ?? []) lines.push(`**WARNING:** ${w}`, '');
   lines.push(...renderWebSearch(d.web_search));
   if (d.models?.length) lines.push(`_Models that answered: ${d.models.map((m) => `${m.provider} = ${m.model}`).join('; ')}_`, '');
-  if (d.panel?.dropped?.length) lines.push(`_Not available for this debate, so not asked: ${d.panel.dropped.join(', ')} (the rest of the panel answered; ${d.panel.synthesizer} wrote the summary)._`, '');
+  if (d.panel?.dropped?.length) lines.push(`_Not available for this debate, so not asked: ${d.panel.dropped.join(', ')} (the rest of the panel answered; ${d.synthesizer_fallback?.to ?? d.panel.synthesizer} wrote the summary)._`, '');
   if (d.dissent.present === false) lines.push('**Dissent:** none', '');
   else lines.push(`**Dissent (report this to the user, do not drop it when summarizing):** ${d.dissent.summary}`, '');
   if (Number.isSafeInteger(d.billing?.charged_credits)) lines.push(`_Charged ${d.billing.charged_credits} credit${d.billing.charged_credits === 1 ? '' : 's'} (at most ${d.billing.quote_credits} were held)${Number.isSafeInteger(d.billing.searches) && d.billing.searches > 0 ? `, includes ${d.billing.searches} web search${d.billing.searches === 1 ? '' : 'es'}` : ''}._`, '');
@@ -343,6 +343,31 @@ function readWebSearch(raw, requested, setup = null) {
       unavailable: (Array.isArray(flags.unavailable) ? flags.unavailable : []).slice(0, 32).map((u) => ({ provider: name(u?.provider), round: int(u?.round), reason: name(u?.reason), ...(typeof u?.detail === 'string' && u.detail ? { detail: line(u.detail, 200) } : {}) })),
       citations_dropped: Object.fromEntries(Object.entries(flags.citations_dropped ?? {}).filter(([k]) => /^[a-z_]{1,32}$/.test(k)).map(([k, v]) => [k, int(v)])),
     },
+  };
+}
+
+// The seat record of a debate (seats.json from e3d-debate, docs/seat-reliability.md): which seats answered, which were lost and why, and
+// whether another model wrote the summary. Everything is re-validated and bounded; an absent or unreadable file is null (old engine).
+function readSeats(raw) {
+  let w = null;
+  try { w = raw ? JSON.parse(raw) : null; } catch { w = null; }
+  if (!w || typeof w !== 'object') return null;
+  const int = (v) => (Number.isSafeInteger(v) && v >= 0 && v <= 1000 ? v : 0);
+  const name = (v) => String(v ?? '').replace(/[^a-z0-9_.:-]/gi, '').slice(0, 64);
+  const unavailable = (Array.isArray(w.seats_unavailable) ? w.seats_unavailable : []).slice(0, 16).map((u) => ({ provider: name(u?.provider), round: int(u?.round), reason: name(u?.reason) || 'error' }));
+  const f = w.synthesizer_fallback;
+  const fallback = f && typeof f === 'object' && name(f.from) && name(f.to) ? { from: name(f.from), to: name(f.to), reason: name(f.reason) || 'error' } : null;
+  const seats_requested = int(w.seats_requested);
+  const seats_answered = int(w.seats_answered);
+  const note = typeof w.consensus_note === 'string' ? sanitizeText(w.consensus_note).replace(/\s+/g, ' ').trim().slice(0, 300) : '';
+  const warnings = [];
+  if (unavailable.length) warnings.push(`Only ${seats_answered} of ${seats_requested} models answered: ${unavailable.map((u) => `${u.provider} was unavailable in round ${u.round} (${u.reason})`).join(', ')}.${note ? ` ${note}` : ''}`);
+  if (fallback) warnings.push(`The summary was written by ${fallback.to} because the synthesizer ${fallback.from} failed (${fallback.reason}).`);
+  return {
+    seats_requested, seats_answered, seats_unavailable: unavailable, ...(fallback ? { synthesizer_fallback: fallback } : {}),
+    ...(note ? { consensus_note: note } : {}),
+    flags: { synthesizer_fallback: fallback !== null, seats_lost: unavailable.length > 0, fewer_than_3_seats: seats_answered < 3 },
+    warnings,
   };
 }
 
@@ -563,6 +588,7 @@ async function executeDebate(plan, handle, ctx, { progress, onStarted, signal } 
     const transcript = await readFile(join(dir, 'out', 'transcript.md'), 'utf8').catch(() => '');
     const webSearch = readWebSearch(await readFile(join(dir, 'out', 'web-search.json'), 'utf8').catch(() => ''), webSearchRequested,
       { providers: plan.providers.filter((p) => API_PROVIDERS.includes(p)), detail: engineWarnings.find((w) => /web search/i.test(w)) ?? engineWarnings[0] });
+    const seats = readSeats(await readFile(join(dir, 'out', 'seats.json'), 'utf8').catch(() => ''));
     // with web search, everything returned is sanitised again here (e3d-debate already did): control and bidi characters,
     // markdown images, HTML and links are neutralised
     const clean = webSearch.enabled ? (t) => sanitizeText(t) : (t) => t;
@@ -597,7 +623,7 @@ async function executeDebate(plan, handle, ctx, { progress, onStarted, signal } 
     const models = modelsFromTranscript(transcript, { synthesizer, calls: spent.calls }).map((m) => ({ ...m, searches: webSearch.searches_by_provider[m.provider] ?? 0 }));
     const { budget, billing } = await metering.commit(handle, { ...spent, searches: webSearch.searches_used }, { outcome, duration_ms: Date.now() - started, models, ...finalizeMeta });
     settled = true;
-    return { r, timeoutMs, transcript, spent, verdict, outcome, roundsRan, positions, samplingModels, stored, budget, billing, webSearch, engineWarnings };
+    return { r, timeoutMs, transcript, spent, verdict, outcome, roundsRan, positions, samplingModels, stored, budget, billing, webSearch, engineWarnings, seats };
   } finally {
     // Not settled (an unexpected error): give the reservation back, as before. With the hook, once the debate binary
     // has run the intent is kept instead, so the next start reconciles it per E3D_MCP_ORPHAN_POLICY (never free).
@@ -652,7 +678,7 @@ async function toolDebate(args, progress, ctx) {
   let x;
   try { x = await executeDebate(plan, handle, ctx, { progress }); } finally { activeDebates--; runs?.pump(); }
   if (x.startFailed) return agent ? errorResult(agentError('service_unavailable', { message: 'billing is temporarily unavailable' })) : text('error: billing: temporarily unavailable', true);
-  const { r, timeoutMs, transcript, spent, verdict, roundsRan, positions, samplingModels, budget, billing, webSearch } = x;
+  const { r, timeoutMs, transcript, spent, verdict, roundsRan, positions, samplingModels, budget, billing, webSearch, seats } = x;
   if (agent && r.timedOut) return errorResult(agentError('debate_timeout', { message: `the debate timed out after ${timeoutMs / 1000} s and was stopped; ${spent.calls} model call(s) had already answered and were counted. Use a new idempotency_key with mode quick or fewer models` }));
   if (agent && (r.code !== 0 || !verdict)) return errorResult(agentError('debate_failed', { message: `the debate did not finish (exit ${r.code}); use a new idempotency_key to try again` }));
   if (r.timedOut) return text(`error: debate timed out after ${timeoutMs / 1000}s and was stopped. ${spent.calls} model call(s) had already answered and are counted against today's budget (${budget?.remaining_calls ?? 'no limit'} calls left). Try mode "quick", fewer providers, or a shorter question.`, true);
@@ -664,8 +690,10 @@ async function toolDebate(args, progress, ctx) {
     mode, providers, rounds_requested: rounds, rounds_ran: roundsRan || rounds,
     selection, selection_note: selectionNote, synthesizer,
     ...(samplingModels.length ? { models: samplingModels } : {}),
-    independent: indep.independent, warnings: [...indep.warnings, ...searchSetupWarnings(webSearch), ...(agent && !billing?.agent ? ['The billing result for this run is not available yet, so cost, dissent_items and recommended_next_step are missing: treat the advice as no_op and read the dissent above.'] : [])],
+    independent: indep.independent, warnings: [...indep.warnings, ...searchSetupWarnings(webSearch), ...(seats?.warnings ?? []), ...(agent && !billing?.agent ? ['The billing result for this run is not available yet, so cost, dissent_items and recommended_next_step are missing: treat the advice as no_op and read the dissent above.'] : [])],
     ...(indep.families.length ? { families: indep.families } : {}),
+    ...(seats ? { seats_requested: seats.seats_requested, seats_answered: seats.seats_answered, seats_unavailable: seats.seats_unavailable, flags: seats.flags,
+      ...(seats.synthesizer_fallback ? { synthesizer_fallback: seats.synthesizer_fallback } : {}), ...(seats.consensus_note ? { consensus_note: seats.consensus_note } : {}) } : {}),
     ...(panel ? { panel } : {}),
     usage: { model_calls: spent.calls, est_input_tokens: spent.inTokens, est_output_tokens: spent.outTokens, searches: webSearch.searches_used, estimate: billing?.pricing?.usage.source !== 'vendor' },
     web_search: webSearch,
