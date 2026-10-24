@@ -107,3 +107,62 @@ model actually searched), plus 3 confirming calls after the truncation check bel
   earlier 338-443 over a cap of 288 (+50 to +155) are consistent with the same effect rather than with continuations.
 - Search calls carry about 3,000 input tokens for the tool alone (a search call that did not search: 3,166 in vs 135 without the tool) and roughly
   another 8,000 to 11,000 per search that ran (1 search: 12.7k to 14.5k; 2 searches: 22.4k).
+
+## Follow-up: how to make Anthropic search calls finish (2026-10-24, real API, `claude-sonnet-5-5`)
+
+Question: with search on, post-search thinking eats the whole `max_tokens` (above). Is there a knob, or does the cap have to rise?
+A note on the cloud side: `reasoningAllowanceTokens` is accounting headroom only (manifest `outMax = outCeil + allowance`); the `max_tokens`
+the engine sends comes from the quote's `max_tokens` map (= `outCeil`), so an allowance alone does not let Claude finish.
+
+### 1. Probes (deliberately invalid values, error text read, nothing guessed)
+| Probe | Result |
+|---|---|
+| `thinking.type: "zzz"` | 400: valid tags are `adaptive`, `between_tools`, `disabled`, `enabled` |
+| `thinking.type: "disabled"` | 400: "To turn thinking off on this model, send `between_tools` ... The short updates it writes between tool calls come back as thinking blocks." |
+| `thinking: {enabled, budget_tokens}` | 400: not supported; "Use `thinking.type.adaptive` and `output_config.effort`" |
+| `between_tools` / `adaptive` with `budget_tokens`, `effort`, or any extra key | 400: extra inputs not permitted (no budget knob inside `thinking`) |
+| `output_config: {zzz}` | 400: extra inputs not permitted |
+| `output_config.effort: "zzz"` | 400: valid values `low`, `medium`, `high`, `xhigh`, `max` |
+| top-level `effort` | 400: extra inputs not permitted |
+| `thinking: adaptive` + `effort: low`, with and without the search tool | 200 |
+| `thinking: between_tools` + `effort: low` | 200 |
+| `tool_choice.type: "zzz"` | 400: valid `auto`, `any`, `tool`, `none` (`none` just turns search off) |
+
+So the only documented knobs are `thinking.type` (`adaptive` or `between_tools`) and `output_config.effort`. Tried at max_tokens 728, 300-word answer, one search allowed:
+
+| Variant | Calls | Searched | Final answer after the search | Thinking tokens on searched calls |
+|---|---|---|---|---|
+| `between_tools` + effort low | 3 | 1 | 0 of 1 (the 2 unsearched calls answered) | 728 (= cap) |
+| `adaptive` + effort low | 3 | 2 | 0 of 2 | 728 (= cap) |
+| `between_tools` + system line "after the search results arrive, do not deliberate" | 3 | 3 | 0 of 3 | 728 (= cap) |
+
+No knob helped (n is small, but 0 of 6 searched calls finished, against 1 of 6 for the unmodified call at 728 in the main matrix). Raising the cap is the cure.
+
+### 2. Completion rate by max_tokens (search on, one search allowed, per-token style, `between_tools`, 6 short current-fact decision questions, 300-word answers)
+| max_tokens | Calls | Real final answer | Searched | Stop reasons | Output avg (max) | Thinking tokens |
+|---|---|---|---|---|---|---|
+| 728 (earlier matrix, 2 searches allowed) | 6 | 1 | 6 | end_turn 1, max_tokens 5 | 817 (870) | = cap on the 5 capped |
+| 1024 | 6 | **6** | 6 | end_turn x6 | 850 (958) | 0 |
+| 1536 | 6 | 6 | 6 | end_turn x6 | 854 (1018) | 0 |
+| 2048 | 6 | 6 | 6 | end_turn x6 | 863 (1148) | 0 |
+| 3072 | 6 | 6 | 6 | end_turn x6 | 867 (1001) | 0 |
+
+Quick-sized answers (80 words, 3 calls each): max_tokens 1024: 3 of 3 final, output 380-397; 768: 3 of 3, output 352-443. (Earlier at 288, 4 of 6.)
+Output is about 850 tokens for a 300-word search answer whatever the cap; once the cap clears that, thinking is not reported and the call ends normally.
+So the need is about the post-search total (answer plus whatever the model deliberates), not a fixed thinking size. Margin at 1024 is thin for 300-word
+answers (max seen 958); 1536 had max 1018.
+
+### 3. Recommendation: ONE design: raise the Anthropic search-call output ceiling to 1024 (already the table's `maxOutputTokens`)
+Smallest tested size that completes at least 5 of 6: **1024** (6 of 6 at 300 words, 3 of 3 at 80 words). Do not go below 1024 for Standard; Quick-sized answers also completed at 768 (3 of 3, too few to promise).
+
+Cost, at the rate table's selling prices (anthropic-api out 1,000,000 micro/K = 1.0 credit per 1K output tokens, in 200,000 micro/K = 0.2 credit per 1K input), assuming a 3-provider panel with Anthropic as the highest output rate, one search, allowance 192:
+- Quick (1 round, 80 words, outCeil 288 to 1024): Anthropic round row +736 out tokens = +0.74; `synth` row (outMax = max outCeil, highest rate) +0.74; `answerBytes` for Anthropic 1,152 to 4,096 bytes adds 2,944 to the synthesis input bound = +0.59; allowance 192 on 2 rows = +0.38. About **+2.5 credits**: Quick+search 15-17 becomes about **18-20**, under the 25-credit starter-grant rule.
+- Standard/thorough (2 rounds, 200 words, outCeil 528 to 1024): two Anthropic rows +0.99, synth +0.50, round-2 and synthesis input bounds (+1,984 bytes per answer, 3 providers, 2 rounds) about +1.98, allowance about +0.58: about **+4 credits**. Standard's current quote was not given; add this to it.
+- Separate finding: `searchInTokensPerSearch` is 6000 in the table, but a one-search Anthropic call measured 12.7k-14.5k input (3k for the tool, 8-11k for the results). If the table is not raised to about 12,000 per search, the input bound is exceeded (clamped, alarmed). Raising it costs +1.2 credits per Anthropic search row per search at 0.2 credit/K. That is a quote increase that comes with, but is independent of, this change.
+
+What must change:
+- **Cloud (not changed here):** add a provider field (for example `searchOutputTokens: 1024`) so that when search is effective for anthropic-api, `outputCeiling` returns `max(formula, searchOutputTokens)` for that provider (the quote's `max_tokens` map and `answerBytes = 4 x outCeil`), and the manifest bound is that value plus `reasoningAllowanceTokens` (192, sized from the +142 maximum overrun; the overrun can still happen in the first call if the cap is reached). Keep `maxOutputTokens` at 1024 (the deploy ceiling `ANTHROPIC_API_MAX_TOKENS=1024`). Without search nothing changes (A/B cells: never over the cap, 12 of 12 answered). Raise `searchInTokensPerSearch` for anthropic-api to about 12,000 (measured; the table says 6,000).
+- **Engine/adapter (this repo):** nothing new is needed to send the larger limit: e3d-debate already sends the quote's per-provider `max_tokens` (`E3D_DEBATE_MAX_TOKENS`) for every call of that provider, and the answer-bytes cut already follows `E3D_DEBATE_ANSWER_BYTES_MAX`. One caveat to decide with the cloud change: the limit is per provider, not per call, so the Anthropic *synthesis* call (no search) and no-search retries also get 1024; harmless (the answer still ends at `end_turn`) but it is why the synthesis bound is raised too. The truncation-is-no_text check and the retry/fallback in this PR stay as the safety net.
+- **Tests:** cloud: quote vectors for anthropic-api with and without search (outCeil 1024 only with search), manifest bound = 1024 + 192, Quick+search under 25 credits, a settle with an output of 1024+142 clamped without alarm up to the allowance, `searchInTokensPerSearch` input bound. This repo: `tests/pertoken-search.sh` already asserts the per-provider limit reaches the adapter; add a case with `E3D_DEBATE_MAX_TOKENS` anthropic-api 1024 (no change expected) if the cloud adds the field.
+
+Spend for this follow-up: 39 real calls; about $1.34 at the documented $2/$10 per million tokens (about $2.0 at a conservative $3/$15). No production calls.
