@@ -127,6 +127,14 @@ if ws_enabled; then
   done
   content="$(jq -rs '[.[].content[]? | select(.type == "text") | .text] | join("")' "$work/all.jsonl")"
   [[ -n "$content" ]] || ws_fail anthropic-api no_text
+  # Measured (docs/seat-reliability.md): with the search tool on, the model thinks again after the search results, and at a small max_tokens all of
+  # the budget can go to that thinking. The response then ends at max_tokens with only the sentence written BEFORE the search ("I'll check the
+  # current release.") as text. That sentence is not an answer: it counts as no text (so it is retried, then asked without search), never returned.
+  if [[ "$(jq -r '.stop_reason // empty' "$work/response.json")" == "max_tokens" ]] \
+    && jq -e '[.content[]?] as $c | ([$c | to_entries[] | select(.value.type == "web_search_tool_result") | .key] | max) as $last
+      | $last != null and (([$c[($last + 1):][] | select(.type == "text") | .text] | join("")) == "")' "$work/response.json" > /dev/null 2>&1; then
+    ws_fail anthropic-api no_text "stopped at max_tokens after the search, before an answer"
+  fi
   tokens="$(jq -s 'map((.usage.input_tokens // 0) + (.usage.output_tokens // 0)) | add' "$work/all.jsonl")"
   searches="$(jq -s 'map(.usage.server_tool_use.web_search_requests // 0) | add' "$work/all.jsonl")"
   # cited locations first (with the vendor's excerpt, at most 150 characters, truncated again to our cap), then results seen

@@ -207,8 +207,8 @@ assert_eq "$(jq -c 'select(.url == "/v1/responses")' "$VREQ" | wc -l | tr -d ' '
 assert_eq "$(jq -c 'select(.url == "/xai/v1/responses")' "$VREQ" | wc -l | tr -d ' ')" "1" "a transport error after the request was sent is not retried"
 assert_eq "$(jq -c 'select(.url == "/v1beta/interactions")' "$VREQ" | wc -l | tr -d ' ')" "1" "a failed interaction is not retried"
 assert_eq "$(jq -c 'select(.url | test("chat/completions"))' "$VREQ" | wc -l | tr -d ' ')" "0" "no fallback call without search"
-assert_eq "$(vreq_count)" "5" "four search calls and the synthesis: nothing else reached the vendor"
-assert_eq "$(jq -c '[.[] | [.key, .source, .searches]]' "$TMP/f1/usage.json")" '[["r1:gemini-api","vendor",0],["r1:openai-api","bytes",null],["r1:xai-api","bytes",null],["synth","vendor",0]]' "no row for the refused 503; unknown counts are null"
+assert_eq "$(vreq_count)" "4" "four search calls: nothing else reached the vendor (every seat failed, so there is nothing to synthesize and no synthesis call)"
+assert_eq "$(jq -c '[.[] | [.key, .source, .searches]]' "$TMP/f1/usage.json")" '[["r1:gemini-api","vendor",0],["r1:openai-api","bytes",null],["r1:xai-api","bytes",null]]' "no row for the refused 503; unknown counts are null"
 assert_not_contains "$(cat "$TMP/f1/transcript.md")" "answered without web access" "no fallback answer is announced"
 echo "ok - search failures cost the voice, never a second request: 503, timeout, transport reset and a failed interaction each reach the vendor exactly once and leave no fallback call"
 

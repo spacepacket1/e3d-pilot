@@ -30,6 +30,16 @@ DEBATE_PROVIDER_RETRIES="${E3D_DEBATE_PROVIDER_RETRIES:-2}"
 DEBATE_PROVIDER_RETRY_DELAY="${E3D_DEBATE_PROVIDER_RETRY_DELAY:-4}"
 [[ "$DEBATE_PROVIDER_RETRIES" =~ ^[0-9]$ ]] || DEBATE_PROVIDER_RETRIES=2
 [[ "$DEBATE_PROVIDER_RETRY_DELAY" =~ ^[0-9]{1,2}$ ]] || DEBATE_PROVIDER_RETRY_DELAY=4
+# A call that came back 200 with no text (a model that spent its whole output limit on thinking, say) is retried this many times (0 to 2,
+# default 1), waiting the same delay. The retry sends the SAME request with the SAME output limit: it is never raised. In a per-token
+# debate the retry's usage is merged into the call's one usage row (see pt_usage_row), which billing clamps to the quote.
+DEBATE_NO_TEXT_RETRIES="${E3D_DEBATE_NO_TEXT_RETRIES:-1}"
+[[ "$DEBATE_NO_TEXT_RETRIES" =~ ^[0-2]$ ]] || DEBATE_NO_TEXT_RETRIES=1
+# Synthesis fallback (docs/seat-reliability.md): when the synthesizer still fails after its retries, the next candidate writes the verdict.
+# E3D_DEBATE_SYNTH_FALLBACK = off | auto (default: the other API participants that answered round 1, in panel order) | a comma list of
+# provider adapters. E3D_DEBATE_SYNTH_FALLBACK_MAX bounds how many candidates are tried (default 2; 1 in a per-token debate).
+DEBATE_SYNTH_FALLBACK="${E3D_DEBATE_SYNTH_FALLBACK:-auto}"
+DEBATE_SYNTH_FALLBACK_MAX="${E3D_DEBATE_SYNTH_FALLBACK_MAX:-}"
 # v1 = original prompts (a speaker saw its own answer labelled as a peer's; rounds not described as simultaneous).
 # v2 = own answer labelled YOU, simultaneity stated in round 2+ and in the synthesizer prompt.
 # v3b = experimental rewrite of round 1 and rounds 2+ (docs/prompt-review-2026-10.md R1, R2); v3c = v3b plus the
@@ -255,63 +265,125 @@ ws_call_timeout() {
 # A call without search never sees any of the search settings.
 no_search_env() { env -u E3D_PROVIDER_WEB_SEARCH -u E3D_PROVIDER_WS_OUT -u E3D_PROVIDER_WS_MAX_SEARCHES -u E3D_PROVIDER_WS_ALLOW \
   -u E3D_PROVIDER_WS_DENY -u E3D_PROVIDER_WS_EXCERPT_CHARS -u E3D_PROVIDER_WS_TIMEOUT "$@"; }
-# A transient vendor failure (HTTP 429/500/502/503/504, a timeout) is retried a bounded number of times so one busy moment
-# does not drop a model from the debate (DEBATE_PROVIDER_RETRIES, DEBATE_PROVIDER_RETRY_DELAY). Nothing else is retried: a
-# refused key or a bad request will not improve.
-# run_with_retry <provider> <round> <out> <stderr> <command...>: each attempt overwrites <out> and <stderr>.
+# ---- retries (docs/seat-reliability.md) ----
+# Every provider call (a round answer, a search call, its no-search fallback, the synthesis) follows one rule. Retryable: a transient
+# vendor failure (HTTP 429/500/502/503/504, a timeout; DEBATE_PROVIDER_RETRIES, none in a per-token debate) and a call that answered 200
+# with no text, including stop_reason max_tokens with nothing but thinking (DEBATE_NO_TEXT_RETRIES, default 1). Never retried: any other
+# 4xx, a refused key, a bad request. A retry repeats the same request: the output limit is never raised. Waits DELAY x attempt seconds.
+# All attempts of one call append to its stderr file, separated by an ATTEMPT_MARK line, so every attempt's usage line is kept
+# (bin/e3d-debate pt_usage_row sums them into the call's one row; lib/debate/token-pricing.mjs vendorUsage).
+ATTEMPT_MARK='e3d_attempt_end'
+# last_attempt <stderr-file>: the text of the last attempt only
+last_attempt() { awk -v m="$ATTEMPT_MARK" '$0 == m { buf = ""; next } { buf = buf $0 "\n" } END { printf "%s", buf }' "$1" 2>/dev/null; }
+# no_text_failure <attempt-text-file>: the attempt ended with a 200 that held no text
+no_text_failure() { grep -qE 'returned no (text|message) content|web search unavailable \(no_text\)' "$1" 2>/dev/null; }
+# failure_reason <stderr-file>: a short stable reason for the LAST attempt: no_text, http_<code>, timeout, <search error code> or error
+failure_reason() {
+  local t m
+  t="$(last_attempt "$1")"
+  if grep -qE 'returned no (text|message) content|web search unavailable \(no_text\)' <<< "$t"; then echo no_text; return; fi
+  m="$(sed -nE 's/.*web search unavailable \(([a-z0-9_]+)\).*/\1/p' <<< "$t" | tail -1)"
+  [[ -n "$m" ]] && { echo "$m"; return; }
+  m="$(sed -nE 's/.*HTTP ([0-9]{3}).*/\1/p' <<< "$t" | tail -1)"
+  [[ -n "$m" ]] && { echo "http_$m"; return; }
+  grep -qE 'curl exit 28\b|timed out|Operation timed out' <<< "$t" && { echo timeout; return; }
+  echo error
+}
+# run_with_retry <provider> <round> <out> <stderr> <command...>: each attempt overwrites <out>; <stderr> collects every attempt.
+# RWR_NT_MAX overrides the no-text retry budget for one call (0 for a call that is itself the retry); RWR_BG=1 runs each attempt in the
+# background (SYNTH_PID) so a SIGTERM is handled while it is under way.
 run_with_retry() {
-  local provider="$1" round="$2" out="$3" err="$4" attempt=0 rc
+  local provider="$1" round="$2" out="$3" err="$4" attempt=0 nt=0 rc ntmax="${RWR_NT_MAX:-$DEBATE_NO_TEXT_RETRIES}" where="round $2"
+  [[ "$round" == synth ]] && where="the synthesis"
   shift 4
+  : > "$err"
   while :; do
-    "$@" > "$out" 2> "$err"
-    rc=$?
-    if (( rc != 0 && attempt < DEBATE_PROVIDER_RETRIES )) && provider_failure_transient "$err"; then
-      attempt=$((attempt + 1))
-      echo "note: $provider failed transiently in round $round, retry $attempt of $DEBATE_PROVIDER_RETRIES" >&2
-      sleep $(( DEBATE_PROVIDER_RETRY_DELAY * attempt ))
-      continue
+    if [[ "${RWR_BG:-0}" == "1" ]]; then
+      "$@" > "$out" 2>> "$err" &
+      SYNTH_PID=$!
+      wait "$SYNTH_PID"; rc=$?
+    else
+      "$@" > "$out" 2>> "$err"; rc=$?
     fi
-    break
+    # a 0 exit with nothing on stdout (a CLI adapter, say) is the same failure
+    if (( rc == 0 )) && [[ ! -s "$out" ]]; then printf 'error: %s returned no text content\n' "$provider" >> "$err"; rc=1; fi
+    (( rc == 0 )) && break
+    last_attempt "$err" > "$err.last"
+    if (( attempt < DEBATE_PROVIDER_RETRIES )) && provider_failure_transient "$err.last"; then
+      attempt=$((attempt + 1))
+      echo "note: $provider failed transiently in $where, retry $attempt of $DEBATE_PROVIDER_RETRIES" >&2
+    elif (( nt < ntmax )) && no_text_failure "$err.last"; then
+      nt=$((nt + 1))
+      echo "note: $provider returned no text in $where, retry $nt of $ntmax" >&2
+    else
+      break
+    fi
+    printf '%s\n' "$ATTEMPT_MARK" >> "$err"
+    sleep $(( DEBATE_PROVIDER_RETRY_DELAY * (attempt + nt) ))
   done
+  rm -f "$err.last"
   return "$rc"
 }
 # A failed search call is transient when its record says timeout or HTTP 429/5xx, or its stderr matches the general rule.
-ws_failure_transient() { # <record> <stderr>
+ws_failure_transient() { # <record> <attempt-stderr-file>
   jq -e '.error // "" | test("^(timeout|http_(429|500|502|503|504))$")' "$1" >/dev/null 2>&1 || provider_failure_transient "$2"
 }
 # run_search_call <provider> <round> <prompt> <out> <stderr>: one call with search, retried like any call on a transient
-# vendor failure (same kind of call first: every retry is again a search call with the same caps, and only the last
+# vendor failure or a no-text answer (same kind of call first: every retry is again a search call with the same caps, and only the last
 # attempt's record counts, so searches are never double counted). If it still fails without a good search record, fail
-# closed: ask the same model again WITHOUT search (with the no-web-access wording; that call has its own retries) and record why.
-# Per-token pricing (PT_ON): exactly one request, so no retry (DEBATE_PROVIDER_RETRIES is 0) and no second call without search: a search
-# call that fails leaves that voice without an answer for the round, and only the failure is recorded.
+# closed: ask the same model again WITHOUT search (with the no-web-access wording; that call is itself the retry) and record why.
+# Per-token pricing (PT_ON): the search call is never repeated (a second request could run another cap's worth of searches). A search call
+# that came back with no text gets exactly one no-search call (E3D_DEBATE_NO_TEXT_RETRIES > 0; same output limit, strictly less input, no
+# searches), whose usage joins the first call's row; any other failure leaves that voice without an answer for the round, with no second call.
 run_search_call() {
-  local provider="$1" round="$2" prompt="$3" out="$4" err="$5" raw="$work_dir/ws-raw-r$2-$1.json" st reason attempt=0
+  local provider="$1" round="$2" prompt="$3" out="$4" err="$5" raw="$work_dir/ws-raw-r$2-$1.json" st reason attempt=0 nt=0 rec_nt=0
   pt_env "$provider"
+  : > "$err"
   while :; do
     rm -f "$raw"
     env E3D_PROVIDER_WEB_SEARCH=1 E3D_PROVIDER_WS_OUT="$raw" E3D_PROVIDER_WS_MAX_SEARCHES="$(ws_cap_for "$provider")" ${PT_ENV[@]+"${PT_ENV[@]}"} \
       E3D_PROVIDER_WS_ALLOW="$(jq -r '.allow | join(",")' <<< "$WS_CFG")" E3D_PROVIDER_WS_DENY="$(jq -r '.deny | join(",")' <<< "$WS_CFG")" \
       E3D_PROVIDER_WS_EXCERPT_CHARS="$(jq -r .excerptChars <<< "$WS_CFG")" E3D_PROVIDER_WS_TIMEOUT="$(ws_call_timeout)" \
-      "$PROVIDERS_DIR/$provider" "$prompt" > "$out" 2> "$err"
+      "$PROVIDERS_DIR/$provider" "$prompt" > "$out" 2>> "$err"
     st=$?
-    if (( st != 0 && attempt < DEBATE_PROVIDER_RETRIES )) && ! jq -e '.ok == true' "$raw" >/dev/null 2>&1 && ws_failure_transient "$raw" "$err"; then
+    (( st == 0 )) && break
+    jq -e '.ok == true' "$raw" >/dev/null 2>&1 && break
+    last_attempt "$err" > "$err.last"
+    if (( attempt < DEBATE_PROVIDER_RETRIES )) && ws_failure_transient "$raw" "$err.last"; then
       attempt=$((attempt + 1))
       echo "note: $provider web search call failed transiently in round $round, retry $attempt of $DEBATE_PROVIDER_RETRIES" >&2
-      sleep $(( DEBATE_PROVIDER_RETRY_DELAY * attempt ))
-      continue
+    elif (( PT_ON == 0 && nt < DEBATE_NO_TEXT_RETRIES )) && { jq -e '.error == "no_text"' "$raw" >/dev/null 2>&1 || no_text_failure "$err.last"; }; then
+      nt=$((nt + 1))
+      echo "note: $provider web search call returned no text in round $round, retry $nt of $DEBATE_NO_TEXT_RETRIES" >&2
+    else
+      break
     fi
-    break
+    printf '%s\n' "$ATTEMPT_MARK" >> "$err"
+    sleep $(( DEBATE_PROVIDER_RETRY_DELAY * (attempt + nt) ))
   done
+  rm -f "$err.last"
   if (( st != 0 )) && ! jq -e '.ok == true' "$raw" >/dev/null 2>&1; then
     reason="$(jq -r '.error // "error"' "$raw" 2>/dev/null | tr -cd 'A-Za-z0-9_.:-' | head -c 60)"
+    [[ "$reason" == "no_text" ]] && rec_nt=1
     if (( PT_ON == 1 )); then
+      if (( rec_nt == 1 && DEBATE_NO_TEXT_RETRIES > 0 )); then
+        jq -nc --arg p "$provider" --argjson r "$round" --arg why "$reason" '{provider:$p, round:$r, reason:$why}' > "$work_dir/ws-fallback-r$round-$provider.json"
+        round_prompt "$provider" "$round" 0 > "$work_dir/round${round}-${provider}.nosearch.prompt.md"
+        printf '%s\n' "$ATTEMPT_MARK" >> "$err"
+        echo "note: $provider web search call returned no text in round $round, one retry without search" >&2
+        sleep "$DEBATE_PROVIDER_RETRY_DELAY"
+        RWR_NT_MAX=0 run_with_retry "$provider" "$round" "$out" "$err.fallback" no_search_env ${PT_ENV[@]+"${PT_ENV[@]}"} "$PROVIDERS_DIR/$provider" "$work_dir/round${round}-${provider}.nosearch.prompt.md"
+        st=$?
+        cat "$err.fallback" >> "$err" 2>/dev/null; rm -f "$err.fallback"
+        return "$st"
+      fi
       jq -nc --arg p "$provider" --argjson r "$round" --arg why "${reason:-error}" '{provider:$p, round:$r, reason:$why, fallback_call:false}' > "$work_dir/ws-fallback-r$round-$provider.json"
       return "$st"
     fi
     jq -nc --arg p "$provider" --argjson r "$round" --arg why "${reason:-error}" '{provider:$p, round:$r, reason:$why}' > "$work_dir/ws-fallback-r$round-$provider.json"
     round_prompt "$provider" "$round" 0 > "$work_dir/round${round}-${provider}.nosearch.prompt.md"
-    run_with_retry "$provider" "$round" "$out" "$err.fallback" no_search_env "$PROVIDERS_DIR/$provider" "$work_dir/round${round}-${provider}.nosearch.prompt.md"
+    printf '%s\n' "$ATTEMPT_MARK" >> "$err"
+    RWR_NT_MAX=0 run_with_retry "$provider" "$round" "$out" "$err.fallback" no_search_env "$PROVIDERS_DIR/$provider" "$work_dir/round${round}-${provider}.nosearch.prompt.md"
     st=$?
     cat "$err.fallback" >> "$err" 2>/dev/null; rm -f "$err.fallback"
   fi
@@ -552,6 +624,7 @@ synthesis_prompt() {
   ws_peer_notice
   printf 'Below is the full transcript of a debate between multiple AI models answering one question for a human who needs a single, decisive answer (%s).\n\n' "$2"
   printf 'Question: %s\n\n' "$QUESTION"
+  [[ -z "${SEAT_NOTE:-}" ]] || printf '%s\n\n' "$SEAT_NOTE"
   if [[ "$DEBATE_PROMPT_VERSION" != "v3c" ]]; then
     printf 'Note: within each round all participants wrote at the same time, so a participant could not have addressed a point first made in the same round. Do not credit or fault anyone for that.\n\n'
   fi
@@ -669,8 +742,8 @@ pt_on_term() {
   trap - TERM INT HUP
   local p r="${PT_PHASE#r}" st
   if [[ "$PT_PHASE" == synth ]]; then
-    kill "${synth_pid:-0}" 2>/dev/null || true
-    pt_usage_row synth "$DEBATE_SYNTHESIZER" "$synth_prompt" "$synth_out" "$work_dir/synthesis.stderr" inflight
+    kill "${SYNTH_PID:-0}" 2>/dev/null || true
+    pt_usage_row synth "${SYNTH_CUR:-$DEBATE_SYNTHESIZER}" "$synth_prompt" "$synth_out" "$work_dir/synthesis.stderr" inflight
   elif [[ "$PT_PHASE" == r* ]]; then
     kill ${pids[@]+"${pids[@]}"} 2>/dev/null || true
     for p in "${DEBATE_PROVIDERS[@]}"; do
@@ -685,6 +758,12 @@ pt_on_term() {
 
 converged=0
 converged_at_round=0
+# Seats (docs/seat-reliability.md): a participant that fails a round after its retries is dropped from every later round, and says why.
+DEBATE_PROVIDERS_ALL=("${DEBATE_PROVIDERS[@]}")
+SEATS_REQUESTED=${#DEBATE_PROVIDERS[@]}
+R1_ANSWERED=()
+SEAT_UNAVAILABLE=()   # "provider|round|reason", in the order they were lost
+NO_SEATS_LEFT=0
 
 for ((round = 1; round <= DEBATE_ROUNDS; round++)); do
   echo "=== Round $round ===" >&2
@@ -716,14 +795,20 @@ for ((round = 1; round <= DEBATE_ROUNDS; round++)); do
   pt_usage_write
   PT_PHASE=""
 
+  DROP_NOW=()
   for provider in "${DEBATE_PROVIDERS[@]}"; do
     out_file="$work_dir/round${round}-${provider}.out"
     status_file="$work_dir/round${round}-${provider}.status"
     status="$(cat "$status_file" 2>/dev/null || echo 1)"
     if [[ "$status" == "0" && -s "$out_file" ]]; then
       answer="$(cat "$out_file")"
+      (( round == 1 )) && R1_ANSWERED+=("$provider")
     else
-      answer="(provider $provider failed in round $round -- see $work_dir/round${round}-${provider}.stderr)"
+      seat_reason="$(failure_reason "$work_dir/round${round}-${provider}.stderr")"
+      answer="(provider $provider failed in round $round ($seat_reason) -- see $work_dir/round${round}-${provider}.stderr)"
+      SEAT_UNAVAILABLE+=("$provider|$round|$seat_reason")
+      DROP_NOW+=("$provider")
+      status=1
     fi
     (( WS_ANY == 1 )) && answer="$(ws_finish_answer "$provider" "$round" "$answer")"
     if [[ "$DEBATE_PROMPT_VERSION" != "v2" && $round -ge 2 && "$status" == "0" ]]; then
@@ -737,6 +822,25 @@ for ((round = 1; round <= DEBATE_ROUNDS; round++)); do
   done
 
   decision_round "$round" || true
+
+  # drop the seats that failed this round (after the decision record, which covers every seat asked); later rounds, the convergence check
+  # and the prompts see only the seats still answering
+  if (( ${#DROP_NOW[@]} > 0 )); then
+    keep=()
+    for provider in "${DEBATE_PROVIDERS[@]}"; do
+      [[ " ${DROP_NOW[*]} " == *" $provider "* ]] || keep+=("$provider")
+    done
+    for provider in "${DROP_NOW[@]}"; do
+      printf '## Seat dropped -- %s\n\n(%s failed in round %d and takes no further part)\n\n' "$provider" "$provider" "$round" >> "$transcript_md"
+      echo "warning: $provider was unavailable in round $round and was dropped from the debate" >&2
+    done
+    DEBATE_PROVIDERS=(${keep[@]+"${keep[@]}"})
+    if (( ${#DEBATE_PROVIDERS[@]} == 0 )); then NO_SEATS_LEFT=1; echo "error: no participant answered round $round" >&2; break; fi
+    if (( ${#DEBATE_PROVIDERS[@]} < 2 && round < DEBATE_ROUNDS )); then
+      echo "=== Only ${DEBATE_PROVIDERS[0]} is left after round $round -- skipping remaining rounds ===" >&2
+      break
+    fi
+  fi
 
   if (( round >= 2 )); then
     statuses=()
@@ -760,6 +864,17 @@ else
   rounds_ran_note="ran the full $DEBATE_ROUNDS rounds without every participant converging"
 fi
 
+# Seats that answered (those not dropped) and why the others did not. The synthesis prompt says so when a seat was lost, so the
+# consensus it reports is judged among the seats that answered (and is never a claim about the missing ones).
+SEATS_ANSWERED=${#DEBATE_PROVIDERS[@]}
+(( NO_SEATS_LEFT == 1 )) && SEATS_ANSWERED=0
+SEAT_NOTE=""
+if (( ${#SEAT_UNAVAILABLE[@]} > 0 )); then
+  seat_list=""
+  for u in "${SEAT_UNAVAILABLE[@]}"; do IFS='|' read -r su_p su_r su_why <<< "$u"; seat_list+="${seat_list:+, }$su_p (round $su_r: $su_why)"; done
+  SEAT_NOTE="Note: only $SEATS_ANSWERED of $SEATS_REQUESTED participants answered; unavailable: $seat_list. Judge CONSENSUS only among the participants who answered, and do not infer anything about the missing ones."
+  rounds_ran_note="$rounds_ran_note; $SEATS_ANSWERED of $SEATS_REQUESTED participants answered"
+fi
 synth_prompt="$work_dir/synthesis.prompt.md"
 synthesis_prompt "$prompt_transcript_md" "$rounds_ran_note" > "$synth_prompt"
 
@@ -779,35 +894,82 @@ if (( converged == 1 )); then
   fi
 fi
 
-if (( fast_synthesis == 1 )); then
+# Synthesis fallback candidates (docs/seat-reliability.md): E3D_DEBATE_SYNTH_FALLBACK = off | auto | a comma list. auto = the other API
+# participants that answered round 1, in panel order. A per-token debate takes only candidates the quote priced (they have output limits)
+# and never xai-api: the quote's synthesis row bounds output at the synthesizer's own allowance, and xAI reasoning tokens are not capped by
+# max_tokens, so xAI could exceed it (billing would clamp and alarm).
+SYNTH_API_PROVIDERS=" anthropic-api openai-api gemini-api xai-api "
+synth_candidates() { # prints one provider per line
+  local c list=() max out=0
+  case "$DEBATE_SYNTH_FALLBACK" in
+    off|none|"") return 0 ;;
+    auto) list=(${R1_ANSWERED[@]+"${R1_ANSWERED[@]}"}) ;;
+    *) IFS=',' read -r -a list <<< "$DEBATE_SYNTH_FALLBACK" ;;
+  esac
+  max="$DEBATE_SYNTH_FALLBACK_MAX"
+  [[ "$max" =~ ^[0-9]$ ]] || { if (( PT_ON == 1 )); then max=1; else max=2; fi; }
+  for c in ${list[@]+"${list[@]}"}; do
+    (( out >= max )) && break
+    [[ "$c" == "$DEBATE_SYNTHESIZER" || ! -x "$PROVIDERS_DIR/$c" ]] && continue
+    [[ "$DEBATE_SYNTH_FALLBACK" == auto && "$SYNTH_API_PROVIDERS" != *" $c "* ]] && continue
+    if (( PT_ON == 1 )); then
+      [[ "$SYNTH_API_PROVIDERS" == *" $c "* && "$c" != xai-api ]] || continue
+      [[ "$(jq -r --arg p "$c" '.[$p] // empty' <<< "$PT_MAX_JSON")" =~ ^[0-9]+$ ]] || continue
+    fi
+    printf '%s\n' "$c"; out=$((out + 1))
+  done
+}
+SYNTH_CUR="$DEBATE_SYNTHESIZER"
+SYNTH_FALLBACK_TO=""; SYNTH_FALLBACK_REASON=""
+# synth_call <provider>: one synthesis call with the bounded retries; the synthesizer never searches, even if search settings leaked
+# into this environment. A per-token call runs in the background so a SIGTERM is handled (pt_on_term) while it is under way.
+synth_call() {
+  local p="$1" rc
+  SYNTH_CUR="$p"
+  pt_env "$p"
+  PT_PHASE=synth
+  RWR_BG=$(( PT_ON == 1 ? 1 : 0 )) run_with_retry "$p" synth "$synth_out" "$work_dir/synthesis.stderr" no_search_env ${PT_ENV[@]+"${PT_ENV[@]}"} "$PROVIDERS_DIR/$p" "$synth_prompt"
+  rc=$?
+  (( rc == 0 )) && [[ ! -s "$synth_out" ]] && rc=1
+  return "$rc"
+}
+if (( NO_SEATS_LEFT == 1 )); then
+  synth_status=1
+  echo "=== Synthesis (skipped: no participant answered) ===" >&2
+elif (( fast_synthesis == 1 )); then
   synth_status=0
   echo "=== Synthesis (fast path -- all participants converged in round $converged_at_round, no synthesizer call) ===" >&2
 else
   set +e
-  # the synthesizer never searches, even if search settings leaked into this environment
-  pt_env "$DEBATE_SYNTHESIZER"
-  if (( PT_ON == 1 )); then
-    # in the background so a SIGTERM is handled (pt_on_term) while the call is under way, not after it
-    PT_PHASE=synth
-    no_search_env ${PT_ENV[@]+"${PT_ENV[@]}"} "$PROVIDERS_DIR/$DEBATE_SYNTHESIZER" "$synth_prompt" > "$synth_out" 2>"$work_dir/synthesis.stderr" &
-    synth_pid=$!
-    wait "$synth_pid"
-    synth_status=$?
-  else
-    no_search_env ${PT_ENV[@]+"${PT_ENV[@]}"} "$PROVIDERS_DIR/$DEBATE_SYNTHESIZER" "$synth_prompt" > "$synth_out" 2>"$work_dir/synthesis.stderr"
-    synth_status=$?
+  synth_call "$DEBATE_SYNTHESIZER"
+  synth_status=$?
+  if (( synth_status != 0 )); then
+    synth_first_reason="$(failure_reason "$work_dir/synthesis.stderr")"
+    mapfile -t SYNTH_CANDS < <(synth_candidates)
+    for cand in ${SYNTH_CANDS[@]+"${SYNTH_CANDS[@]}"}; do
+      # the failed attempt may have been billed by its vendor: kept for the operator (usage-unreported.json), never sent as a second `synth` row
+      if (( PT_ON == 1 )); then
+        node "$PT_LIB" row "synth-failed:$SYNTH_CUR" "$SYNTH_CUR" "$synth_prompt" "$synth_out" "$work_dir/synthesis.stderr" 1 \
+          "$(jq -r --arg p "$SYNTH_CUR" '.[$p]' <<< "$PT_MAX_JSON")" >> "$work_dir/usage.unreported.rows" 2>/dev/null || true
+      fi
+      cp "$work_dir/synthesis.stderr" "$work_dir/synthesis.$SYNTH_CUR.stderr" 2>/dev/null || true
+      echo "warning: synthesizer $DEBATE_SYNTHESIZER failed ($synth_first_reason); falling back to $cand" >&2
+      synth_call "$cand"
+      synth_status=$?
+      if (( synth_status == 0 )); then SYNTH_FALLBACK_TO="$cand"; SYNTH_FALLBACK_REASON="$synth_first_reason"; break; fi
+    done
   fi
   set -e
-  pt_usage_row synth "$DEBATE_SYNTHESIZER" "$synth_prompt" "$synth_out" "$work_dir/synthesis.stderr" "$synth_status"
+  pt_usage_row synth "$SYNTH_CUR" "$synth_prompt" "$synth_out" "$work_dir/synthesis.stderr" "$synth_status"
   pt_usage_write
   PT_PHASE=""
-  echo "=== Synthesis ($DEBATE_SYNTHESIZER) ===" >&2
+  echo "=== Synthesis ($SYNTH_CUR) ===" >&2
 fi
 
 # Web search summary (counts, citations with domain/URL/short excerpt, flags) for e3d-mcp and the decision log.
 ws_summary_json=""
 if [[ "$WEB_SEARCH_REQUESTED" == "1" ]] && command -v node >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 && [[ -f "$WS_LIB" ]]; then
-  jq -nc --argjson n "${#DEBATE_PROVIDERS[@]}" --argjson s "$(printf '%s\n' "${WS_SEARCHING[@]+"${WS_SEARCHING[@]}"}" | jq -R 'select(length > 0)' | jq -sc .)" \
+  jq -nc --argjson n "${#DEBATE_PROVIDERS_ALL[@]}" --argjson s "$(printf '%s\n' "${WS_SEARCHING[@]+"${WS_SEARCHING[@]}"}" | jq -R 'select(length > 0)' | jq -sc .)" \
     '{requested: true, providersTotal: $n, searching: $s}' > "$work_dir/ws-meta.json"
   ws_summary_json="$(node "$WS_LIB" summary "$work_dir" "$work_dir/ws-meta.json" 2>/dev/null || true)"
   [[ -n "$ws_summary_json" ]] && jq -c .summary <<< "$ws_summary_json" > "$work_dir/web-search.json"
@@ -820,12 +982,19 @@ if [[ $synth_status -eq 0 && -s "$synth_out" ]]; then
     node "$WS_LIB" sanitize < "$synth_out" > "$synth_out.clean" 2>/dev/null && mv "$synth_out.clean" "$synth_out" || printf 'FINAL ANSWER: (withheld: the verdict could not be sanitised)\nCONSENSUS: unknown\nDISSENT: unknown\n' > "$synth_out"
   fi
   if (( WS_ANY == 1 )) && [[ -s "$work_dir/web-search.json" ]]; then
-    jq -r --arg tail "$( (( PT_ON == 1 )) && echo ', whose search call failed (a per-token debate makes no second call without search)' || echo ', which answered without web access')" '"WEB SEARCH: on for \(.models_with_search) of \(.models_total) models; \(.searches_total) search(es) used"
+    jq -r --arg tail "$( (( PT_ON == 1 )) && jq -e 'select(.fallback_call == false)' "$work_dir"/ws-fallback-*.json >/dev/null 2>&1 && echo ', whose search call failed (a per-token debate makes no second call without search)' || echo ', which answered without web access')" '"WEB SEARCH: on for \(.models_with_search) of \(.models_total) models; \(.searches_total) search(es) used"
       + (if (.flags.unavailable | length) > 0 then "; unavailable for " + ([.flags.unavailable[] | "\(.provider) in round \(.round) (\(.reason))"] | join(", ")) + $tail else "" end)' "$work_dir/web-search.json"
+  fi
+  if [[ -n "$SYNTH_FALLBACK_TO" ]]; then
+    echo "SYNTHESIZER FALLBACK: $DEBATE_SYNTHESIZER failed ($SYNTH_FALLBACK_REASON), so $SYNTH_FALLBACK_TO wrote this summary"
+  fi
+  if (( ${#SEAT_UNAVAILABLE[@]} > 0 )); then
+    echo "SEATS: $SEATS_ANSWERED of $SEATS_REQUESTED participants answered; unavailable: $seat_list"
   fi
   cat "$synth_out"
   synth_label="$DEBATE_SYNTHESIZER"
   (( fast_synthesis == 1 )) && synth_label="fast path, no LLM call"
+  [[ -z "$SYNTH_FALLBACK_TO" ]] || synth_label="$SYNTH_FALLBACK_TO; fallback for $DEBATE_SYNTHESIZER: $SYNTH_FALLBACK_REASON"
   printf '\n## Synthesis (%s)\n\n%s\n' "$synth_label" "$(cat "$synth_out")" >> "$transcript_md"
 else
   echo "error: synthesis provider failed -- see $work_dir/synthesis.stderr" >&2
@@ -840,9 +1009,9 @@ write_decision_log() {
   consensus="$(grep -m1 -E '^CONSENSUS:' "$synth_out" 2>/dev/null | sed -E 's/^CONSENSUS:[[:space:]]*//' || true)"
   if grep -qE '^DISSENT:' "$synth_out" 2>/dev/null && ! grep -m1 -E '^DISSENT:' "$synth_out" | grep -qiE '^DISSENT:[[:space:]]*"?none"?\.?[[:space:]]*$'; then dissent_present=true; fi
   if (( converged == 1 )); then stop_reason="converged"; ran="$converged_at_round"; fi
-  providers_json="$(printf '%s\n' "${DEBATE_PROVIDERS[@]}" | jq -R . | jq -sc .)"
+  providers_json="$(printf '%s\n' "${DEBATE_PROVIDERS_ALL[@]}" | jq -R . | jq -sc .)"
   jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg qhash "$qhash" --arg pv "$DEBATE_PROMPT_VERSION" \
-    --arg synth "$DEBATE_SYNTHESIZER" --arg stop "$stop_reason" --arg consensus "$consensus" \
+    --arg synth "${SYNTH_FALLBACK_TO:-$DEBATE_SYNTHESIZER}" --arg stop "$stop_reason" --arg consensus "$consensus" \
     --argjson providers "$providers_json" --argjson maxr "$DEBATE_ROUNDS" --argjson ran "$ran" \
     --argjson at "$converged_at_round" --argjson fast "$fast_synthesis" --argjson sok "$synth_ok" \
     --argjson dissent "$dissent_present" --argjson secs "$SECONDS" --slurpfile rounds "$work_dir/decision-rounds.jsonl" \
@@ -859,10 +1028,32 @@ write_decision_log() {
 }
 write_decision_log || true
 
+# seats.json (docs/seat-reliability.md): which seats answered, which were lost and why, and who wrote the summary. No question or answer text.
+write_seats() {
+  command -v jq >/dev/null 2>&1 || return 0
+  local un fb note="" lost=false
+  un="$(printf '%s\n' ${SEAT_UNAVAILABLE[@]+"${SEAT_UNAVAILABLE[@]}"} | jq -R 'select(length > 0) | split("|") | {provider: .[0], round: (.[1] | tonumber), reason: .[2]}' | jq -sc .)"
+  fb="null"
+  [[ -z "$SYNTH_FALLBACK_TO" ]] || fb="$(jq -nc --arg f "$DEBATE_SYNTHESIZER" --arg t "$SYNTH_FALLBACK_TO" --arg r "$SYNTH_FALLBACK_REASON" '{from:$f, to:$t, reason:$r}')"
+  (( ${#SEAT_UNAVAILABLE[@]} > 0 )) && lost=true
+  if (( SEATS_ANSWERED < 3 )); then
+    if [[ "$lost" == true ]]; then note="Consensus is computed from the $SEATS_ANSWERED of $SEATS_REQUESTED seats that answered, not from all $SEATS_REQUESTED."
+    else note="Consensus is computed from the $SEATS_ANSWERED seats that were asked."; fi
+    (( SEATS_ANSWERED == 1 )) && note="$note With a single answering seat there was no cross-check."
+  fi
+  jq -nc --argjson req "$SEATS_REQUESTED" --argjson ans "$SEATS_ANSWERED" --argjson un "$un" --argjson fb "$fb" --argjson sok "$synth_ok" \
+    --arg synth "${SYNTH_FALLBACK_TO:-$DEBATE_SYNTHESIZER}" --arg note "$note" --argjson lost "$lost" \
+    '{schema:1, seats_requested:$req, seats_answered:$ans, seats_unavailable:$un, synthesizer:$synth, synthesizer_fallback:$fb, synthesis_ok:($sok==1),
+      flags:{synthesizer_fallback:($fb != null), seats_lost:$lost, fewer_than_3_seats:($ans < 3)}} + (if $note == "" then {} else {consensus_note:$note} end)' > "$work_dir/seats.json" 2>/dev/null || rm -f "$work_dir/seats.json"
+}
+write_seats || true
+
 if [[ -n "$OUT_DIR" ]]; then
   mkdir -p "$OUT_DIR"
   [[ -s "$work_dir/decision-log.json" ]] && cp "$work_dir/decision-log.json" "$OUT_DIR/decision-log.json"
   [[ -s "$work_dir/web-search.json" ]] && cp "$work_dir/web-search.json" "$OUT_DIR/web-search.json"
+  [[ -s "$work_dir/seats.json" ]] && cp "$work_dir/seats.json" "$OUT_DIR/seats.json"
+  if [[ -s "$work_dir/usage.unreported.rows" ]]; then jq -s . "$work_dir/usage.unreported.rows" > "$OUT_DIR/usage-unreported.json" 2>/dev/null || true; fi
   cp "$transcript_md" "$OUT_DIR/transcript.md"
   echo "transcript: $OUT_DIR/transcript.md" >&2
 else
@@ -884,3 +1075,6 @@ if [[ -n "$LINK_REPO" ]]; then
     echo "warning: skipping provenance link -- synthesis failed, no verdict to record" >&2
   fi
 fi
+
+# a debate without a verdict is a failure (e3d-mcp already treats a missing verdict as one; the exit code now says so too)
+[[ "$synth_ok" -eq 1 ]] || exit 1

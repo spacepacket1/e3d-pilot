@@ -22,9 +22,9 @@ service in `per_debate`, or rolled back to it, keeps working against a server th
    `quote_exceeds_limit`) stops the call before anything is reserved. The reserve then carries `units.calls = providers x rounds + 1`, and the
    debate runs under the quote's `max_tokens` and `answer_bytes`.
 4. **Enforcement (`bin/e3d-debate`).** `E3D_DEBATE_MAX_TOKENS` makes every adapter send that vendor output limit (Anthropic `max_tokens`, OpenAI
-   `max_completion_tokens`, Gemini and xAI `max_tokens`), disables retries (a retry after the vendor may have been reached would be a second,
-   unpriced call), web search (unless quoted, see below) and the Jev call (nothing unpriced runs), so at most one vendor call is made per `r<round>:<provider>` and one
-   for `synth`. `E3D_DEBATE_ANSWER_BYTES_MAX` cuts every prior answer inserted into a round-N or synthesis prompt to that many UTF-8 bytes of
+   `max_completion_tokens`, Gemini and xAI `max_tokens`), disables the transient retries (429, 5xx, timeouts: a retry after the vendor may have been reached would be a second,
+   unpriced call; the one exception is a 200 with no text, retried once with the same limit, see `docs/seat-reliability.md`), web search (unless quoted, see below) and the Jev call (nothing unpriced runs), so at most one vendor call is made per `r<round>:<provider>` and one
+   for `synth` (plus the one no-text retry, whose usage is summed into that key's single row, and a synthesis fallback, whose row replaces `synth`). `E3D_DEBATE_ANSWER_BYTES_MAX` cuts every prior answer inserted into a round-N or synthesis prompt to that many UTF-8 bytes of
    its provider's answer, on a character boundary (`transcript.md`, the record, keeps the whole answer).
 5. **Usage.** The adapters print normalised `input_tokens` and `output_tokens` in their `e3d_provider_usage=` line (Anthropic: input plus cache
    writes and reads; OpenAI-compatible: `prompt_tokens`, and the larger of `completion_tokens` and `total_tokens - prompt_tokens`, so reasoning and
