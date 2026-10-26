@@ -1,6 +1,6 @@
 # e3d-pilot
 
-Open source (public repo). Multi-model debate engine and MCP server: `bin/e3d-debate` (standalone debate), `bin/e3d-mcp` (MCP server, local and hosted), `bin/e3d-pilot` (the idea-to-PR pipeline). Provider adapters are in `lib/providers/<name>`. The hosted service at pilot.e3d.ai is a separate private repo (`e3d-pilot-cloud`) that meters this engine; nothing about that server, its hostnames or its keys belongs in this repo.
+Open source (public repo). Multi-model debate engine and MCP server: `bin/e3d-debate` (standalone debate), `bin/e3d-mcp` (MCP server, local and hosted), `bin/e3d-pilot` (the idea-to-PR pipeline). Provider adapters are in `lib/providers/<name>`. The hosted service at pilot.e3d.ai runs this engine behind a metering layer; nothing about its servers, hostnames, keys or internal pricing belongs in this repo.
 
 ## Commands
 
@@ -15,7 +15,7 @@ Tests use fake providers and fake local servers; they do not call real vendors. 
 
 ## Rules that are easy to break
 
-- **Prompt text is priced.** The hosted service sizes its quote from the fixed byte count of each prompt (`promptOverheadBytes` in `e3d-pilot-cloud/deploy/env/rate-table.json`: v2 round1 600, roundN 1800, synthesis 2400). Any wording change to a prompt in `bin/e3d-debate` needs a re-measure with the command above, and a PR note saying the new sizes and whether the table must change. The default prompt version is `v2`.
+- **Prompt text is priced.** The hosting service sizes its quote from the fixed byte count of each prompt, so a wording change to a prompt in `bin/e3d-debate` must be re-measured with the overhead command above, and the PR must state the new sizes. The default prompt version is `v2`.
 - **The synthesizer has a small output budget.** The verdict format is `FINAL ANSWER` then `CONSENSUS` then `DISSENT`, kept short on purpose (answer at most 60 words, dissent at most 40). `lib/mcp/verdict.js` keeps whatever part of a cut-short reply arrived and never invents the rest. Do not lengthen the format without raising the quoted output limit.
 - **Never put a real key in a command line, a log, a test fixture or a commit.** Adapters read keys from the environment or mode-0600 files. Check a key file's format before sourcing it (some hold the raw key, not `NAME=value`).
 - **Per-token mode** (`E3D_DEBATE_MAX_TOKENS` and friends) is how the hosted service bounds cost: every call carries an output limit and usage is reported per call. Keep new provider calls inside it.
