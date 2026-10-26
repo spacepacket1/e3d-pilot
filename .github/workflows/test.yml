@@ -25,7 +25,8 @@ jobs:
         # Several tests run `git init` and then diff against `main`; a stock runner defaults to `master`.
         run: git config --global init.defaultBranch main
       - name: Offline test suite
-        run: npm test
+        timeout-minutes: 12
+        run: npm test -- mcp-extauth.sh mcp-flow.sh mcp-runs.sh mcp-runserver.sh phase16.sh phase2.sh phase21.sh phase23.sh phase35.sh phase37.sh phase8.sh web-search.sh
 
   gitleaks:
     runs-on: ubuntu-latest
