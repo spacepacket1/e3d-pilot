@@ -632,10 +632,10 @@ synthesis_prompt() {
   if [[ "$DEBATE_PROMPT_VERSION" == "v3c" ]]; then
     v3_synthesis_instructions
   else
-    printf '\nRead the transcript and produce a final answer. Output exactly this format:\n'
-    printf 'FINAL ANSWER: <2-4 decisive sentences>\n'
+    printf '\nRead the transcript and produce a final answer. Your reply has a small output limit and the CONSENSUS and DISSENT lines are required, so be brief: keep the whole reply under 150 words. Output exactly this format:\n'
+    printf 'FINAL ANSWER: <2-3 decisive sentences, at most 60 words in all>\n'
     printf 'CONSENSUS: <full | majority | split>\n'
-    printf 'DISSENT: <one line on any remaining disagreement worth flagging, or "none">\n'
+    printf 'DISSENT: <one line, at most 40 words, on any remaining disagreement worth flagging, or "none">\n'
   fi
   printf '%s\n' "$SYNTH_CURRENT_DATA_TEXT"
 }
