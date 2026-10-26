@@ -26,13 +26,13 @@ jobs:
         run: git config --global init.defaultBranch main
       - name: Offline test suite
         timeout-minutes: 30
+        # Output goes to a file and is printed afterwards: a test that leaks a background server must not be able to keep
+        # this step's output pipe open and hang the job (one full run did hang until the job limit that way).
         run: |
           set +e
-          npm test > suite.log 2>&1 &
-          pid=$!
-          wait $pid; rc=$?
+          npm test > suite.log 2>&1
+          rc=$?
           cat suite.log
-          echo "--- leftover processes"; ps -eo pid,ppid,etime,args --forest | grep -v "ps -eo" | tail -40
           exit $rc
 
   gitleaks:
