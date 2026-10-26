@@ -765,28 +765,36 @@ ideate_gh_pr_list() {
   fi
 }
 
+# Only the most recent runs, and only each candidates.md's "## Proposed Candidates" section, each
+# capped in size. candidates.md's own "## Dedup Context" section embeds that run's whole ideate-facts.md,
+# which embeds the prior runs' candidates.md in turn -- including it here made every daily run's facts
+# file roughly twice the size of the last (0.1GB -> 6.5GB over 8 days, then provider failure).
 load_prior_runs_content() {
-  local repo="$1" current_run_id="$2" runs_dir dir run_name found
+  local repo="$1" current_run_id="$2" runs_dir dir run_name found count=0
+  local max_runs="${IDEATE_PRIOR_RUNS_MAX:-10}" max_bytes="${IDEATE_PRIOR_RUN_MAX_BYTES:-16000}"
   runs_dir="$(runs_dir_for_repo "$repo")"
   found=0
   if [[ -d "$runs_dir" ]]; then
-    for dir in "$runs_dir"/*/; do
+    while IFS= read -r dir; do
       [[ -d "$dir" ]] || continue
       run_name="$(basename "$dir")"
       [[ "$run_name" == "$current_run_id" ]] && continue
+      [[ -f "$dir/candidates.md" || -f "$dir/spec-final.md" ]] || continue
+      (( count >= max_runs )) && break
+      count=$((count + 1))
       if [[ -f "$dir/candidates.md" ]]; then
         found=1
-        printf '### %s/candidates.md\n```text\n' "$run_name"
-        cat "$dir/candidates.md"
+        printf '### %s/candidates.md (Proposed Candidates section, first %s bytes)\n```text\n' "$run_name" "$max_bytes"
+        awk '/^## Proposed Candidates/ { in_candidates = 1 } in_candidates' "$dir/candidates.md" | head -c "$max_bytes"
         printf '\n```\n'
       fi
       if [[ -f "$dir/spec-final.md" ]]; then
         found=1
-        printf '### %s/spec-final.md\n```text\n' "$run_name"
-        cat "$dir/spec-final.md"
+        printf '### %s/spec-final.md (first %s bytes)\n```text\n' "$run_name" "$max_bytes"
+        head -c "$max_bytes" "$dir/spec-final.md"
         printf '\n```\n'
       fi
-    done
+    done < <(ls -1dt "$runs_dir"/*/ 2>/dev/null | sed 's:/$::')
   fi
   [[ $found -eq 1 ]] || printf -- '- none found\n'
 }
