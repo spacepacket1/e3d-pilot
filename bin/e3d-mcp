@@ -22,6 +22,7 @@ import { fileURLToPath } from 'node:url';
 import { createInterface } from 'node:readline';
 import { ROOT, log, text, run, configuredProviders, providerLine, NAME_RE } from '../lib/mcp/util.js';
 import { redact } from '../lib/mcp/redact.js';
+import { parseVerdict } from '../lib/mcp/verdict.js';
 import { doctor, checkoutConfigHint } from '../lib/mcp/doctor.js';
 import { createRpc } from '../lib/mcp/rpc.js';
 import { createRepoGuard } from '../lib/mcp/repos.js';
@@ -81,18 +82,6 @@ const send = (msg) => process.stdout.write(`${JSON.stringify(msg)}\n`);
 // quick = one round of independent answers + one synthesis call (fast, no cross-critique);
 // thorough = the debate as originally shipped (2 rounds, models see and rebut each other).
 const MODES = { quick: { rounds: 1, maxWords: 80 }, thorough: { rounds: 2, maxWords: 200 } };
-
-// e3d-debate prints "FINAL ANSWER: ...\nCONSENSUS: ...\nDISSENT: ..." -- turn that into fields.
-function parseVerdict(out) {
-  const raw = out.match(/FINAL ANSWER:[\s\S]*$/)?.[0]?.trim();
-  if (!raw) return null;
-  const m = raw.match(/^FINAL ANSWER:\s*([\s\S]*?)\s*\n\s*CONSENSUS:\s*([^\n]*)\n\s*DISSENT:\s*([\s\S]*)$/);
-  if (!m) return { final_answer: raw.replace(/^FINAL ANSWER:\s*/, ''), consensus: 'unknown', dissent: { present: null, summary: 'Verdict could not be parsed; read the answer text in full.' } };
-  const consensus = ['full', 'majority', 'split'].find((c) => m[2].toLowerCase().includes(c)) ?? 'unknown';
-  const dissentText = m[3].trim();
-  const none = /^["'`]*none[."'`]*$/i.test(dissentText);
-  return { final_answer: m[1].trim(), consensus, dissent: { present: !none, summary: none ? 'none' : dissentText } };
-}
 
 // Each model's answer in the last round, from transcript.md ("## Round N -- provider").
 function parsePositions(transcript) {
