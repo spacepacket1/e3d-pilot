@@ -41,6 +41,12 @@ assert.equal(v.final_answer, 'Stay inside Postgres.'); assert.match(v.dissent.su
 v = parseVerdict('FINAL ANSWER: One long fragment with no sentence end');
 assert.equal(v.final_answer, 'One long fragment with no sentence end'); assert.match(v.dissent.summary, /cut off/); ok('a fragment with no full sentence is kept whole');
 
+// a dissent that stops mid-sentence is marked, a finished one and one followed by another section are not
+v = parseVerdict('FINAL ANSWER: Use X.\nCONSENSUS: majority\nDISSENT: Gemini would keep JSON because the data is');
+assert.equal(v.dissent.present, true); assert.match(v.dissent.summary, /because the data is \[cut off\]$/); ok('cut-off dissent is marked');
+v = parseVerdict('FINAL ANSWER: Use X.\nCONSENSUS: majority\nDISSENT: Gemini would keep JSON.\nPOSITIONS: a: X | "q"');
+assert.ok(!/cut off/.test(v.dissent.summary)); ok('dissent followed by another section is not marked');
+
 // a reply that is complete but has no CONSENSUS line keeps the old message
 v = parseVerdict('FINAL ANSWER: Do X, because it is simpler.');
 assert.equal(v.final_answer, 'Do X, because it is simpler.'); assert.equal(v.consensus, 'unknown'); assert.match(v.dissent.summary, /could not be parsed/); ok('complete answer without CONSENSUS: legacy message');
