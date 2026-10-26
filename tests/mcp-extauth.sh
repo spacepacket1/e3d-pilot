@@ -106,7 +106,7 @@ grep -q "moved to dead-letter" "$TMP/outbox-client.log" || fail "dead-lettering 
 n_records=0
 while IFS= read -r -d '' f; do
   n_records=$((n_records + 1))
-  mode="$(stat -f '%Lp' "$f" 2>/dev/null || stat -c '%a' "$f")"
+  mode="$(stat -c '%a' "$f" 2>/dev/null || stat -f '%Lp' "$f")"
   [[ "$mode" == "600" ]] || fail "outbox file $f has mode $mode, expected 600"
 done < <(find "$TMP/outbox-state" -path '*auth-outbox*' -type f -print0)
 (( n_records > 0 )) || fail "the outbox tests left records to inspect"
@@ -125,7 +125,7 @@ STUB_URL="$FIN_UNIT_URL" LEGACY_URL="$LEGACY_UNIT_URL" STATE_ROOT="$TMP/finalize
   node "$ROOT/tests/fixtures/extauth-finalize-test.mjs" | tee "$TMP/finalize.out"
 assert_contains "$(cat "$TMP/finalize.out")" "finalize tests:"
 while IFS= read -r -d '' f; do
-  mode="$(stat -f '%Lp' "$f" 2>/dev/null || stat -c '%a' "$f")"
+  mode="$(stat -c '%a' "$f" 2>/dev/null || stat -f '%Lp' "$f")"
   [[ "$mode" == "600" ]] || fail "finalize state file $f has mode $mode, expected 600"
 done < <(find "$TMP/finalize-state" \( -path '*auth-outbox*' -o -path '*metering-intents*' \) -type f -name '*.json' -print0)
 if grep -lE 'QCONTENT|ACONTENT|TCONTENT' "$TMP/finalize-client.log" "$TMP/fin-unit.log" "$TMP/legacy-unit.log"; then fail "debate content leaked into the logs above"; fi
@@ -738,7 +738,7 @@ crash_run() {  # crash_run <name> [VAR=value...] -> CRASH_RID
   for _ in $(seq 1 100); do [[ -e "$STARTED" ]] && break; sleep 0.05; done
   [[ -e "$STARTED" ]] || fail "the debate did not start on $name"
   local intent; intent="$(ls "$TMP/state-$name/metering-intents"/*.json)"
-  local mode; mode="$(stat -f '%Lp' "$intent" 2>/dev/null || stat -c '%a' "$intent")"; assert_eq "$mode" "600" "intent file mode"
+  local mode; mode="$(stat -c '%a' "$intent" 2>/dev/null || stat -f '%Lp' "$intent")"; assert_eq "$mode" "600" "intent file mode"
   CRASH_RID="$(jq -r .reservation_id "$intent")"; assert_eq "$(jq -r .principal "$intent")" "acct_crash"
   assert_eq "$(res_of "$CRASH_RID" | jq -r .state)" "held" "the hold exists while the debate runs"
   local pid="PID_$name"; kill -9 "${!pid}"; wait "${!pid}" 2>/dev/null || true
@@ -780,7 +780,7 @@ assert_contains "$st" "1 pending, 0 claimed, 2 dead"; assert_contains "$st" "set
 assert_not_contains "$st" "est_input_tokens" "status prints no payload"
 EXPORT="$TMP/op-export.json"
 exp="$(opcmd --outbox-export "$EXPORT" 2>&1)"; assert_contains "$exp" "exported 3 record(s) (2 dead)"
-mode="$(stat -f '%Lp' "$EXPORT" 2>/dev/null || stat -c '%a' "$EXPORT")"; assert_eq "$mode" "600" "export file mode"
+mode="$(stat -c '%a' "$EXPORT" 2>/dev/null || stat -f '%Lp' "$EXPORT")"; assert_eq "$mode" "600" "export file mode"
 assert_eq "$(jq '.records | length' "$EXPORT")" "3"; jq -e '.records[] | select(.record_id == "settle.reservation_id.res_dead_1") | .payload.actual.calls == 2' "$EXPORT" > /dev/null || fail "export carries payloads"
 for secret in "$SVC" "$TOKEN_OK" "$TOKEN_SIBLING"; do assert_not_contains "$(cat "$EXPORT")" "$secret" "export has no token"; done
 if opcmd --outbox-export "$EXPORT" > /dev/null 2>&1; then fail "export must not overwrite an existing file"; fi
@@ -929,7 +929,7 @@ for f in "$TMP"/F1.log "$TMP/fin.log" "$TMP/fin-status.out" "$TMP/fin-usage.out"
   if grep -lE "QCONTENT-$MARK|ACONTENT-$MARK|TCONTENT-$MARK" "$f"; then fail "debate content leaked into $f"; fi
 done
 while IFS= read -r -d '' f; do
-  mode="$(stat -f '%Lp' "$f" 2>/dev/null || stat -c '%a' "$f")"; [[ "$mode" == "600" ]] || fail "$f has mode $mode, expected 600"
+  mode="$(stat -c '%a' "$f" 2>/dev/null || stat -f '%Lp' "$f")"; [[ "$mode" == "600" ]] || fail "$f has mode $mode, expected 600"
 done < <(find "$TMP/state-F1" \( -path '*metering-intents*' -o -path '*auth-outbox*' \) -type f -print0)
 fledger > "$TMP/fin-ledger.json"
 jq -e '[.effects[].reservation_id] | (length == (unique | length))' "$TMP/fin-ledger.json" > /dev/null || fail "a reservation was finalized twice"
@@ -948,7 +948,7 @@ for secret in "$SVC" "${SERVER_TOKENS[@]}"; do
 done
 if grep -rl "MARKER" "$TMP"/S*.log "$TMP/bodies.out" "$TMP"/state-S*; then fail "a planted marker leaked into the files above"; fi
 while IFS= read -r -d '' f; do
-  mode="$(stat -f '%Lp' "$f" 2>/dev/null || stat -c '%a' "$f")"; [[ "$mode" == "600" ]] || fail "$f has mode $mode, expected 600"
+  mode="$(stat -c '%a' "$f" 2>/dev/null || stat -f '%Lp' "$f")"; [[ "$mode" == "600" ]] || fail "$f has mode $mode, expected 600"
 done < <(find "$TMP"/state-S* \( -path '*metering-intents*' -o -path '*auth-outbox*' \) -type f -print0)
 echo "ok - no token in server logs, results or state; intents and records are 0600"
 

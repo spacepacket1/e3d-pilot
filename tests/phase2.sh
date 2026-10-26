@@ -165,8 +165,13 @@ devin_provider_dry_run_respects_model_override() {
 }
 
 devin_provider_check_reports_available() {
-  local out
-  out="$(E3D_PILOT_CHECK=1 DEVIN_BIN=devin "$PROVIDERS_DIR/devin")"
+  # The check looks for the binary on PATH, so give it a stub instead of relying on the machine having devin installed.
+  local out stub_dir
+  stub_dir="$(mktemp -d)"
+  printf '#!/bin/sh\nexit 0\n' > "$stub_dir/devin"
+  chmod +x "$stub_dir/devin"
+  out="$(E3D_PILOT_CHECK=1 DEVIN_BIN="$stub_dir/devin" "$PROVIDERS_DIR/devin")"
+  rm -rf "$stub_dir"
   assert_contains "$out" "available"
   assert_contains "$out" "devin"
 }

@@ -264,10 +264,10 @@ for f in "$TMP"/R*.log "$TMP/stub.log"; do
   for secret in "$SVC" "$TOK_A" "$TOK_B" "$TOK_C" "$TOK_BROKE"; do if grep -qF -- "$secret" "$f"; then fail "a token leaked into $f"; fi; done
 done
 while IFS= read -r -d '' f; do
-  mode="$(stat -f '%Lp' "$f" 2>/dev/null || stat -c '%a' "$f")"; [[ "$mode" == "600" ]] || fail "$f has mode $mode, expected 600"
+  mode="$(stat -c '%a' "$f" 2>/dev/null || stat -f '%Lp' "$f")"; [[ "$mode" == "600" ]] || fail "$f has mode $mode, expected 600"
 done < <(find "$TMP"/state-R* -path '*/runs/*' -type f -print0)
 while IFS= read -r -d '' d; do
-  mode="$(stat -f '%Lp' "$d" 2>/dev/null || stat -c '%a' "$d")"; [[ "$mode" == "700" ]] || fail "$d has mode $mode, expected 700"
+  mode="$(stat -c '%a' "$d" 2>/dev/null || stat -f '%Lp' "$d")"; [[ "$mode" == "700" ]] || fail "$d has mode $mode, expected 700"
 done < <(find "$TMP"/state-R* -path '*/runs*' -type d -print0)
 ledger > "$TMP/ledger.json"
 jq -e '[.effects[].reservation_id] | (length == (unique | length))' "$TMP/ledger.json" > /dev/null || fail "a reservation was finalized twice"

@@ -36,5 +36,8 @@
   ],
   "optionalDependencies": {
     "e3d-code": "^0.4.0"
+  },
+  "scripts": {
+    "test": "bash scripts/run-tests.sh"
   }
 }

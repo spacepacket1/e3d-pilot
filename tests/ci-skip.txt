@@ -1,0 +1,2 @@
+# Tests the runner (scripts/run-tests.sh) skips. Format: <test file>: <one-line reason>
+mcp-container.sh: needs a running Docker daemon and builds deploy/Dockerfile (opt-in via E3D_TEST_DOCKER=1)

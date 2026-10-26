@@ -57,7 +57,7 @@ debate() { # <out-dir> <args...>
   rm -rf "$T/tmp"/e3d-debate.*; : > "$T/api.log"
   E "$R/bin/e3d-debate" "Which version is current?" --rounds 2 --synthesizer anthropic-api --out-dir "$out" "$@" > "$out.stdout" 2> "$out.stderr" \
     || { cat "$out.stderr" >&2; fail "debate run failed ($*)"; }
-  WORK="$(ls -d "$T/tmp"/e3d-debate.* | head -1)"
+  WORK="$(ls -d "$T/tmp"/e3d-debate.* | sed -n 1p)"
 }
 ALL4="anthropic-api,openai-api,gemini-api,xai-api"
 
@@ -80,17 +80,17 @@ done
 ok "date line and search wording in every round prompt"
 
 # (a) the tool list sent to each vendor is exactly one tool, with the caps and settings
-a="$(reqs_to /v1/messages | jq -c '.body | fromjson | select(.tools)' | head -1)"
+a="$(reqs_to /v1/messages | jq -c '.body | fromjson | select(.tools)' | sed -n 1p)"
 [[ "$(jq -c '.tools' <<< "$a")" == '[{"type":"web_search_20250305","name":"web_search","max_uses":3}]' ]] || fail "anthropic tools: $(jq -c .tools <<< "$a")"
 [[ "$(jq -r '.system' <<< "$a")" == "$SYSTEXT"* ]] || fail "anthropic: untrusted-data framing must be in the system layer"
-o="$(reqs_to /v1/responses | head -1 | jq -c '.body | fromjson')"
+o="$(reqs_to /v1/responses | sed -n 1p | jq -c '.body | fromjson')"
 [[ "$(jq -c '.tools' <<< "$o")" == '[{"type":"web_search","search_context_size":"low","external_web_access":true}]' ]] || fail "openai tools: $(jq -c .tools <<< "$o")"
 [[ "$(jq -c '[.max_tool_calls, .tool_choice, .store, .include]' <<< "$o")" == '[3,"auto",false,["web_search_call.action.sources"]]' ]] || fail "openai settings: $o"
 [[ "$(jq -r '.instructions' <<< "$o")" == "$SYSTEXT"* ]] || fail "openai: framing must be in instructions"
-x="$(reqs_to /xai/v1/responses | head -1 | jq -c '.body | fromjson')"
+x="$(reqs_to /xai/v1/responses | sed -n 1p | jq -c '.body | fromjson')"
 [[ "$(jq -c '.tools' <<< "$x")" == '[{"type":"web_search","enable_image_understanding":false,"enable_image_search":false}]' ]] || fail "xai tools: $(jq -c .tools <<< "$x")"
 [[ "$(jq -c '[.max_turns, .store, .input[0].role]' <<< "$x")" == '[3,false,"system"]' ]] || fail "xai settings: $x"
-g="$(reqs_to /v1beta/interactions | head -1)"
+g="$(reqs_to /v1beta/interactions | sed -n 1p)"
 [[ "$(jq -c '.body | fromjson | .tools' <<< "$g")" == '[{"type":"google_search","search_types":["web_search"]}]' ]] || fail "gemini tools: $g"
 [[ "$(jq -c '.body | fromjson | [.store, (.system_instruction | startswith("Web search results"))]' <<< "$g")" == '[false,true]' ]] || fail "gemini settings"
 [[ "$(jq -r .goog <<< "$g")" == "$GKEY" ]] || fail "gemini key goes in the x-goog-api-key header"
@@ -228,18 +228,18 @@ ok "invalid domain config fails closed"
 
 # search off is the original behaviour plus the date line: same endpoints, same request shape
 E3D_DEBATE_WEB_SEARCH=off debate "$T/s5" --providers anthropic-api,openai-api --rounds 1
-[[ "$(reqs_to /v1/messages | head -1 | jq -c '.body | fromjson | keys')" == '["max_tokens","messages","model"]' ]] || fail "search-off anthropic request shape"
-[[ "$(reqs_to /v1/chat/completions | head -1 | jq -c '.body | fromjson | keys')" == '["messages","model"]' ]] || fail "search-off openai request shape"
+[[ "$(reqs_to /v1/messages | sed -n 1p | jq -c '.body | fromjson | keys')" == '["max_tokens","messages","model"]' ]] || fail "search-off anthropic request shape"
+[[ "$(reqs_to /v1/chat/completions | sed -n 1p | jq -c '.body | fromjson | keys')" == '["messages","model"]' ]] || fail "search-off openai request shape"
 # Claude 5 models think by default and the thinking tokens spend max_tokens: send thinking off for them, nothing for other models
 E3D_DEBATE_WEB_SEARCH=off AM=claude-sonnet-5-5 debate "$T/s5b" --providers anthropic-api,openai-api --rounds 1
-[[ "$(reqs_to /v1/messages | head -1 | jq -c '.body | fromjson | .thinking')" == '{"type":"between_tools"}' ]] || fail "claude 5 model: thinking off (plain request)"
+[[ "$(reqs_to /v1/messages | sed -n 1p | jq -c '.body | fromjson | .thinking')" == '{"type":"between_tools"}' ]] || fail "claude 5 model: thinking off (plain request)"
 AM=claude-sonnet-5-5 debate "$T/s5d" --providers anthropic-api,openai-api --rounds 1
 [[ "$(reqs_to /v1/messages | jq -s '[.[] | .body | fromjson | select(.tools) | .thinking.type] | unique' -c)" == '["between_tools"]' ]] || fail "claude 5 model: thinking off (search request)"
 E3D_DEBATE_WEB_SEARCH=off AM=claude-sonnet-5-5 ANTHROPIC_API_THINKING= debate "$T/s5e" --providers anthropic-api,openai-api --rounds 1
-[[ "$(reqs_to /v1/messages | head -1 | jq -c '.body | fromjson | has("thinking")')" == false ]] || fail "ANTHROPIC_API_THINKING empty sends nothing"
+[[ "$(reqs_to /v1/messages | sed -n 1p | jq -c '.body | fromjson | has("thinking")')" == false ]] || fail "ANTHROPIC_API_THINKING empty sends nothing"
 ok "Claude 5 models send thinking off"
 
-p0="$(reqs_to /v1/messages | head -1 | jq -r '.body | fromjson | .messages[0].content')"
+p0="$(reqs_to /v1/messages | sed -n 1p | jq -r '.body | fromjson | .messages[0].content')"
 [[ "$(sed -n 4p <<< "$p0")" == "You are one of several AI models independently answering a question, before comparing notes with the others in later rounds." ]] || fail "search-off prompt body changed"
 ok "search off: original request shape and prompt plus the date line"
 
@@ -256,22 +256,22 @@ ok "CLI voices never get search"
 # allow + deny: allow wins natively where only one list is allowed; the deny list is still applied by post-filtering
 E3D_DEBATE_SEARCH_ALLOW_DOMAINS=good.example,attacker.example,other.example E3D_DEBATE_SEARCH_DENY_DOMAINS=attacker.example \
   debate "$T/m1" --providers "$ALL4" --rounds 1
-[[ "$(reqs_to /v1/messages | jq -c '.body | fromjson | select(.tools) | .tools[0] | [.allowed_domains, .blocked_domains]' | head -1)" == '[["good.example","attacker.example","other.example"],null]' ]] || fail "anthropic: allow list natively, never both"
-[[ "$(reqs_to /v1/responses | head -1 | jq -c '.body | fromjson | .tools[0].filters')" == '{"allowed_domains":["good.example","attacker.example","other.example"]}' ]] || fail "openai filters"
-[[ "$(reqs_to /xai/v1/responses | head -1 | jq -c '.body | fromjson | .tools[0].filters')" == '{"allowed_domains":["good.example","attacker.example","other.example"]}' ]] || fail "xai filters"
-[[ "$(reqs_to /v1beta/interactions | head -1 | jq -c '.body | fromjson | .tools')" == '[{"type":"google_search","search_types":["web_search"]}]' ]] || fail "gemini has no domain control: nothing native"
+[[ "$(reqs_to /v1/messages | jq -c '.body | fromjson | select(.tools) | .tools[0] | [.allowed_domains, .blocked_domains]' | sed -n 1p)" == '[["good.example","attacker.example","other.example"],null]' ]] || fail "anthropic: allow list natively, never both"
+[[ "$(reqs_to /v1/responses | sed -n 1p | jq -c '.body | fromjson | .tools[0].filters')" == '{"allowed_domains":["good.example","attacker.example","other.example"]}' ]] || fail "openai filters"
+[[ "$(reqs_to /xai/v1/responses | sed -n 1p | jq -c '.body | fromjson | .tools[0].filters')" == '{"allowed_domains":["good.example","attacker.example","other.example"]}' ]] || fail "xai filters"
+[[ "$(reqs_to /v1beta/interactions | sed -n 1p | jq -c '.body | fromjson | .tools')" == '[{"type":"google_search","search_types":["web_search"]}]' ]] || fail "gemini has no domain control: nothing native"
 jq -e '[.citations[].domain] | all(. == "good.example" or . == "news.good.example" or . == "other.example")' "$T/m1/web-search.json" >/dev/null || fail "post-filter: $(jq -c '[.citations[].domain]' "$T/m1/web-search.json")"
 jq -e '.flags.citations_dropped.denied_domain > 0 and .flags.citations_dropped.not_allowed_domain > 0' "$T/m1/web-search.json" >/dev/null || fail "dropped citations counted"
 # deny only: the native deny option
 E3D_DEBATE_SEARCH_DENY_DOMAINS=denied.example debate "$T/m2" --providers "$ALL4" --rounds 1
-[[ "$(reqs_to /v1/messages | jq -c '.body | fromjson | select(.tools) | .tools[0].blocked_domains' | head -1)" == '["denied.example"]' ]] || fail "anthropic blocked_domains"
-[[ "$(reqs_to /v1/responses | head -1 | jq -c '.body | fromjson | .tools[0].filters')" == '{"blocked_domains":["denied.example"]}' ]] || fail "openai blocked_domains"
-[[ "$(reqs_to /xai/v1/responses | head -1 | jq -c '.body | fromjson | .tools[0].filters')" == '{"excluded_domains":["denied.example"]}' ]] || fail "xai excluded_domains"
+[[ "$(reqs_to /v1/messages | jq -c '.body | fromjson | select(.tools) | .tools[0].blocked_domains' | sed -n 1p)" == '["denied.example"]' ]] || fail "anthropic blocked_domains"
+[[ "$(reqs_to /v1/responses | sed -n 1p | jq -c '.body | fromjson | .tools[0].filters')" == '{"blocked_domains":["denied.example"]}' ]] || fail "openai blocked_domains"
+[[ "$(reqs_to /xai/v1/responses | sed -n 1p | jq -c '.body | fromjson | .tools[0].filters')" == '{"excluded_domains":["denied.example"]}' ]] || fail "xai excluded_domains"
 jq -e '[.citations[].domain] | index("denied.example") | not' "$T/m2/web-search.json" >/dev/null || fail "gemini's denied citation must be post-filtered"
 # xAI allows at most 5: a longer allow list is applied by post-filtering only (and the deny list natively)
 E3D_DEBATE_SEARCH_ALLOW_DOMAINS=a.example,b.example,c.example,d.example,e.example,good.example E3D_DEBATE_SEARCH_DENY_DOMAINS=denied.example \
   debate "$T/m3" --providers xai-api,openai-api --rounds 1
-[[ "$(reqs_to /xai/v1/responses | head -1 | jq -c '.body | fromjson | .tools[0].filters')" == '{"excluded_domains":["denied.example"]}' ]] || fail "xai >5 allow list: deny natively, allow by post-filter"
+[[ "$(reqs_to /xai/v1/responses | sed -n 1p | jq -c '.body | fromjson | .tools[0].filters')" == '{"excluded_domains":["denied.example"]}' ]] || fail "xai >5 allow list: deny natively, allow by post-filter"
 ok "allow/deny lists: native where the vendor can, post-filtered everywhere"
 
 # ================= 5. adapters directly =================
