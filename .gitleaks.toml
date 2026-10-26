@@ -1,0 +1,21 @@
+# Default gitleaks rules plus a narrow allowlist for obvious test fixtures
+# (fake keys that the tests feed to the redaction and provider code on purpose).
+title = "e3d-pilot gitleaks config"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "test fixtures: fake credentials used to test redaction and fake vendors"
+paths = [
+  '''^tests/[A-Za-z0-9_.-]+\.sh$''',
+  '''^tests/fixtures/''',
+]
+regexes = [
+  # the reference external-auth stub and its conformance runner use obviously fake tokens
+  '''stub-key-[a-z]+-[0-9a-f]+''',
+  # the deploy verify script's deliberately wrong token
+  '''wrong-token-[0-9]+''',
+  # a shell variable reference in a curl header, not a credential
+  '''Bearer \$\{?[A-Z_]+\}?''',
+]
