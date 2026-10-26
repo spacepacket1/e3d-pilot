@@ -194,7 +194,7 @@ for f in "$TMP/S.log" "$TMP/stub.log"; do
   for secret in "${tokens[@]}"; do if grep -qF -- "$secret" "$f"; then fail "a token leaked into $f"; fi; done
 done
 while IFS= read -r -d '' f; do
-  mode="$(stat -f '%Lp' "$f" 2>/dev/null || stat -c '%a' "$f")"; [[ "$mode" == "600" ]] || fail "$f has mode $mode, expected 600"
+  mode="$(stat -c '%a' "$f" 2>/dev/null || stat -f '%Lp' "$f")"; [[ "$mode" == "600" ]] || fail "$f has mode $mode, expected 600"
 done < <(find "$TMP/state-S" -path '*/runs/*' -type f -print0)
 echo "ok - no content or token in logs; run state (with the run token) is 0600"
 echo "mcp-runserver: all passed"

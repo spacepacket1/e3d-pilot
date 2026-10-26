@@ -4,6 +4,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BIN="$ROOT/bin/e3d-pilot"
 SAMPLE_CONFIG="$ROOT/examples/sample-config.json"
+# lib/web spawns "e3d-pilot" from PATH (an installed CLI); make the checkout's own bin/ resolve.
+export PATH="$ROOT/bin:$PATH"
 
 assert_contains() {
   local haystack="$1" needle="$2"

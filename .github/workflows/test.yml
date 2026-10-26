@@ -21,6 +21,9 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends jq bash
+      - name: Git defaults the tests expect
+        # Several tests run `git init` and then diff against `main`; a stock runner defaults to `master`.
+        run: git config --global init.defaultBranch main
       - name: Offline test suite
         run: npm test
 
