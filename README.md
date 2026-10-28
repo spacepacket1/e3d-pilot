@@ -288,6 +288,7 @@ node examples/external-auth-conformance.js <that URL> <token>          # run aga
 | `E3D_MCP_AUTH_CACHE_SEC` | 30 | How long an active `introspect` answer is cached (1 to 300). This is the maximum revocation latency. |
 | `E3D_MCP_AUTH_MAX_INFLIGHT` | 32 | Distinct `introspect` calls in flight at once (1 to 1024). |
 | `E3D_MCP_AUTH_IP_PER_MIN` | 30 | Rejected (unknown or malformed) keys one IP may present per minute before further unknown keys are refused without asking the service. Successful keys do not count. |
+| `E3D_MCP_ANON_DISCOVERY` | off | Only the exact value `on` enables it. Lets a request with no credential at all run `initialize`, `notifications/initialized`, `ping`, `tools/list` and `prompts/list`, so registries and health checkers can scan the server; everything else, `tools/call` included, gets the usual 401. Anonymous requests share a per-IP limit (`E3D_MCP_ANON_IP_PER_MIN`, default 20 a minute) and a pool of `E3D_MCP_ANON_MAX_SESSIONS` sessions (default 100) that authenticated callers never use. A wrong credential is never treated as anonymous. |
 | `E3D_MCP_AUTH_HEALTH_SEC` | 15 | Interval of the background `health` probe behind `/readyz`. |
 | `E3D_MCP_OUTBOX_MAX` | 5000 | Undelivered settlements allowed before new billed work is refused. |
 | `E3D_MCP_OUTBOX_MAX_BYTES` | 67108864 (64 MB) | Total size of undelivered records (finalize records carry the debate result) allowed before new billed work is refused. |

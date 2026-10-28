@@ -152,6 +152,12 @@ tl="$(list ag "$SID")"
 assert_eq "$(jq -c '.result.tools[] | select(.name=="e3d_quote") | [.annotations.readOnlyHint, .annotations.destructiveHint, (.inputSchema.required), (.outputSchema.required | index("quote_id") != null)]' <<< "$tl")" '[true,false,["question"],true]' "e3d_quote is read-only"
 assert_eq "$(jq -c '.result.tools[] | select(.name=="e3d_debate") | [(.inputSchema.properties | has("idempotency_key") and has("quote_id")), .inputSchema.required, (.outputSchema.properties.recommended_next_step.enum | length), (.outputSchema.properties | has("cost") and has("dissent_items") and has("schema_version") and has("notice") and has("dissent")), (.outputSchema.required | index("recommended_next_step"))]' <<< "$tl")" '[true,["question"],4,true,null]' "e3d_debate: two optional inputs, the new result fields"
 assert_eq "$(jq -r '.result.tools[] | select(.name=="e3d_debate") | .outputSchema.properties.dissent.type' <<< "$tl")" "object" "the dissent summary object is unchanged"
+# every hosted tool declares MCP annotations: a title and explicit readOnlyHint and destructiveHint booleans (registries and
+# connector directories read them); e3d_debate spends the account's credits, so it is never read-only; e3d_quote, e3d_usage and
+# e3d_list_providers are. idempotentHint stays false for e3d_debate: the key is optional and without it a repeat spends again.
+assert_eq "$(jq -r '[.result.tools[] | select((.annotations.title | type) != "string" or (.annotations.readOnlyHint | type) != "boolean" or (.annotations.destructiveHint | type) != "boolean") | .name] | join(",")' <<< "$tl")" "" "every hosted tool has title, readOnlyHint, destructiveHint"
+assert_eq "$(jq -c '[.result.tools[] | select(.name=="e3d_quote" or .name=="e3d_usage" or .name=="e3d_list_providers") | .annotations.readOnlyHint] | [length, all]' <<< "$tl")" "[3,true]" "quote, usage, list_providers are read-only"
+assert_eq "$(jq -c '.result.tools[] | select(.name=="e3d_debate") | .annotations | [.readOnlyHint, .destructiveHint, .idempotentHint, .openWorldHint]' <<< "$tl")" "[false,false,false,true]" "e3d_debate annotations"
 echo "ok - agent mode: instructions (${#INSTR} chars), e3d_quote (read-only), e3d_debate with quote_id and idempotency_key and the new result fields"
 
 # e3d_quote: free, nothing held, only a hash and a size leave this server
