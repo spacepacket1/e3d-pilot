@@ -181,6 +181,17 @@ entries are kept (oldest evicted). Concurrent introspects of one token share one
 **Maximum revocation latency** = the cache TTL (`E3D_MCP_AUTH_CACHE_SEC`, at most 300 s) **plus the duration of a
 request already in flight** when the key was revoked (that request completes and is settled).
 
+### Anonymous discovery (optional, off by default)
+
+`E3D_MCP_ANON_DISCOVERY=on` (only that exact value) lets a request that carries no credential at all run `initialize`,
+`notifications/initialized`, `ping`, `tools/list` and `prompts/list`, so registries and health checkers can scan the server.
+Everything else, `tools/call` included, gets the same 401 as today. The list shows only the default public tools and their
+descriptions and schemas, nothing about any account. A request that carries a credential which fails is never anonymous: it
+gets the 401 and still counts against the failed-attempt limiter. Anonymous callers are the principal `anonymous`, have their
+own sessions (never usable with a token, nor a token's session without it), are limited to `E3D_MCP_ANON_IP_PER_MIN` requests
+per client address per minute (default 20; every anonymous request counts) and to `E3D_MCP_ANON_MAX_SESSIONS` live sessions
+(default 100), and use the same body and in-flight limits. Unset, nothing changes.
+
 ## Compatibility
 
 - Every request carries `X-E3D-Auth-Version: 1`. A service that does not support the version should answer 400.
