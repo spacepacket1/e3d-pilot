@@ -867,13 +867,13 @@ const SEARCH_NOTICE = searchAvailability(process.env).on ? PRIVACY_NOTICE : sear
 const TOOLS = [
   {
     name: 'e3d_debate',
-    description: 'Use when the user asks for a second opinion, wants to compare options, or has to decide between alternatives (for example "JSON or SQLite?", "should we...", architecture or library tradeoffs). Get a multi-model second opinion on a decision or design question. Independent AI models answer, and a synthesizer returns a final answer, a consensus level (full/majority/split), and any dissent, plus each model\'s final position. ALWAYS report the dissent and consensus level to the user -- the disagreement is the point; never present a split verdict as settled. Write a self-contained question: the models cannot see your code. mode "quick" (default): one round, usually well under a minute. mode "thorough": models also critique each other, a few minutes. Use for architectural choices, tradeoffs, and contestable judgment calls -- not for lookups or questions with an obvious answer. Spends the user\'s model credits. ' + SEARCH_NOTICE,
+    description: 'Multi-model second opinions on decisions, comparisons, architecture, and design tradeoffs. Models answer independently; synthesis returns a conclusion, consensus level (full/majority/split), unresolved dissent, and each model’s final position. The question supplies the context available to the models; repository contents are not automatically available. Quick mode defaults to one round without cross-critique; thorough mode defaults to two rounds with cross-critique. Debates consume model credits. ' + SEARCH_NOTICE,
     inputSchema: {
       type: 'object',
       properties: {
         question: { type: 'string', description: 'The decision or question, with enough context for models that cannot see your code.' },
         mode: { type: 'string', enum: ['quick', 'thorough'], description: 'quick (default): 1 round, short answers, no cross-critique. thorough: 2 rounds where models see and rebut each other.' },
-        providers: { type: 'array', items: { type: 'string' }, description: 'Provider names (see e3d_list_providers). Default: this server\'s own default panel (see e3d_list_providers); never assumed.' },
+        providers: { type: 'array', items: { type: 'string' }, description: 'Provider identifiers. Defaults to the server’s configured panel.' },
         rounds: { type: 'integer', minimum: 1, maximum: LIMITS.rounds, description: 'Override the mode\'s round count. Stops early on convergence.' },
         max_words: { type: 'integer', minimum: 20, maximum: LIMITS.maxWords, description: 'Override the mode\'s per-provider per-round answer cap.' },
         include_transcript: { type: 'boolean', description: 'Also return the full transcript (large). Default false.' },
@@ -915,16 +915,16 @@ const TOOLS = [
   },
   {
     name: 'e3d_debate_start',
-    description: 'Start a debate that keeps running on the server, so a slow debate is never lost when you stop waiting. Same question and options as e3d_debate. Returns a debate_id right away; check on the debate with e3d_debate_status and get the answer with e3d_debate_result (both work later too, even after a disconnect). Use instead of e3d_debate for "thorough" debates or when your client gives up on long tool calls. Spends the account\'s credits once, when the debate finishes. ' + SEARCH_NOTICE,
+    description: 'Asynchronous multi-model debate that continues on the server after client disconnection. Returns a debate_id immediately. Supports quick and thorough modes, provider selection, round and answer limits, and web-search configuration. Account credits are charged once when the debate finishes. ' + SEARCH_NOTICE,
     inputSchema: {
       type: 'object',
       properties: {
         question: { type: 'string', description: 'The decision or question, with enough context for models that cannot see your code.' },
         mode: { type: 'string', enum: ['quick', 'thorough'], description: 'quick (default): 1 round, short answers. thorough: models also see and rebut each other.' },
-        providers: { type: 'array', items: { type: 'string' }, description: 'Provider names (see e3d_list_providers). The server may use fewer than you ask for.' },
+        providers: { type: 'array', items: { type: 'string' }, description: 'Provider identifiers. The server may select fewer providers than requested.' },
         rounds: { type: 'integer', minimum: 1, maximum: LIMITS.rounds, description: 'Override the mode\'s round count (the server may lower it).' },
         max_words: { type: 'integer', minimum: 20, maximum: LIMITS.maxWords, description: 'Override the per-answer word cap (the server may lower it).' },
-        include_transcript: { type: 'boolean', description: 'Accepted for compatibility with e3d_debate; ask e3d_debate_result for the transcript instead.' },
+        include_transcript: { type: 'boolean', description: 'Accepted for compatibility; transcripts are available in the stored debate result.' },
         web_search: { type: 'boolean', description: searchAvailability(process.env).on ? 'Let the API models (Anthropic, OpenAI, Google, xAI) search the web for current facts. Default true. false keeps the question away from search providers.' : 'Web search is off on this server; this setting has no effect.' },
       },
       required: ['question'],
@@ -939,8 +939,8 @@ const TOOLS = [
   },
   {
     name: 'e3d_debate_status',
-    description: 'Check on a debate started with e3d_debate_start: queued, running, done or failed, and when to check again. Free.',
-    inputSchema: { type: 'object', properties: { debate_id: { type: 'string', description: 'The id e3d_debate_start returned (dbt_...).' } }, required: ['debate_id'], additionalProperties: false },
+    description: 'Returns the state of an asynchronous debate (queued, running, done, or failed) and polling timing. Free.',
+    inputSchema: { type: 'object', properties: { debate_id: { type: 'string', description: 'Asynchronous debate identifier (dbt_...).' } }, required: ['debate_id'], additionalProperties: false },
     outputSchema: {
       type: 'object',
       properties: { debate_id: { type: 'string' }, status: { type: 'string', enum: ['queued', 'running', 'done', 'failed'] }, outcome: { type: ['string', 'null'] }, created_at: { type: 'string' }, finished_at: { type: ['string', 'null'] }, poll_after_sec: { type: 'integer' } },
@@ -950,11 +950,11 @@ const TOOLS = [
   },
   {
     name: 'e3d_debate_result',
-    description: 'Get the result of a debate started with e3d_debate_start: the final answer, the consensus level (full/majority/split), the dissent, and each model\'s final position. ALWAYS report the dissent and consensus level to the user. If the debate is still running, says when to check again. Free.',
+    description: 'Returns a stored debate result: final answer, consensus level (full/majority/split), unresolved dissent, and each model’s final position. An unfinished debate returns its current state and polling timing. Free.',
     inputSchema: {
       type: 'object',
       properties: {
-        debate_id: { type: 'string', description: 'The id e3d_debate_start returned (dbt_...).' },
+        debate_id: { type: 'string', description: 'Asynchronous debate identifier (dbt_...).' },
         include_transcript: { type: 'boolean', description: 'Also return the full transcript (large). Default false.' },
       },
       required: ['debate_id'],
@@ -996,7 +996,7 @@ const TOOLS = [
   },
   {
     name: 'e3d_ideas_list',
-    description: 'List the ideas tracked by e3d-pilot in a repo, optionally filtered by status, to find an idea id for e3d_provenance_trace. Read-only.',
+    description: 'List the ideas tracked by e3d-pilot in a repo, optionally filtered by status, including their idea identifiers. Read-only.',
     inputSchema: {
       type: 'object',
       properties: {
