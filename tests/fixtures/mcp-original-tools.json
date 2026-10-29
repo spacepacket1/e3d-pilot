@@ -7,7 +7,7 @@
       "openWorldHint": true,
       "idempotentHint": false
     },
-    "description": "Use when the user asks for a second opinion, wants to compare options, or has to decide between alternatives (for example \"JSON or SQLite?\", \"should we...\", architecture or library tradeoffs). Get a multi-model second opinion on a decision or design question. Independent AI models answer, and a synthesizer returns a final answer, a consensus level (full/majority/split), and any dissent, plus each model's final position. ALWAYS report the dissent and consensus level to the user -- the disagreement is the point; never present a split verdict as settled. Write a self-contained question: the models cannot see your code. mode \"quick\" (default): one round, usually well under a minute. mode \"thorough\": models also critique each other, a few minutes. Use for architectural choices, tradeoffs, and contestable judgment calls -- not for lookups or questions with an obvious answer. Spends the user's model credits. Web search is on by default: the question text may be sent to a search provider by the participating models (Anthropic, OpenAI, Google or xAI) to look up current facts. Pass web_search: false to turn it off for this debate.",
+    "description": "Multi-model second opinions on decisions, comparisons, architecture, and design tradeoffs. Models answer independently; synthesis returns a conclusion, consensus level (full/majority/split), unresolved dissent, and each model\u2019s final position. The question supplies the context available to the models; repository contents are not automatically available. Quick mode defaults to one round without cross-critique; thorough mode defaults to two rounds with cross-critique. Debates consume model credits. Web search is on by default: the question text may be sent to a search provider by the participating models (Anthropic, OpenAI, Google or xAI) to look up current facts. The web_search option set to false disables search for the debate.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
@@ -30,7 +30,7 @@
           "type": "string"
         },
         "providers": {
-          "description": "Provider names (see e3d_list_providers). Default: this server's own default panel (see e3d_list_providers); never assumed.",
+          "description": "Provider identifiers. Defaults to the server\u2019s configured panel.",
           "items": {
             "type": "string"
           },
@@ -287,7 +287,7 @@
       "readOnlyHint": true,
       "title": "List ideas"
     },
-    "description": "List the ideas tracked by e3d-pilot in a repo, optionally filtered by status, to find an idea id for e3d_provenance_trace. Read-only.",
+    "description": "List the ideas tracked by e3d-pilot in a repo, optionally filtered by status, including their idea identifiers. Read-only.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
