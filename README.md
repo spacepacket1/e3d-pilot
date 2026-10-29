@@ -136,7 +136,7 @@ In Copilot agent mode (or any client), ask: *"Before you pick a storage layer, r
 
 ### Cost and limits
 
-- `quick` debates take seconds to a minute and `thorough` ones a few minutes; both spend **your** model credits. The server caps `e3d_debate` with `E3D_MCP_MAX_ROUNDS` (3), `E3D_MCP_MAX_PROVIDERS` (4), `E3D_MCP_MAX_CONCURRENT` (2), and `E3D_MCP_TIMEOUT_SEC` (900).
+- `quick` debates take seconds to a minute and `thorough` ones a few minutes; both spend **your** model credits. The server caps `e3d_debate` with `E3D_MCP_MAX_ROUNDS` (3), `E3D_MCP_MAX_PROVIDERS` (4), `E3D_MCP_MAX_CONCURRENT` (2), and `E3D_MCP_TIMEOUT_SEC` (900). When every slot is busy a call waits its turn, first in and first out, for up to `E3D_MCP_QUEUE_WAIT_SEC` (90); `e3d_debate_start` queues without holding the call.
 - It uses whatever provider CLIs and keys are in the server's environment (see `e3d-pilot providers list`).
 - The Copilot *coding agent* runs on GitHub-hosted runners, where those provider CLIs aren't installed. Use the local (stdio) setup above for now.
 
@@ -321,6 +321,8 @@ Every limit refuses a new start before anything is reserved: the admission slots
 | Variable | Default | Meaning |
 |---|---|---|
 | `E3D_MCP_RUNS_PER_PRINCIPAL` | 3 | Async debates one account may have queued or running at once. Beyond that, a start is refused as busy and nothing is reserved. |
+| `E3D_MCP_QUEUE_WAIT_SEC` | 90 | How long an `e3d_debate` call waits in line (first in, first out) when every execution slot is busy, instead of failing. `0` turns waiting off: the call fails at once as busy. A call held in line is silent, so keep this plus `E3D_MCP_TIMEOUT_SEC` under the reverse proxy's read timeout (`E3D_MCP_PROXY_READ_SEC`, default 300, only used for a startup warning). |
+| `E3D_MCP_QUEUE_MAX` | 50 | How many `e3d_debate` calls may wait in line at once; the next one fails at once with `concurrency_limit` and a wait estimate. `0` turns waiting off. |
 | `E3D_MCP_RUNS_GLOBAL` | 8 | Async debates queued or running on this server at once, across all accounts. Debates also share the `E3D_MCP_MAX_CONCURRENT` execution slots with `e3d_debate`. |
 | `E3D_MCP_RUNS_KEEP_PER_PRINCIPAL` | 50 | Runs kept per account. The oldest finished runs are removed first; a run whose finalize has not been delivered is never removed. |
 | `E3D_MCP_RUNS_TTL_SEC` | 86400 (24 h) | How long a finished run is kept locally. The service holds the durable copy. |
