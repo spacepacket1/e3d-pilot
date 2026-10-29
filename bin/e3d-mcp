@@ -33,6 +33,7 @@ import { createSampling } from '../lib/mcp/sampling.js';
 import { listPrompts, getPrompt } from '../lib/mcp/prompts.js';
 import { chooseVoices, independence, isSampling } from '../lib/mcp/voices.js';
 import { startHttpServer } from '../lib/mcp/http.js';
+import { createSlots } from '../lib/mcp/slots.js';
 import { createUsage, usageFromTranscript, worstCase, usageTool, usageHandler } from '../lib/mcp/usage.js';
 import { webSearchConfig, sanitizeText, cleanUrl, hostOf, API_PROVIDERS, PRIVACY_NOTICE, searchAvailability } from '../lib/debate/websearch.mjs';
 import { createExternalAuth, validateConfig as validateAuthConfig } from '../lib/mcp/external-auth.js';
@@ -64,10 +65,18 @@ const envInt = (name, dflt) => {
   const n = Number.parseInt(process.env[name] ?? '', 10);
   return Number.isFinite(n) && n > 0 ? n : dflt;
 };
+const envIntZero = (name, dflt) => {
+  const n = Number.parseInt(process.env[name] ?? '', 10);
+  return Number.isFinite(n) && n >= 0 ? n : dflt;
+};
 const LIMITS = {
   rounds: envInt('E3D_MCP_MAX_ROUNDS', 3),
   providers: envInt('E3D_MCP_MAX_PROVIDERS', 4),
   concurrent: envInt('E3D_MCP_MAX_CONCURRENT', 2),
+  // A debate that finds every slot busy waits its turn (first in, first out) instead of failing: up to queueWaitMs, and only while fewer than
+  // queueMax callers are already waiting. E3D_MCP_QUEUE_WAIT_SEC=0 turns waiting off (the call fails at once, as before).
+  queueWaitMs: envIntZero('E3D_MCP_QUEUE_WAIT_SEC', 90) * 1000,
+  queueMax: envIntZero('E3D_MCP_QUEUE_MAX', 50),
   // Hosted: stay under typical load-balancer idle timeouts unless the operator says otherwise.
   timeoutMs: envInt('E3D_MCP_TIMEOUT_SEC', HTTP_MODE ? 120 : 900) * 1000,
   maxWords: 600,
@@ -76,7 +85,17 @@ const LIMITS = {
   // so the debate is cancelled and reported instead of running on unseen and charging calls nobody sees.
   samplingTimeoutMs: envInt('E3D_MCP_SAMPLING_TIMEOUT_SEC', 150) * 1000,
 };
-let activeDebates = 0;
+// Execution slots shared by e3d_debate and the async runs. Logs counts and durations only: never a principal or a question.
+// (`runs`, the async run store, is declared below: a freed slot with nobody waiting lets it start the next queued run)
+const slots = createSlots({
+  concurrent: LIMITS.concurrent, queueMax: LIMITS.queueMax, waitMs: LIMITS.queueWaitMs, onFree: () => runs?.pump(),
+  onEvent: (e) => {
+    const state = `${e.active}/${e.concurrent} running, ${e.waiting} waiting`;
+    if (e.type === 'granted' && e.waitedMs > 0) log(`debate slot: granted after waiting ${Math.round(e.waitedMs / 1000)}s (${state})`);
+    else if (e.type === 'released') log(`debate slot: released after ${Math.round(e.runMs / 1000)}s`);
+    else if (e.type === 'refused') log(`debate slot: refused (${e.reason}${e.waitedMs ? ` after ${Math.round(e.waitedMs / 1000)}s` : ''}; ${state})`);
+  },
+});
 
 const send = (msg) => process.stdout.write(`${JSON.stringify(msg)}\n`);
 // quick = one round of independent answers + one synthesis call (fast, no cross-critique);
@@ -531,7 +550,7 @@ async function reportUsage(handle, file) {
 }
 
 // Runs one reserved debate to its end and commits what actually happened (shared by e3d_debate and the async runner). The
-// caller holds an execution slot (activeDebates). onStarted runs after the durable "models started" marker
+// caller holds an execution slot (slots.acquire). onStarted runs after the durable "models started" marker
 // (metering.start) and before any model is invoked. signal (async runs) stops the debate: a cancelled debate is an error
 // without a result. Returns { startFailed } or the outcome, with `stored` holding the result in the shape the service
 // stores (ok outcomes only).
@@ -662,10 +681,17 @@ async function toolDebate(args, progress, ctx) {
   const rsv = await metering.begin(principal, worst, { tool: 'e3d_debate', debate: { question, providers, rounds }, ...(agentMeta ?? (ctx?.principal && quoteOf(plan) ? { quote: quoteOf(plan) } : {})) });
   if (!rsv.ok) return agent ? errorResult(agentBeginError(rsv)) : beginError(rsv);
   const { handle } = rsv;
-  if (activeDebates >= LIMITS.concurrent) { await metering.abort(handle, 'busy').catch(() => {}); return agent ? errorResult(agentError('concurrency_limit', { message: `${LIMITS.concurrent} debates already running on this server` })) : text(`error: ${LIMITS.concurrent} debates already running; retry shortly`, true); }
-  activeDebates++;
+  // Take a slot, waiting in line (first in, first out) when every slot is busy. The reservation is held meanwhile and released if the wait ends without one.
+  const slot = await slots.acquire();
+  if (!slot.ok) {
+    await metering.abort(handle, 'busy').catch(() => {});
+    const why = slot.reason === 'timeout' ? `waited ${LIMITS.queueWaitMs / 1000}s for a free slot` : slot.reason === 'queue_full' ? `${slot.waiting} debates are already waiting` : `${LIMITS.concurrent} debates are already running`;
+    return agent
+      ? errorResult(agentError('concurrency_limit', { message: `${why}; nothing was charged`, retry_after_seconds: slot.estimateSec }))
+      : text(`error: ${why}; nothing was charged. Retry in about ${slot.estimateSec}s, or use e3d_debate_start, which queues the debate and returns at once.`, true);
+  }
   let x;
-  try { x = await executeDebate(plan, handle, ctx, { progress }); } finally { activeDebates--; runs?.pump(); }
+  try { x = await executeDebate(plan, handle, ctx, { progress }); } finally { slot.release(); }
   if (x.startFailed) return agent ? errorResult(agentError('service_unavailable', { message: 'billing is temporarily unavailable' })) : text('error: billing: temporarily unavailable', true);
   const { r, timeoutMs, transcript, spent, verdict, roundsRan, positions, samplingModels, budget, billing, webSearch, seats } = x;
   if (agent && r.timedOut) return errorResult(agentError('debate_timeout', { message: `the debate timed out after ${timeoutMs / 1000} s and was stopped; ${spent.calls} model call(s) had already answered and were counted. Use a new idempotency_key with mode quick or fewer models` }));
@@ -1215,6 +1241,9 @@ async function startAuthHook() {
   if (errors.length) throw new Error(`external auth hook: refusing to start: ${errors.join('; ')}`);
   if (process.env.E3D_MCP_AUTH_TOKENS) log('warning: E3D_MCP_AUTH_TOKENS is ignored because E3D_MCP_AUTH_URL is set (keys are checked by the auth service)');
   const external = createExternalAuth({ log, agent: AGENT_ON });
+  // A call held in line is silent (hosted connections send no progress), and a reverse proxy drops a connection that sends nothing for its read timeout.
+  const proxyReadMs = envInt('E3D_MCP_PROXY_READ_SEC', 300) * 1000;
+  if (LIMITS.queueWaitMs + LIMITS.timeoutMs > proxyReadMs) log(`warning: the queue wait (${LIMITS.queueWaitMs / 1000}s) plus the debate timeout (${LIMITS.timeoutMs / 1000}s) is longer than the proxy read timeout (${proxyReadMs / 1000}s, E3D_MCP_PROXY_READ_SEC): a call that waits and then runs long can be cut off by the proxy while the debate still runs. Lower E3D_MCP_TIMEOUT_SEC or E3D_MCP_QUEUE_WAIT_SEC.`);
   // E3D_MCP_PANEL=1: every hosted debate asks billing for the account's panel first (refused on any failure).
   if (PANEL_CONFIG.panel) panelClient = createPanelClient({ log });
   if (PRICING_CONFIG.mode === 'per_token') pricingClient = createPricingClient({ log });
@@ -1223,10 +1252,11 @@ async function startAuthHook() {
   metering = createMetering({ localUsage: usage, external, outbox, log, dir: usage.dir });
   // Async runs share the debate execution slots (LIMITS.concurrent) with e3d_debate.
   runsConfig = runsChecked.config;
+  const execHeld = []; // releases of the slots the async runs hold (a run's own release is never mixed up with a caller's)
   const store = createRuns({ dir: usage.dir, config: runsConfig, metering, outbox, external, log,
     execute: runAsyncDebate,
-    acquireExec: () => { if (activeDebates >= LIMITS.concurrent) return false; activeDebates++; return true; },
-    releaseExec: () => { activeDebates--; } });
+    acquireExec: () => { const r = slots.tryAcquire(); if (!r) return false; execHeld.push(r); return true; },
+    releaseExec: () => { execHeld.pop()?.(); } });
   outbox.setFinalizeHook?.(({ debate_id }) => store.purgeUnstored(debate_id));
   await store.load();
   // queued runs that never started their models keep their intents (resumed below); every other intent is reconciled here
