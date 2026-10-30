@@ -1080,6 +1080,12 @@ const HANDLERS = {
 };
 
 // A tool the connection may use. e3d_quote is free and only prices what e3d_debate runs, so whoever may debate may quote.
+// Phase 0 of debate threads (e3d-pilot-cloud docs/specs/debate-threads.md section 9): one log line per hosted debate call saying which client
+// and which session it came from, so the counts show whether calls from one chat share a session. The session is a one-way digest and the
+// client name is the self-reported clientInfo.name cut to safe characters; never a principal, a question or an answer. Nothing is grouped on it.
+const PROBED_TOOLS = new Set(['e3d_debate', 'e3d_debate_start', 'e3d_quote']);
+const probeClient = (info) => String(info?.name ?? 'unknown').replace(/[^A-Za-z0-9._-]+/g, '_').slice(0, 40) || 'unknown';
+
 const permits = (conn, name) => !conn.allowed || conn.allowed.has(name) || (name === 'e3d_quote' && conn.allowed.has('e3d_debate'));
 
 async function handle(msg, conn = stdioConn) {
@@ -1127,6 +1133,7 @@ async function handle(msg, conn = stdioConn) {
       const token = params?._meta?.progressToken;
       const progress = token === undefined || conn.hosted ? undefined : (n, message) =>
         conn.send({ jsonrpc: '2.0', method: 'notifications/progress', params: { progressToken: token, progress: n, message } });
+      if (conn.hosted && PROBED_TOOLS.has(params.name)) log(`thread-probe: tool=${params.name} client=${probeClient(session.clientInfo)} session=${conn.sessionDigest ?? 'none'}`);
       try {
         await session.rootsReady;
         return reply(await handler(params.arguments ?? {}, progress, { session, rpc: conn.rpc, sampling, principal: conn.principal, samplingEnv: (tag) => sampling.env(session, { tag }) }));

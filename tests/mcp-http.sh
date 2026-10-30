@@ -211,6 +211,22 @@ SD2="$(session D2 -)"
 r="$(tool D2 - "$SD2" e3d_debate '{"question":"slow","providers":["claude","codex"]}')"; assert_eq "$(status "$r")" "504" "per-request timeout"
 
 # ---------------- server E: session cap ----------------
+# thread probe (debate threads, phase 0): a debate call logs the client and a digest of its session, never the session id, the principal or the question
+start P E3D_MCP_AUTH_TOKENS="$TOKENS"
+SP1="$(session P "$ALICE")"; SP2="$(session P "$ALICE")"
+tool P "$ALICE" "$SP1" e3d_debate '{"question":"SECRETQ one","providers":["claude","codex"]}' >/dev/null
+tool P "$ALICE" "$SP1" e3d_debate '{"question":"SECRETQ two","providers":["claude","codex"]}' >/dev/null
+tool P "$ALICE" "$SP2" e3d_debate '{"question":"SECRETQ three","providers":["claude","codex"]}' >/dev/null
+tool P "$ALICE" "$SP1" e3d_usage '{}' >/dev/null
+probes="$(grep '^.*thread-probe:' "$TMP/P.err" || true)"
+assert_eq "$(grep -c . <<< "$probes")" "3" "one probe line per debate call, none for other tools"
+assert_contains "$probes" "tool=e3d_debate client=curl-test session="
+assert_eq "$(sed -E 's/.*session=//' <<< "$probes" | sort -u | wc -l | tr -d ' ')" "2" "two sessions, two digests"
+assert_eq "$(sed -E 's/.*session=//' <<< "$probes" | sort | uniq -c | sort -rn | head -1 | awk '{print $1}')" "2" "calls of one session share a digest"
+assert_not_contains "$(cat "$TMP/P.err")" "$SP1" "the session id is never logged"
+assert_not_contains "$(cat "$TMP/P.err")" "SECRETQ" "no question is logged"
+assert_not_contains "$probes" "alice" "no principal is logged"
+
 start E E3D_MCP_MAX_SESSIONS=2
 session E - >/dev/null; session E - >/dev/null
 r="$(http E -X POST "${J[@]}" -d "$INIT")"; assert_eq "$(status "$r")" "503" "third session over the cap"
