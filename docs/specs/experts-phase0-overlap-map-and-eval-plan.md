@@ -22,14 +22,16 @@ Phase 0 asks three things before any code: what already exists, what each propos
 ## 2. Decisions to approve (my recommendation first)
 
 - **D1. Expert, seat and panel.** A *seat* is a provider adapter (as today). An *expert* is a versioned lens plus instructions, tools and model preferences. A *panel* is a list of seats; a *council recipe* is a panel whose seats name experts. Recommendation: adopt these four words exactly and use them in code and docs.
-- **D2. One schema.** `expert/v1` in #50 is a superset of the October file format. Keep the October fields (`models`, `tools`, `limits`, `tasks`) and add `owner_id`, `visibility`, `required_evidence`, `tests`, `license`, `provenance`, `content_hash`. **Drop `performance` from the definition**: measured results live only in the append-only `EvaluationRecord`, never hand-edited.
-- **D3. Where experts live.** Phase 1: files, in the engine (`lib/specialists/*.yaml`, user and repo overrides as the October design says). No cloud registry before Phase 4.
+- **D2. One schema.** `expert/v1` in #50 is a superset of the October file format. Keep the October fields (`models`, `tools`, `limits`, `tasks`) and add `owner_id`, `visibility`, `required_evidence`, `tests`, `license`, `provenance`, `content_hash`. **Drop `performance` from the definition**: measured results live only in the append-only `EvaluationRecord`, never hand-edited. *(Amended 2026-11-01: the definition is a standard skill folder plus a JSON sidecar; see D6 and the Phase 1 spec.)*
+- **D3. Where experts live.** Phase 1: files, in the engine (`lib/specialists/<name>/SKILL.md`, user and repo overrides as the October design says). No cloud registry before Phase 4.
 - **D4. The vendor invariant.** An expert's `models` list is resolved against the account's panel: unavailable or not-allowed vendors are dropped in order, and if none is left the run **refuses** (never substitutes), as `lib/mcp/panel.js` already does for panels. Recorded in the receipt.
 - **D5. MCP pass-through.** Settle A or B before Phase 2. A: experts are CLI and local-engine only, and hosted assistants hand the user a link. B: extend billing's agent routes once, for `challenge_of` and the expert parameters together. Recommendation: B, but only when Phase 2 starts, so the change is made once.
-- **D6. Agent Skills interop.** Keep `expert/v1` as our native format and add a **lossy, inert** bridge to the standard `SKILL.md` format: **export in Phase 1**, an **inspect-only import** (parse, validate, preview, never run) in Phase 1, **import-and-run no earlier than Phase 2** and only after the injection fixtures pass. Imports pass a **license gate**. Detail below.
-- **D7. Where skills are published.** Not into Anthropic's repository. **First-party skills** (our lenses, exported by D6) go to a **separate public repository**, not a folder in the engine repo. **User-published experts stay in the Pilot registry** (Cloud, Phase 4), which is the authoritative copy. A **read-only, opt-in, curated GitHub mirror** may be generated from it later for standard-tool installs. Detail below.
+- **D6. Agent Skills interop.** **Amended 2026-11-01 (owner): the standard `SKILL.md` format is the native format.** An expert is a standard skill folder plus an optional `e3d/expert.json` sidecar for what the standard has no place for; there is no separate export conversion ("export" is a validated copy). **Inspect-only import** (parse, validate, preview, never run) in Phase 1, **import-and-run no earlier than Phase 2** and only after the injection fixtures pass. Imports pass a **license gate**. Detail below.
+- **D7. Where skills are published.** Not into Anthropic's repository. **First-party skills** (our lenses, already standard skill folders) go to a **separate public repository**, not a folder in the engine repo. **User-published experts stay in the Pilot registry** (Cloud, Phase 4), which is the authoritative copy. A **read-only, opt-in, curated GitHub mirror** may be generated from it later for standard-tool installs. Detail below.
 
 ### D6 detail: Agent Skills and `expert/v1`
+
+*Amended 2026-11-01: the standard format is now native. Read the right-hand column below as "where this field lives in the skill folder" (the folder's `SKILL.md`, or the `e3d/expert.json` sidecar), and "export" as a validated copy. The Phase 1 spec (`experts-phase1-private-experts-spec.md`) is the working definition; this table is the original reasoning.*
 
 Why now: Anthropic donated the Agent Skills standard to the Agentic AI Foundation on 2026-10-22 (reported by several outlets; I did not read the primary announcement). The format spec is at `https://agentskills.io/specification` **[E: read 2026-11-01, no version or date shown on the page]**. A skill is a directory with a required `SKILL.md` (YAML frontmatter plus Markdown) and optional `scripts/`, `references/`, `assets/`.
 
@@ -45,7 +47,7 @@ Why now: Anthropic donated the Agent Skills standard to the Agentic AI Foundatio
 | `scripts/` | executable code | None on export. On import: stored as inert text, flagged "contains scripts", **never executed**, excluded from the run by default |
 | `references/`, `assets/` | on-demand docs and files | Text only, size-capped, as untrusted data. Binary assets rejected at first |
 
-What does **not** survive an export: `model_preferences`, `tests`, `output_schema`, visibility, moderation status, and above all the **measured record** (`EvaluationRecord`). That loss is deliberate and is the point of the product: the standard carries the instructions, we carry whether they work. On re-import into Pilot the `e3d.*` keys are treated as **claims** and checked against the content hash, never trusted.
+What is **not** in the folder: moderation status and, above all, the **measured record** (`EvaluationRecord`), which lives in the registry. That is the point of the product: the standard carries the instructions, we carry whether they work. On import into Pilot the `e3d.*` keys and the sidecar are treated as **claims** and checked against the content hash, never trusted; a folder from elsewhere has neither and still imports as plain instructions.
 
 The spec has **no** versioning, trust or security section **[E]**, so those stay ours: pinned content hash, an explicit user action to fetch (no fetch on install), a preview before any run, imported text placed in a delimited untrusted block and **never in the judge or synthesizer role**, and the prompt-injection fixtures #50 already requires.
 
@@ -75,12 +77,15 @@ So a Phase 3 that runs each task once per arm cannot support "the council helps"
 
 ## 4. Evaluation plan (to pre-register before any result is seen)
 
+*Clarified 2026-11-01: this plan costs the **evaluation** of the feature (does a council of experts help?). It is not the cost of **developing** it (Phase 1 makes no model calls) and not the per-debate price a user pays (quoted per seat, Phase 2). It is optional until we want to claim a gain or open Phase 4.*
+
 **Arms, per task**
 - A: the strongest single model, with the same tools and evidence.
 - B: today's default panel (same prompt for every seat).
 - C: a random eligible expert preset.
 - D: the advisory Auto Council.
-- E (control): the **same** single model sampled three times and merged. This separates "more voices" from "different vendors and lenses".
+- E (control): the **same** single model sampled three times and merged. This separates "more voices" from "different vendors".
+- F (control): the **same** single model with **three different lenses**. This isolates what *skill selection* adds with the vendor held fixed. F against E isolates the lenses; D against F isolates the vendor spread. Without F we cannot say a gain came from skills rather than from mixing models.
 
 **Tasks.** 40 to 50, in bands: spec review, diff review, architecture decision, risk review, claim checking with subtle planted errors, forecasts that will resolve. Prefer our own real artifacts with later-known outcomes (specs that were revised, changes that were reverted) so ground truth exists. Keep private repos out of any public fixture.
 
@@ -88,7 +93,7 @@ So a Phase 3 that runs each task once per arm cannot support "the council helps"
 
 **Repeats.** At least 3 per task per arm, to measure noise.
 
-**Cost, in tokens only.** Using the pilot's ~44 thousand tokens a debate for the multi-seat arms (B, C, D): 45 tasks x 3 arms x 3 repeats is about 405 debates, roughly **18 million tokens**, plus the cheaper A and E arms and grading. The owner approves a cap before any run.
+**Cost, in tokens only.** Using the pilot's ~44 thousand tokens a debate for the multi-seat arms (B, C, D, F): 45 tasks x 4 arms x 3 repeats is about 540 debates, roughly **24 million tokens** (that figure is for the pilot's 3 voices; Pilot's own council has 4 vendor families, so I expect about 55 to 60 thousand tokens a debate **[G]** and roughly **32 million** for the full run), plus the cheaper A and E arms and grading. The owner approves a cap before any run.
 
 **Stage 0 (cheap, first):** 12 tasks x 3 repeats on arms A and B only. Output: the noise (standard deviation of the per-task difference), which tasks separate the arms, and a real token cost. Decide the full run from this, not from a guess.
 
@@ -100,9 +105,11 @@ So a Phase 3 that runs each task once per arm cannot support "the council helps"
 
 ## 5. Phase 1, narrowed
 
-Engine only, flag off by default: the 12 October lenses as files, the validator, load order and receipt fields (D2, D3, D4), `--panel` and `--specialist` on the CLI, an additive receipt, **`SKILL.md` export and an inspect-only import (D6)**. **Out:** cloud, billing, hosted MCP parameters, publishing, reactions, any marketplace surface. Existing `e3d_debate` and `e3d-debate` behavior unchanged when no expert is named.
+Engine only, flag off by default: 8 starter lenses (of the October 12) as standard skill folders, the validator, load order and receipt fields (D2, D3, D4), `--panel` and `--specialist` on the CLI, an additive receipt, and a validated-copy command (D6). Full definition: `experts-phase1-private-experts-spec.md`. **Out:** cloud, billing, hosted MCP parameters, publishing, reactions, any marketplace surface. Existing `e3d_debate` and `e3d-debate` behavior unchanged when no expert is named.
 
 ## 6. For the owner
+
+*Answered 2026-11-01: D1 to D7 approved with D6 amended (standard format native); D5 is option B, starting at Phase 2; Phase 1 starts now; Phase 4 waits for the Challenge test; Stage 0 token cap and grading plan are in section 9 of the Phase 1 spec. The list below is the original question.*
 
 1. Approve D1 to D7 (or change them). D6 in one line: our format stays native; export to the standard `SKILL.md` in Phase 1; import is inspect-only at first, never runs scripts or pre-approves tools, and passes a license gate. D7 in one line: publish our own pack from a separate repository, keep user-published experts in the Pilot registry, and consider an opt-in read-only mirror later.
 2. A or B for MCP pass-through (D5), and whether to settle it now or at Phase 2.
