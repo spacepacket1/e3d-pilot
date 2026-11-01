@@ -26,6 +26,31 @@ Phase 0 asks three things before any code: what already exists, what each propos
 - **D3. Where experts live.** Phase 1: files, in the engine (`lib/specialists/*.yaml`, user and repo overrides as the October design says). No cloud registry before Phase 4.
 - **D4. The vendor invariant.** An expert's `models` list is resolved against the account's panel: unavailable or not-allowed vendors are dropped in order, and if none is left the run **refuses** (never substitutes), as `lib/mcp/panel.js` already does for panels. Recorded in the receipt.
 - **D5. MCP pass-through.** Settle A or B before Phase 2. A: experts are CLI and local-engine only, and hosted assistants hand the user a link. B: extend billing's agent routes once, for `challenge_of` and the expert parameters together. Recommendation: B, but only when Phase 2 starts, so the change is made once.
+- **D6. Agent Skills interop.** Keep `expert/v1` as our native format and add a **lossy, inert** bridge to the standard `SKILL.md` format: **export in Phase 1**, an **inspect-only import** (parse, validate, preview, never run) in Phase 1, **import-and-run no earlier than Phase 2** and only after the injection fixtures pass. Detail below.
+
+### D6 detail: Agent Skills and `expert/v1`
+
+Why now: Anthropic donated the Agent Skills standard to the Agentic AI Foundation on 2026-10-22 (reported by several outlets; I did not read the primary announcement). The format spec is at `https://agentskills.io/specification` **[E: read 2026-11-01, no version or date shown on the page]**. A skill is a directory with a required `SKILL.md` (YAML frontmatter plus Markdown) and optional `scripts/`, `references/`, `assets/`.
+
+| `SKILL.md` | Rule in the spec | `expert/v1` mapping |
+| --- | --- | --- |
+| `name` (required) | 1-64 characters, lowercase letters, digits and hyphens, no leading, trailing or double hyphen, **must equal the directory name** | Our `id` is `expert.<namespace>.<slug>` (has dots), so export the **slug** only and put the namespace in `metadata`. Reject an import whose name breaks the rule |
+| `description` (required) | 1-1024 characters; what it does and when to use it | Our `description` plus the task contracts. Truncate on export and say so |
+| `license` | name or bundled file | `license` |
+| `compatibility` | 1-500 characters, environment needs | Optional: required evidence and tools in words |
+| `metadata` | string keys to **string** values | `e3d.expert.version`, `e3d.expert.hash`, `e3d.expert.lens`, `e3d.expert.schema`, tags joined as a string. Lists must be flattened |
+| `allowed-tools` (experimental) | space-separated tools **pre-approved** to run | **Never exported by default; ignored on import** (kept only as a *claim* in `requested_capabilities`). Our rule stays: a manifest is not an authorization token |
+| Body | no format limit; under 500 lines and about 5,000 tokens recommended | Our method, avoid and lens text, within those sizes |
+| `scripts/` | executable code | None on export. On import: stored as inert text, flagged "contains scripts", **never executed**, excluded from the run by default |
+| `references/`, `assets/` | on-demand docs and files | Text only, size-capped, as untrusted data. Binary assets rejected at first |
+
+What does **not** survive an export: `model_preferences`, `tests`, `output_schema`, visibility, moderation status, and above all the **measured record** (`EvaluationRecord`). That loss is deliberate and is the point of the product: the standard carries the instructions, we carry whether they work. On re-import into Pilot the `e3d.*` keys are treated as **claims** and checked against the content hash, never trusted.
+
+The spec has **no** versioning, trust or security section **[E]**, so those stay ours: pinned content hash, an explicit user action to fetch (no fetch on install), a preview before any run, imported text placed in a delimited untrusted block and **never in the judge or synthesizer role**, and the prompt-injection fixtures #50 already requires.
+
+A wrapper expert (an existing skill plus our lens, tools, tests and record) records `provenance.skill_source` as repository, path and content hash, so the wrapped skill is pinned the same way as any other input.
+
+Tests: a conformance check that every exported skill passes `skills-ref validate` (the reference validator named in the spec) or, if it cannot be used, our own check of the rules in the table, plus a test that an imported `allowed-tools` grants nothing. The spec can change (it now sits under a foundation), so we record the date we read it (2026-11-01) and fail loudly on a frontmatter field we do not know rather than guess.
 
 ## 3. What the October experiment tells us about measuring
 
@@ -64,15 +89,15 @@ So a Phase 3 that runs each task once per arm cannot support "the council helps"
 
 ## 5. Phase 1, narrowed
 
-Engine only, flag off by default: the 12 October lenses as files, the validator, load order and receipt fields (D2, D3, D4), `--panel` and `--specialist` on the CLI, and an additive receipt. **Out:** cloud, billing, hosted MCP parameters, publishing, reactions, any marketplace surface. Existing `e3d_debate` and `e3d-debate` behavior unchanged when no expert is named.
+Engine only, flag off by default: the 12 October lenses as files, the validator, load order and receipt fields (D2, D3, D4), `--panel` and `--specialist` on the CLI, an additive receipt, **`SKILL.md` export and an inspect-only import (D6)**. **Out:** cloud, billing, hosted MCP parameters, publishing, reactions, any marketplace surface. Existing `e3d_debate` and `e3d-debate` behavior unchanged when no expert is named.
 
 ## 6. For the owner
 
-1. Approve D1 to D5 (or change them).
+1. Approve D1 to D6 (or change them). D6 in one line: our format stays native; export to the standard `SKILL.md` in Phase 1; import is inspect-only at first and never runs scripts or pre-approves tools.
 2. A or B for MCP pass-through (D5), and whether to settle it now or at Phase 2.
 3. Whether Phase 1 starts now (engine-only, cheap) or waits for the 5-debate Challenge test to show whether strangers participate. My view: Phase 1 can start now because it needs no cloud change and no public surface; **Phase 4 should wait** for the test.
 4. A token cap for Stage 0, and your time to grade.
 
 ## 7. Not verified
 
-I have not opened the cloud PRs #272, #279, #280, #283, #284, #286, #290 and #291 that #50 cites, so I do not vouch for their descriptions. I read only the headings of the panel spec's pricing and audit-field sections. Nothing here was measured; the token figures are from the October results file.
+I have not opened the cloud PRs #272, #279, #280, #283, #284, #286, #290 and #291 that #50 cites, so I do not vouch for their descriptions. For D6 I read the format spec page once (through a read-only fetch) and did not read the foundation announcement, the `skills-ref` validator or any real skill; the install and size figures quoted in the news are second-hand. I read only the headings of the panel spec's pricing and audit-field sections. Nothing here was measured; the token figures are from the October results file.
