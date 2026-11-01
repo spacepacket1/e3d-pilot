@@ -82,7 +82,8 @@ So a Phase 3 that runs each task once per arm cannot support "the council helps"
 - B: today's default panel (same prompt for every seat).
 - C: a random eligible expert preset.
 - D: the advisory Auto Council.
-- E (control): the **same** single model sampled three times and merged. This separates "more voices" from "different vendors and lenses".
+- E (control): the **same** single model sampled three times and merged. This separates "more voices" from "different vendors".
+- F (control): the **same** single model with **three different lenses**. This isolates what *skill selection* adds with the vendor held fixed. F against E isolates the lenses; D against F isolates the vendor spread. Without F we cannot say a gain came from skills rather than from mixing models.
 
 **Tasks.** 40 to 50, in bands: spec review, diff review, architecture decision, risk review, claim checking with subtle planted errors, forecasts that will resolve. Prefer our own real artifacts with later-known outcomes (specs that were revised, changes that were reverted) so ground truth exists. Keep private repos out of any public fixture.
 
@@ -90,7 +91,7 @@ So a Phase 3 that runs each task once per arm cannot support "the council helps"
 
 **Repeats.** At least 3 per task per arm, to measure noise.
 
-**Cost, in tokens only.** Using the pilot's ~44 thousand tokens a debate for the multi-seat arms (B, C, D): 45 tasks x 3 arms x 3 repeats is about 405 debates, roughly **18 million tokens**, plus the cheaper A and E arms and grading. The owner approves a cap before any run.
+**Cost, in tokens only.** Using the pilot's ~44 thousand tokens a debate for the multi-seat arms (B, C, D, F): 45 tasks x 4 arms x 3 repeats is about 540 debates, roughly **24 million tokens**, plus the cheaper A and E arms and grading. The owner approves a cap before any run.
 
 **Stage 0 (cheap, first):** 12 tasks x 3 repeats on arms A and B only. Output: the noise (standard deviation of the per-task difference), which tasks separate the arms, and a real token cost. Decide the full run from this, not from a guess.
 
