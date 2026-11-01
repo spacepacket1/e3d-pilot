@@ -1,0 +1,13 @@
+{
+  "schema": "expert/v1",
+  "tasks": [
+    "review-spec",
+    "find-gaps"
+  ],
+  "tools": "none",
+  "models": [
+    {
+      "provider": "codex"
+    }
+  ]
+}
