@@ -91,7 +91,7 @@ So a Phase 3 that runs each task once per arm cannot support "the council helps"
 
 **Repeats.** At least 3 per task per arm, to measure noise.
 
-**Cost, in tokens only.** Using the pilot's ~44 thousand tokens a debate for the multi-seat arms (B, C, D, F): 45 tasks x 4 arms x 3 repeats is about 540 debates, roughly **24 million tokens**, plus the cheaper A and E arms and grading. The owner approves a cap before any run.
+**Cost, in tokens only.** Using the pilot's ~44 thousand tokens a debate for the multi-seat arms (B, C, D, F): 45 tasks x 4 arms x 3 repeats is about 540 debates, roughly **24 million tokens** (that figure is for the pilot's 3 voices; Pilot's own council has 4 vendor families, so I expect about 55 to 60 thousand tokens a debate **[G]** and roughly **32 million** for the full run), plus the cheaper A and E arms and grading. The owner approves a cap before any run.
 
 **Stage 0 (cheap, first):** 12 tasks x 3 repeats on arms A and B only. Output: the noise (standard deviation of the per-task difference), which tasks separate the arms, and a real token cost. Decide the full run from this, not from a guess.
 
