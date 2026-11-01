@@ -25,6 +25,19 @@ DEBATE_PROVIDERS=(claude codex)
 DEBATE_ROUNDS=2
 DEBATE_SYNTHESIZER="claude"
 DEBATE_MAX_WORDS=200
+# Experts (docs/specs/experts-phase1-private-experts-spec.md): off unless E3D_SPECIALISTS=1. Every variable below stays empty, and nothing
+# below changes a prompt, a flag or a receipt, unless one of the --panel / --specialist / --*-specialist flags is given.
+PROVIDERS_GIVEN=0
+SPEC_PANEL=""
+SPEC_LIST=()
+SPEC_ACTION=""
+SPEC_ARG1=""
+SPEC_ARG2=""
+SPEC_NO_SIDECAR=0
+SPEC_FLAG_USED=0
+SPEC_CLI="$REPO_ROOT/lib/debate/specialists-cli.mjs"
+PLAN_JSON=""
+LENS_DIR=""
 # Transient provider failures (HTTP 429/500/502/503/504 or a curl timeout) are retried this many times, waiting DELAY x attempt seconds.
 DEBATE_PROVIDER_RETRIES="${E3D_DEBATE_PROVIDER_RETRIES:-2}"
 DEBATE_PROVIDER_RETRY_DELAY="${E3D_DEBATE_PROVIDER_RETRY_DELAY:-4}"
@@ -93,12 +106,30 @@ unnecessary?" -- and logs the answer into the transcript as a shadow-mode,
 informational-only signal. It never skips or shortens the debate; this is
 calibration data for a possible future live pre-screen gate (see
 idea-82a5c2225266). No key set means this is silently skipped.
+
+Experts (off unless E3D_SPECIALISTS=1; docs/specs/experts-phase1-private-experts-spec.md). An expert is a standard skill folder
+(SKILL.md plus an optional e3d/expert.json) found in lib/specialists, ~/.config/e3d-pilot/specialists and <repo>/.e3d-pilot/specialists
+(later wins). You choose experts, not models: the engine assigns one provider to each, spread across vendors.
+  --panel <preset>            a preset from lib/specialists/panels.json (shrinks to its minimum when providers are few)
+  --specialist <name>[:p]     one expert per flag (at least two); :p forces a provider
+  --providers a,b,c           with a panel, the pool the engine may assign from (default: the providers that answer E3D_PILOT_CHECK)
+  --list-specialists | --show-specialist <name> | --validate-specialist <folder> | --export-specialist <name> <folder> [--no-sidecar]
+Nothing is changed when none of these is given.
 EOF
 }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --providers) IFS=',' read -r -a DEBATE_PROVIDERS <<< "$2"; shift 2 ;;
+    --providers) IFS=',' read -r -a DEBATE_PROVIDERS <<< "$2"; PROVIDERS_GIVEN=1; shift 2 ;;
+    --panel) SPEC_PANEL="${2:-}"; SPEC_FLAG_USED=1; shift 2 ;;
+    --specialist) SPEC_LIST+=("${2:-}"); SPEC_FLAG_USED=1; shift 2 ;;
+    --list-specialists) SPEC_ACTION=list; SPEC_FLAG_USED=1; shift ;;
+    --show-specialist) SPEC_ACTION=show; SPEC_ARG1="${2:-}"; SPEC_FLAG_USED=1; shift 2 ;;
+    --validate-specialist) SPEC_ACTION=validate; SPEC_ARG1="${2:-}"; SPEC_FLAG_USED=1; shift 2 ;;
+    --export-specialist)
+      [[ $# -ge 3 ]] || { echo "error: --export-specialist needs an expert name and an output folder" >&2; exit 1; }
+      SPEC_ACTION=export; SPEC_ARG1="$2"; SPEC_ARG2="$3"; SPEC_FLAG_USED=1; shift 3 ;;
+    --no-sidecar) SPEC_NO_SIDECAR=1; SPEC_FLAG_USED=1; shift ;;
     --rounds) DEBATE_ROUNDS="$2"; shift 2 ;;
     --synthesizer) DEBATE_SYNTHESIZER="$2"; shift 2 ;;
     --max-words) DEBATE_MAX_WORDS="$2"; shift 2 ;;
@@ -115,6 +146,31 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+if [[ -n "${E3D_SPECIALISTS+x}" ]]; then
+  case "$E3D_SPECIALISTS" in ''|0|1) ;; *) echo "error: E3D_SPECIALISTS must be 0 or 1" >&2; exit 2 ;; esac
+fi
+if (( SPEC_FLAG_USED == 1 )) && [[ "${E3D_SPECIALISTS:-0}" != "1" ]]; then
+  echo "error: experts are off. Set E3D_SPECIALISTS=1 to use --panel, --specialist and the --list/--show/--validate/--export-specialist commands." >&2
+  exit 1
+fi
+SPEC_BUILTIN="$REPO_ROOT/lib/specialists"
+SPEC_USER="${HOME:-/nonexistent}/.config/e3d-pilot/specialists"
+SPEC_REPO="${LINK_REPO:-$PWD}/.e3d-pilot/specialists"
+if [[ -n "$SPEC_ACTION" ]]; then
+  command -v node >/dev/null 2>&1 || { echo "error: node is required for experts" >&2; exit 1; }
+  spec_common=(--builtin "$SPEC_BUILTIN" --user "$SPEC_USER" --repo "$SPEC_REPO")
+  case "$SPEC_ACTION" in
+    list) node "$SPEC_CLI" list "${spec_common[@]}" ;;
+    show)
+      spec_show_pool=()
+      (( PROVIDERS_GIVEN == 1 )) && spec_show_pool=(--pool "$(IFS=,; echo "${DEBATE_PROVIDERS[*]}")")
+      node "$SPEC_CLI" show "$SPEC_ARG1" "${spec_common[@]}" ${spec_show_pool[@]+"${spec_show_pool[@]}"} ;;
+    validate) node "$SPEC_CLI" validate "$SPEC_ARG1" ;;
+    export) node "$SPEC_CLI" export "$SPEC_ARG1" "$SPEC_ARG2" "${spec_common[@]}" $( (( SPEC_NO_SIDECAR == 1 )) && echo --no-sidecar ) ;;
+  esac
+  exit $?
+fi
+
 if [[ -n "$QUESTION_FILE" ]]; then
   [[ -f "$QUESTION_FILE" ]] || { echo "error: --question-file not found: $QUESTION_FILE" >&2; exit 1; }
   QUESTION="$(cat "$QUESTION_FILE")"
@@ -125,6 +181,32 @@ PROMPT_OVERHEAD="${E3D_DEBATE_PROMPT_OVERHEAD:-0}"
 [[ -n "$QUESTION" || "$PROMPT_OVERHEAD" == "1" ]] || { echo "error: question required (see --help)" >&2; exit 1; }
 [[ "$DEBATE_MAX_WORDS" =~ ^[0-9]+$ ]] && (( DEBATE_MAX_WORDS >= 1 )) || { echo "error: --max-words must be a positive integer" >&2; exit 1; }
 [[ "$DEBATE_ROUNDS" =~ ^[0-9]+$ ]] && (( DEBATE_ROUNDS >= 1 )) || { echo "error: --rounds must be a positive integer" >&2; exit 1; }
+if [[ -n "$SPEC_PANEL" ]] || (( ${#SPEC_LIST[@]} > 0 )); then
+  # A council is chosen by experts, not models: the engine assigns a provider to each expert from a pool of usable providers.
+  command -v jq >/dev/null 2>&1 || { echo "error: jq is required for --panel and --specialist" >&2; exit 1; }
+  command -v node >/dev/null 2>&1 || { echo "error: node is required for experts" >&2; exit 1; }
+  spec_pool=()
+  if (( PROVIDERS_GIVEN == 1 )); then
+    spec_pool=("${DEBATE_PROVIDERS[@]}")   # with a panel, --providers names the pool the engine may assign from
+  else
+    for p in claude codex gemini grok-build devin local bedrock azure-openai anthropic-api openai-api gemini-api xai-api; do
+      [[ -x "$PROVIDERS_DIR/$p" ]] || continue
+      spec_rc=0; E3D_PILOT_CHECK=1 "$PROVIDERS_DIR/$p" >/dev/null 2>&1 || spec_rc=$?
+      (( spec_rc == 2 )) && continue       # 2 is PROVIDER_EXIT_UNAVAILABLE (lib/providers/common.sh)
+      spec_pool+=("$p")
+    done
+  fi
+  spec_pool_csv=""
+  for p in ${spec_pool[@]+"${spec_pool[@]}"}; do spec_pool_csv+="${spec_pool_csv:+,}$p"; done
+  spec_plan_args=(plan --builtin "$SPEC_BUILTIN" --user "$SPEC_USER" --repo "$SPEC_REPO" --pool "$spec_pool_csv")
+  [[ -z "$SPEC_PANEL" ]] || spec_plan_args+=(--panel "$SPEC_PANEL")
+  for s in ${SPEC_LIST[@]+"${SPEC_LIST[@]}"}; do spec_plan_args+=(--specialist "$s"); done
+  spec_rc=0; PLAN_JSON="$(node "$SPEC_CLI" "${spec_plan_args[@]}")" || spec_rc=$?
+  if (( spec_rc != 0 )); then echo "error: $(jq -r '.error // "could not plan the panel"' <<< "$PLAN_JSON" 2>/dev/null || echo "could not plan the panel")" >&2; exit 1; fi
+  while IFS= read -r w; do echo "warning: $w" >&2; done < <(jq -r '.warnings[]' <<< "$PLAN_JSON")
+  DEBATE_PROVIDERS=()
+  while IFS= read -r p; do DEBATE_PROVIDERS+=("$p"); done < <(jq -r '.providers[]' <<< "$PLAN_JSON")
+fi
 (( ${#DEBATE_PROVIDERS[@]} >= 2 )) || { echo "error: need at least 2 --providers to debate" >&2; exit 1; }
 
 for p in "${DEBATE_PROVIDERS[@]}" "$DEBATE_SYNTHESIZER"; do
@@ -418,6 +500,14 @@ ws_peer_notice() {
 SYNTH_CURRENT_DATA_TEXT="If the question depends on recent events or current data that the participants did not have, say so plainly in FINAL ANSWER instead of presenting the answer as current."
 
 work_dir="$(mktemp -d "${TMPDIR:-/tmp}/e3d-debate.XXXXXX")"
+if [[ -n "$PLAN_JSON" ]]; then
+  # One lens text per assigned provider, printed before that provider's prompt (round_prompt). The synthesis prompt never reads these.
+  LENS_DIR="$work_dir/lens"
+  mkdir -p "$LENS_DIR"
+  while IFS= read -r p; do jq -j --arg p "$p" '.lens[$p]' <<< "$PLAN_JSON" > "$LENS_DIR/lens-$p.txt"; done < <(jq -r '.providers[]' <<< "$PLAN_JSON")
+  jq -c .panel <<< "$PLAN_JSON" > "$work_dir/panel.json"
+  echo "panel: $(jq -r '.panel.experts | map(.name + " on " + .provider) | join(", ")' <<< "$PLAN_JSON")$(jq -r 'if (.panel.dropped | length) > 0 then " (dropped: " + (.panel.dropped | join(", ")) + ")" else "" end' <<< "$PLAN_JSON")" >&2
+fi
 transcript_md="$work_dir/transcript.md"
 printf '# Debate\n\n**Prompt version:** %s\n\n**Question:** %s\n\n' "$DEBATE_PROMPT_VERSION" "$QUESTION" > "$transcript_md"
 
@@ -585,6 +675,7 @@ decision_round() {
 # round_prompt <provider> <round> <web-access 1|0>: the prompt for one call (shared by the first try and a no-search fallback)
 round_prompt() {
   local provider="$1" round="$2" web="$3" other
+  if [[ -n "$LENS_DIR" && -f "$LENS_DIR/lens-$provider.txt" ]]; then cat "$LENS_DIR/lens-$provider.txt"; fi
   date_preamble "$web" "$([[ "$web" == 1 ]] && ws_cap_for "$provider")"
   (( round >= 2 )) && ws_peer_notice
   if [[ "$DEBATE_PROMPT_VERSION" != "v2" ]]; then
@@ -1010,7 +1101,9 @@ write_decision_log() {
   if grep -qE '^DISSENT:' "$synth_out" 2>/dev/null && ! grep -m1 -E '^DISSENT:' "$synth_out" | grep -qiE '^DISSENT:[[:space:]]*"?none"?\.?[[:space:]]*$'; then dissent_present=true; fi
   if (( converged == 1 )); then stop_reason="converged"; ran="$converged_at_round"; fi
   providers_json="$(printf '%s\n' "${DEBATE_PROVIDERS_ALL[@]}" | jq -R . | jq -sc .)"
-  jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg qhash "$qhash" --arg pv "$DEBATE_PROMPT_VERSION" \
+  local panel_json=null
+  [[ -s "$work_dir/panel.json" ]] && panel_json="$(cat "$work_dir/panel.json")"
+  jq -nc --argjson panel "$panel_json" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg qhash "$qhash" --arg pv "$DEBATE_PROMPT_VERSION" \
     --arg synth "${SYNTH_FALLBACK_TO:-$DEBATE_SYNTHESIZER}" --arg stop "$stop_reason" --arg consensus "$consensus" \
     --argjson providers "$providers_json" --argjson maxr "$DEBATE_ROUNDS" --argjson ran "$ran" \
     --argjson at "$converged_at_round" --argjson fast "$fast_synthesis" --argjson sok "$synth_ok" \
@@ -1020,7 +1113,8 @@ write_decision_log() {
       max_rounds:$maxr, rounds_ran:$ran, stop_reason:$stop, converged_at_round:(if $at>0 then $at else null end),
       fast_synthesis:($fast==1), synthesis_ok:($sok==1), consensus:(if $consensus=="" then null else $consensus end),
       dissent_present:$dissent, seconds:$secs, rounds:$rounds}
-      + {web_search: (if $ws == null then {search_enabled: false} else $ws end)}' > "$work_dir/decision-log.json" || return 0
+      + {web_search: (if $ws == null then {search_enabled: false} else $ws end)}
+      + (if $panel == null then {} else {panel: $panel} end)' > "$work_dir/decision-log.json" || return 0
   if [[ -n "${E3D_DEBATE_DECISION_LOG:-}" ]]; then
     { mkdir -p "$(dirname "$E3D_DEBATE_DECISION_LOG")" && jq -c . "$work_dir/decision-log.json" >> "$E3D_DEBATE_DECISION_LOG"; } 2>/dev/null \
       || echo "warning: could not append to E3D_DEBATE_DECISION_LOG" >&2

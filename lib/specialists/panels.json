@@ -1,0 +1,20 @@
+{
+  "schema": "panels/v1",
+  "presets": {
+    "risk-review": {
+      "description": "Find what could go wrong before committing to a plan.",
+      "min_seats": 3,
+      "experts": ["skeptic", "premortem", "compliance", "implementer"]
+    },
+    "spec-review": {
+      "description": "Read a spec as the person who has to build it and the person who has to use it.",
+      "min_seats": 3,
+      "experts": ["implementer", "architect", "skeptic", "customer"]
+    },
+    "gap-finding": {
+      "description": "Surface the perspectives and questions nobody has covered yet.",
+      "min_seats": 3,
+      "experts": ["facilitator", "customer", "architect", "factchecker"]
+    }
+  }
+}

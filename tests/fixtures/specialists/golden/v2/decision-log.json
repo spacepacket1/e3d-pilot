@@ -1,0 +1,53 @@
+{
+  "consensus": "split",
+  "converged_at_round": null,
+  "dissent_present": false,
+  "fast_synthesis": false,
+  "max_rounds": 2,
+  "prompt_version": "v2",
+  "providers": [
+    "alpha",
+    "beta"
+  ],
+  "question_sha256": "9fe05e415b07421a53f8698798db52db3d0d1d411dffdff3a43248ed36ab9d33",
+  "rounds": [
+    {
+      "providers": [
+        {
+          "ok": true,
+          "provider": "alpha",
+          "words": 8
+        },
+        {
+          "ok": true,
+          "provider": "beta",
+          "words": 8
+        }
+      ],
+      "round": 1
+    },
+    {
+      "providers": [
+        {
+          "ok": true,
+          "provider": "alpha",
+          "words": 8
+        },
+        {
+          "ok": true,
+          "provider": "beta",
+          "words": 8
+        }
+      ],
+      "round": 2
+    }
+  ],
+  "rounds_ran": 2,
+  "schema": 1,
+  "stop_reason": "max_rounds",
+  "synthesis_ok": true,
+  "synthesizer": "synth",
+  "web_search": {
+    "search_enabled": false
+  }
+}
