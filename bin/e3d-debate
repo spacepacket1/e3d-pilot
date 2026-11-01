@@ -506,7 +506,7 @@ if [[ -n "$PLAN_JSON" ]]; then
   mkdir -p "$LENS_DIR"
   while IFS= read -r p; do jq -j --arg p "$p" '.lens[$p]' <<< "$PLAN_JSON" > "$LENS_DIR/lens-$p.txt"; done < <(jq -r '.providers[]' <<< "$PLAN_JSON")
   jq -c .panel <<< "$PLAN_JSON" > "$work_dir/panel.json"
-  echo "panel: $(jq -r '.panel.experts | map(.name + " on " + .provider) | join(", ")' <<< "$PLAN_JSON")$(jq -r 'if (.panel.dropped | length) > 0 then " (dropped: " + (.panel.dropped | join(", ")) + ")" else "" end' <<< "$PLAN_JSON")" >&2
+  echo "panel: $(jq -r '.panel.experts | map(.name + " on " + .seat) | join(", ")' <<< "$PLAN_JSON")$(jq -r 'if (.panel.dropped | length) > 0 then " (dropped: " + (.panel.dropped | join(", ")) + ")" else "" end' <<< "$PLAN_JSON")" >&2
 fi
 transcript_md="$work_dir/transcript.md"
 printf '# Debate\n\n**Prompt version:** %s\n\n**Question:** %s\n\n' "$DEBATE_PROMPT_VERSION" "$QUESTION" > "$transcript_md"
