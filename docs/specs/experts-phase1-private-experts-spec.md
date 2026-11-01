@@ -56,9 +56,9 @@ and the evidence that would show you are wrong. Do not praise. Do not argue agai
 }
 ```
 
-- `models` is an ordered preference. `effort` is passed only where the adapter supports it, otherwise ignored **and noted in the receipt**.
+- `models` is an ordered preference. `effort` is passed only where the adapter supports it, otherwise ignored **and noted in the receipt**. **Phase 1.2: no adapter exposes an effort setting yet**, so `effort_applied` is always `false` and `effort_requested` records the hint.
 - `tools` must be `"none"` in Phase 1 (validation refuses anything else): read-only enforcement is not uniform across adapters (claude with tools unset has full access) **[E: prompt-review 3.1]**, so this is deferred.
-- `required_evidence` and `tests` are accepted and stored but **not enforced or run** in Phase 1 (no model calls).
+- `required_evidence` and `tests` are accepted and stored but **not enforced or run** in Phase 1 (no model calls). `limits.max_words` is **advisory** in Phase 1 (shown by `--show-specialist`); the debate's own `--max-words` still applies.
 - The file is optional: without it the expert has no model preference and `tools: none`.
 
 **Content hash.** Computed by the engine at load, never trusted from the folder: SHA-256 over the sorted list of `relative-path NUL size NUL sha256(file)` lines for every file, with LF line endings. `.git` and `.DS_Store` are skipped (machine-specific), CRLF and LF text hash the same, and the `e3d.expert.hash` line in `SKILL.md` is left out of the hashed text, because a hash cannot cover itself. A `metadata` value `e3d.expert.hash` that disagrees with the computed hash is reported as stale and the computed one is used.
@@ -78,7 +78,7 @@ Load order, later wins by `name`: built-in `lib/specialists/` < user `~/.config/
 | `e3d-debate --validate-specialist <dir>` | every rule in this spec, with the file and rule on each error | none |
 | `e3d-debate --export-specialist skeptic <outdir>` | validated copy of the folder (`--no-sidecar` drops `e3d/`) | none |
 
-`E3D_SPECIALISTS` unset or `0`: these flags refuse with one clear line. `1`: on. Any other value: refuse to start (the same pattern as `E3D_MCP_GALLERY`). Existing `--providers` keeps working and means "seats with no lens".
+`E3D_SPECIALISTS` unset or `0`: these flags refuse with one clear line. `1`: on. Any other value: refuse to start (the same pattern as `E3D_MCP_GALLERY`). Existing `--providers` keeps working and means "seats with no lens". **With `--panel` or `--specialist`, `--providers` names the pool the engine may assign from.** Without it the pool is every provider that answers the availability probe (`E3D_PILOT_CHECK=1`; exit 2 means unavailable), in the order claude, codex, gemini, grok-build, devin, local, bedrock, azure-openai, anthropic-api, openai-api, gemini-api, xai-api.
 
 **Rules for a panel.**
 - **One seat per provider adapter.** The engine keys seat answers by provider name (`PROMPT_ANSWER[$provider]`, `others_of`) **[E: bin/e3d-debate]**, so two lenses on one provider would collide. Making seats independent of providers is a larger change and is **not** Phase 1. An explicit `--specialist` list with more seats than usable providers **refuses** with the list of what is available; a preset shrinks to its `min_seats` (see Presets). **This caps a council at the number of installed providers (often 2 to 4), so how many skills a council can hold is limited by how many providers exist. That is a limit of the engine, not a design intent.** Lifting it (seat identity independent of provider) touches the debate script and the seat and usage records keyed by provider, and is **planned for the start of Phase 2**, together with the billing change (D5), where usage rows are keyed by provider too.
@@ -110,7 +110,7 @@ Load order, later wins by `name`: built-in `lib/specialists/` < user `~/.config/
 ] }
 ```
 
-`bin/e3d-mcp` and the agreement code read these files **[E: git grep]**, so a test must prove they ignore the new key. No question or answer text goes in. `seats.json` is unchanged.
+`bin/e3d-mcp` reads only `seats.json` **[E: grep]**, which is unchanged; the decision log's other readers are tests, and the golden test proves a plain debate's log is byte-identical (the `panel` key exists only when an expert is named). The block has exactly these fields per expert: `seat`, `name`, `version`, `content_hash`, `tier`, `effort_requested`, `effort_applied`, `hint_used`, `override`. No question or answer text goes in.
 
 ## 7. Starter catalogue
 
