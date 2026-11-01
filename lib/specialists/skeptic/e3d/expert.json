@@ -1,0 +1,18 @@
+{
+  "schema": "expert/v1",
+  "tasks": [
+    "decide",
+    "review-spec",
+    "find-gaps"
+  ],
+  "tools": "none",
+  "models": [
+    {
+      "provider": "grok-build",
+      "effort": "high"
+    },
+    {
+      "provider": "claude"
+    }
+  ]
+}

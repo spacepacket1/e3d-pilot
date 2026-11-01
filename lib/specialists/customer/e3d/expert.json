@@ -1,0 +1,8 @@
+{
+  "schema": "expert/v1",
+  "tasks": [
+    "decide",
+    "review-spec"
+  ],
+  "tools": "none"
+}
