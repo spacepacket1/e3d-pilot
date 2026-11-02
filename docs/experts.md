@@ -66,3 +66,9 @@ provider, the expert's name, version, content hash and tier, whether its model h
 effort setting yet, so `effort_applied` is always false). No question or answer text goes in.
 
 Design and decisions: `docs/specs/experts-phase1-private-experts-spec.md`.
+
+## Status and methodology
+
+**Available today:** the command-line flags above, the eight built-in experts and three presets, the receipt, and the free read-only MCP tools `e3d_list_experts` and `e3d_get_expert` (off unless `E3D_MCP_EXPERTS=1`). **Not available yet:** running experts through MCP or the hosted server, several experts on one provider, a preview of the panel and its cost before running, and a suggestion of which experts fit a question; these are specified in [the Phase 2a spec](specs/experts-phase2a-seats-and-suggest-spec.md).
+
+**Not measured:** whether experts improve answers, and by how much. The cost model, the coverage model, the measurement plan and the rule that decides whether a result is claimed are in the [methodology draft](methodology/expert-councils.md); its results table is marked pending until something has been measured.
