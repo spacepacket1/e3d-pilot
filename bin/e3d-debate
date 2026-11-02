@@ -22,6 +22,11 @@ PROVIDERS_DIR="$REPO_ROOT/lib/providers"
 source "$REPO_ROOT/lib/providers/jev.sh"
 
 DEBATE_PROVIDERS=(claude codex)
+# Seats (docs/specs/experts-phase2a-seats-and-suggest-spec.md): a SEAT id names a participant (its files, answers, labels, usage keys and fate);
+# its ADAPTER is the provider script that answers. They are the same string in every debate today, so adapter_of is the identity; a second seat
+# on one adapter will be `adapter.2`. Wherever the script runs an adapter or looks up a per-provider limit it goes through adapter_of.
+declare -A SEAT_ADAPTER
+adapter_of() { printf '%s' "${SEAT_ADAPTER[$1]:-$1}"; }
 DEBATE_ROUNDS=2
 DEBATE_SYNTHESIZER="claude"
 DEBATE_MAX_WORDS=200
@@ -209,8 +214,18 @@ if [[ -n "$SPEC_PANEL" ]] || (( ${#SPEC_LIST[@]} > 0 )); then
 fi
 (( ${#DEBATE_PROVIDERS[@]} >= 2 )) || { echo "error: need at least 2 --providers to debate" >&2; exit 1; }
 
+for p in "${DEBATE_PROVIDERS[@]}"; do SEAT_ADAPTER[$p]="$p"; done
+if [[ -n "${E3D_DEBATE_SEAT_ADAPTERS:-}" ]]; then
+  # internal test seam, {"seat": "adapter"}: lets a test run two seats on one adapter before expert assignment does (Phase 2a.2 replaces it)
+  command -v jq >/dev/null 2>&1 || { echo "error: E3D_DEBATE_SEAT_ADAPTERS needs jq" >&2; exit 1; }
+  jq -e 'type == "object" and all(.[]; type == "string")' <<< "$E3D_DEBATE_SEAT_ADAPTERS" >/dev/null 2>&1 || { echo "error: E3D_DEBATE_SEAT_ADAPTERS must be a JSON object of strings" >&2; exit 1; }
+  while IFS=$'\t' read -r _s _a; do
+    [[ "$_s" =~ ^[A-Za-z0-9][A-Za-z0-9._:-]*$ && "$_a" =~ ^[A-Za-z0-9][A-Za-z0-9-]*$ ]] || { echo "error: E3D_DEBATE_SEAT_ADAPTERS has an invalid seat or adapter name" >&2; exit 1; }
+    SEAT_ADAPTER[$_s]="$_a"
+  done < <(jq -r 'to_entries[] | [.key, .value] | @tsv' <<< "$E3D_DEBATE_SEAT_ADAPTERS")
+fi
 for p in "${DEBATE_PROVIDERS[@]}" "$DEBATE_SYNTHESIZER"; do
-  [[ -x "$PROVIDERS_DIR/$p" ]] || { echo "error: no such provider adapter: $PROVIDERS_DIR/$p" >&2; exit 1; }
+  [[ -x "$PROVIDERS_DIR/$(adapter_of "$p")" ]] || { echo "error: no such provider adapter: $PROVIDERS_DIR/$(adapter_of "$p")" >&2; exit 1; }
 done
 
 # ---- token pricing (per_token_v1; lib/debate/token-pricing.mjs, docs/token-pricing.md) ----
@@ -235,7 +250,13 @@ PT_ON=0; AB_ON=0; PT_MAX_JSON="{}"; PT_ANS_JSON="{}"; PT_SEARCH=0; PT_SEARCH_JSO
 if [[ "$PROMPT_OVERHEAD" != "1" && ( -n "${E3D_DEBATE_MAX_TOKENS:-}" || -n "${E3D_DEBATE_ANSWER_BYTES_MAX:-}" || -n "${E3D_DEBATE_MAX_SEARCHES:-}" || -n "${E3D_DEBATE_CITE_BYTES_MAX:-}" ) ]]; then
   command -v node >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 && [[ -f "$PT_LIB" ]] || { echo "error: token limits need node, jq and $PT_LIB" >&2; exit 1; }
   PT_NODE_BAD="$(node_old_reason)"; [[ -z "$PT_NODE_BAD" ]] || { echo "error: token limits need Node $NODE_MIN_MAJOR or newer: $PT_NODE_BAD" >&2; exit 1; }
-  PT_CFG="$(node "$PT_LIB" config "$DEBATE_SYNTHESIZER" "${DEBATE_PROVIDERS[@]}")" || exit 1
+  PT_ADAPTERS=()
+  for p in "${DEBATE_PROVIDERS[@]}"; do
+    _a="$(adapter_of "$p")"
+    [[ " ${PT_ADAPTERS[*]:-} " == *" $_a "* ]] || PT_ADAPTERS+=("$_a")
+  done
+  (( ${#PT_ADAPTERS[@]} == ${#DEBATE_PROVIDERS[@]} )) || { echo "error: per-token pricing prices one seat per provider; several seats on one provider are not supported with token limits" >&2; exit 1; }
+  PT_CFG="$(node "$PT_LIB" config "$DEBATE_SYNTHESIZER" "${PT_ADAPTERS[@]}")" || exit 1
   [[ "$(jq -r .perToken <<< "$PT_CFG")" == "true" ]] && { PT_ON=1; PT_MAX_JSON="$(jq -c .maxTokens <<< "$PT_CFG")"; }
   [[ "$(jq -r '.answerBytes != null' <<< "$PT_CFG")" == "true" ]] && { AB_ON=1; PT_ANS_JSON="$(jq -c .answerBytes <<< "$PT_CFG")"; }
   [[ "$(jq -r '.maxSearches != null' <<< "$PT_CFG")" == "true" ]] && { PT_SEARCH=1; PT_SEARCH_JSON="$(jq -c .maxSearches <<< "$PT_CFG")"; PT_CITE_BYTES="$(jq -r .citeBytes <<< "$PT_CFG")"; }
@@ -250,13 +271,14 @@ PT_ENV=()
 pt_env() {
   PT_ENV=()
   (( PT_ON == 1 )) || return 0
-  local var
-  case "$1" in
+  local var a
+  a="$(adapter_of "$1")"
+  case "$a" in
     anthropic-api) var=ANTHROPIC_API_MAX_TOKENS ;; openai-api) var=OPENAI_API_MAX_TOKENS ;;
     gemini-api) var=GEMINI_API_MAX_TOKENS ;; xai-api) var=XAI_API_MAX_TOKENS ;;
-    *) echo "error: no output-limit setting for provider $1" >&2; exit 1 ;;
+    *) echo "error: no output-limit setting for provider $a" >&2; exit 1 ;;
   esac
-  PT_ENV=("$var=$(jq -r --arg p "$1" '.[$p]' <<< "$PT_MAX_JSON")" E3D_PROVIDER_PER_TOKEN=1)
+  PT_ENV=("$var=$(jq -r --arg p "$a" '.[$p]' <<< "$PT_MAX_JSON")" E3D_PROVIDER_PER_TOKEN=1)
 }
 # WS_CAP: the per-call search cap each searching provider was quoted at (per-token search); ws_cap_for is the number the prompt tells the
 # model and the adapter enforces: the quote's, never the global E3D_DEBATE_SEARCH_MAX_PER_CALL
@@ -264,7 +286,7 @@ declare -A WS_CAP
 if (( PT_SEARCH == 1 )); then
   while IFS=$'\t' read -r _p _k; do WS_CAP[$_p]="$_k"; done < <(jq -r 'to_entries[] | [.key, .value] | @tsv' <<< "$PT_SEARCH_JSON")
 fi
-ws_cap_for() { printf '%s' "${WS_CAP[$1]:-$WS_MAX_SEARCHES}"; }
+ws_cap_for() { local a; a="$(adapter_of "$1")"; printf '%s' "${WS_CAP[$a]:-$WS_MAX_SEARCHES}"; }
 
 if [[ -n "$LINK_REPO" || -n "$LINK_IDEA" ]]; then
   [[ -n "$LINK_REPO" && -n "$LINK_IDEA" ]] || { echo "error: --repo and --idea must be given together" >&2; exit 1; }
@@ -331,7 +353,7 @@ if [[ "$WEB_SEARCH_REQUESTED" == "1" ]]; then
     echo "warning: web search is off for this debate: $WS_REASON" >&2
   fi
 fi
-search_on_for() { (( WS_ON == 1 )) && [[ "$WS_PROVIDERS" == *" $1 "* ]]; }
+search_on_for() { local a; a="$(adapter_of "$1")"; (( WS_ON == 1 )) && [[ "$WS_PROVIDERS" == *" $a "* ]]; }
 for p in "${DEBATE_PROVIDERS[@]}"; do search_on_for "$p" && WS_SEARCHING+=("$p"); done
 (( ${#WS_SEARCHING[@]} > 0 )) && WS_ANY=1
 # Per-call wall-clock limit for a search call: E3D_DEBATE_SEARCH_TIMEOUT_SEC, else the debate's own timeout (E3D_DEBATE_TIMEOUT_SEC
@@ -426,7 +448,7 @@ run_search_call() {
     env E3D_PROVIDER_WEB_SEARCH=1 E3D_PROVIDER_WS_OUT="$raw" E3D_PROVIDER_WS_MAX_SEARCHES="$(ws_cap_for "$provider")" ${PT_ENV[@]+"${PT_ENV[@]}"} \
       E3D_PROVIDER_WS_ALLOW="$(jq -r '.allow | join(",")' <<< "$WS_CFG")" E3D_PROVIDER_WS_DENY="$(jq -r '.deny | join(",")' <<< "$WS_CFG")" \
       E3D_PROVIDER_WS_EXCERPT_CHARS="$(jq -r .excerptChars <<< "$WS_CFG")" E3D_PROVIDER_WS_TIMEOUT="$(ws_call_timeout)" \
-      "$PROVIDERS_DIR/$provider" "$prompt" > "$out" 2>> "$err"
+      "$PROVIDERS_DIR/$(adapter_of "$provider")" "$prompt" > "$out" 2>> "$err"
     st=$?
     (( st == 0 )) && break
     jq -e '.ok == true' "$raw" >/dev/null 2>&1 && break
@@ -454,7 +476,7 @@ run_search_call() {
         printf '%s\n' "$ATTEMPT_MARK" >> "$err"
         echo "note: $provider web search call returned no text in round $round, one retry without search" >&2
         sleep "$DEBATE_PROVIDER_RETRY_DELAY"
-        RWR_NT_MAX=0 run_with_retry "$provider" "$round" "$out" "$err.fallback" no_search_env ${PT_ENV[@]+"${PT_ENV[@]}"} "$PROVIDERS_DIR/$provider" "$work_dir/round${round}-${provider}.nosearch.prompt.md"
+        RWR_NT_MAX=0 run_with_retry "$provider" "$round" "$out" "$err.fallback" no_search_env ${PT_ENV[@]+"${PT_ENV[@]}"} "$PROVIDERS_DIR/$(adapter_of "$provider")" "$work_dir/round${round}-${provider}.nosearch.prompt.md"
         st=$?
         cat "$err.fallback" >> "$err" 2>/dev/null; rm -f "$err.fallback"
         return "$st"
@@ -465,7 +487,7 @@ run_search_call() {
     jq -nc --arg p "$provider" --argjson r "$round" --arg why "${reason:-error}" '{provider:$p, round:$r, reason:$why}' > "$work_dir/ws-fallback-r$round-$provider.json"
     round_prompt "$provider" "$round" 0 > "$work_dir/round${round}-${provider}.nosearch.prompt.md"
     printf '%s\n' "$ATTEMPT_MARK" >> "$err"
-    RWR_NT_MAX=0 run_with_retry "$provider" "$round" "$out" "$err.fallback" no_search_env "$PROVIDERS_DIR/$provider" "$work_dir/round${round}-${provider}.nosearch.prompt.md"
+    RWR_NT_MAX=0 run_with_retry "$provider" "$round" "$out" "$err.fallback" no_search_env "$PROVIDERS_DIR/$(adapter_of "$provider")" "$work_dir/round${round}-${provider}.nosearch.prompt.md"
     st=$?
     cat "$err.fallback" >> "$err" 2>/dev/null; rm -f "$err.fallback"
   fi
@@ -480,7 +502,7 @@ ws_finish_answer() {
     # per-token: no fallback call was made, so there is no answer without web access to announce
     [[ "$(jq -r 'if .fallback_call == false then "false" else "true" end' "$fb")" == "false" ]] || prefix="[Web search was unavailable for this answer ($(jq -r .reason "$fb")), so $provider answered without web access.]"
   elif [[ -f "$work_dir/ws-raw-r$round-$provider.json" ]]; then
-    node "$WS_LIB" filter "$work_dir/ws-raw-r$round-$provider.json" "$provider" "$round" > "$rec" 2>/dev/null || rm -f "$rec"
+    node "$WS_LIB" filter "$work_dir/ws-raw-r$round-$provider.json" "$(adapter_of "$provider")" "$round" > "$rec" 2>/dev/null || rm -f "$rec"
     if [[ -s "$rec" ]]; then
       if grep -qi 'a source contained instructions' <<< "$answer"; then jq -c '.instructions_flag = true' "$rec" > "$rec.tmp" && mv "$rec.tmp" "$rec"; fi
       prefix="$(node "$WS_LIB" cite-list "$rec" 2>/dev/null || true)"
@@ -780,7 +802,7 @@ for provider in "${DEBATE_PROVIDERS[@]}"; do LAST_ANSWER[$provider]=""; PROMPT_A
 prompt_answer() {
   local limit
   if (( AB_ON == 1 )); then
-    limit="$(jq -r --arg p "$1" '.[$p]' <<< "$PT_ANS_JSON")"
+    limit="$(jq -r --arg p "$(adapter_of "$1")" '.[$p]' <<< "$PT_ANS_JSON")"
     printf '%s' "$2" | node "$PT_LIB" truncate "$limit"
   else
     printf '%s' "$2"
@@ -817,9 +839,10 @@ fi
 # counter (null when there is none). Without it the rows are exactly today's.
 pt_usage_row() {
   (( PT_ON == 1 )) || return 0
-  local mode=""
+  local mode="" a
+  a="$(adapter_of "$2")"
   if (( PT_SEARCH == 1 )); then mode=none; [[ "$1" != synth ]] && search_on_for "$2" && mode=search; fi
-  node "$PT_LIB" row "$1" "$2" "$3" "$4" "$5" "$6" "$(jq -r --arg p "$2" '.[$p]' <<< "$PT_MAX_JSON")" "$mode" >> "$work_dir/usage.rows" 2>/dev/null || true
+  node "$PT_LIB" row "$1" "$a" "$3" "$4" "$5" "$6" "$(jq -r --arg p "$a" '.[$p]' <<< "$PT_MAX_JSON")" "$mode" >> "$work_dir/usage.rows" 2>/dev/null || true
 }
 pt_usage_write() {
   (( PT_ON == 1 )) || return 0
@@ -872,7 +895,7 @@ for ((round = 1; round <= DEBATE_ROUNDS; round++)); do
         run_search_call "$provider" "$round" "$prompt_file" "$out_file" "$work_dir/round${round}-${provider}.stderr"
       else
         pt_env "$provider"
-        run_with_retry "$provider" "$round" "$out_file" "$work_dir/round${round}-${provider}.stderr" no_search_env ${PT_ENV[@]+"${PT_ENV[@]}"} "$PROVIDERS_DIR/$provider" "$prompt_file"
+        run_with_retry "$provider" "$round" "$out_file" "$work_dir/round${round}-${provider}.stderr" no_search_env ${PT_ENV[@]+"${PT_ENV[@]}"} "$PROVIDERS_DIR/$(adapter_of "$provider")" "$prompt_file"
       fi
       echo $? > "$status_file"
     ) &
@@ -991,16 +1014,18 @@ fi
 # max_tokens, so xAI could exceed it (billing would clamp and alarm).
 SYNTH_API_PROVIDERS=" anthropic-api openai-api gemini-api xai-api "
 synth_candidates() { # prints one provider per line
-  local c list=() max out=0
+  local c list=() max out=0 seen=" "
   case "$DEBATE_SYNTH_FALLBACK" in
     off|none|"") return 0 ;;
-    auto) list=(${R1_ANSWERED[@]+"${R1_ANSWERED[@]}"}) ;;
+    auto) for c in ${R1_ANSWERED[@]+"${R1_ANSWERED[@]}"}; do list+=("$(adapter_of "$c")"); done ;;
     *) IFS=',' read -r -a list <<< "$DEBATE_SYNTH_FALLBACK" ;;
   esac
   max="$DEBATE_SYNTH_FALLBACK_MAX"
   [[ "$max" =~ ^[0-9]$ ]] || { if (( PT_ON == 1 )); then max=1; else max=2; fi; }
   for c in ${list[@]+"${list[@]}"}; do
     (( out >= max )) && break
+    [[ "$seen" == *" $c "* ]] && continue
+    seen+="$c "
     [[ "$c" == "$DEBATE_SYNTHESIZER" || ! -x "$PROVIDERS_DIR/$c" ]] && continue
     [[ "$DEBATE_SYNTH_FALLBACK" == auto && "$SYNTH_API_PROVIDERS" != *" $c "* ]] && continue
     if (( PT_ON == 1 )); then
