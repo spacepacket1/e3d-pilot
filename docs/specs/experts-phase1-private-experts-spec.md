@@ -136,7 +136,7 @@ New `tests/debate-specialists.sh`, using the repo's stub-provider style (`tests/
 
 **Rollback.** Leave `E3D_SPECIALISTS` unset: nothing changes. To remove: revert the PRs; nothing else stores state.
 
-**Pull requests (each flag-off, each mergeable alone):** 1.1 loader, validator and hash with their tests (no CLI); 1.2 CLI flags, lens delivery and receipt with the golden tests; 1.3 the eight experts, three presets and docs. **Phase 1b (separate, later):** free read-only `e3d_list_experts` and `e3d_get_expert` over MCP, modelled on `e3d_gallery`, behind their own flag. **Not before Phase 2:** anything that passes expert parameters to `e3d_debate`.
+**Pull requests (each flag-off, each mergeable alone):** 1.1 loader, validator and hash with their tests (no CLI); 1.2 CLI flags, lens delivery and receipt with the golden tests; 1.3 the eight experts, three presets and docs. **Phase 1b (built, flag `E3D_MCP_EXPERTS`):** free read-only `e3d_list_experts` and `e3d_get_expert` over MCP, modelled on `e3d_gallery`: built-in experts only (a person's own tiers are never listed), read once at start-up, no network, nothing written; the text says running experts through the connector is not available yet. **Not before Phase 2:** anything that passes expert parameters to `e3d_debate`.
 
 ## 9. Owner decisions recorded (2026-11-01)
 
