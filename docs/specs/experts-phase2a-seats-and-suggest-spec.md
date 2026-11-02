@@ -28,8 +28,8 @@ The round loop starts one subshell per entry of `DEBATE_PROVIDERS` and uses the 
 
 Phase 1's rules stand, with one change. The engine assigns each expert a provider from the pool: **prefer the vendor family with the fewest seats so far, then the adapter with the fewest seats, then the expert's `models` order as a tie-break (`hint_used` as today), then pool order**; `name:provider` still overrides. With enough providers this gives exactly today's spread, so existing panels do not move; with fewer providers than experts it seats the extras on the least-used family instead of refusing.
 
-- **Bounds:** at most **8 seats** in one panel (an explicit list longer than that, or a preset, refuses).
-- **Presets:** `min_seats` stays; a preset no longer shrinks for lack of providers, only for the 8-seat bound (none today).
+- **Bounds:** at most **6 seats** in one panel (owner decision, 2026-11-01; 4 and 8 were weighed). An explicit list longer than that refuses. The cap bounds cost: the token model in [the methodology draft](../methodology/expert-councils.md) puts 6 seats at about 1.9 times a plain 4-seat, 2-round council and 8 seats at about 2.8 times. It applies to the local engine only; the hosted limit (4 providers, 3 rounds today) is Phase 2b's to set.
+- **Presets:** `min_seats` stays; a preset no longer shrinks for lack of providers, only for the 6-seat bound (none today).
 - **Independence is stated, never hidden.** The receipt's `panel` block gains `independence: { seats, adapters, families }` and each seat gains `adapter`. When fewer than 2 vendor families are in use the engine prints one stderr line ("N seats on 1 vendor family: lenses differ, the model does not") and the transcript header repeats it. **`--min-families N`** (default **2**) refuses a panel with fewer families and says how to lower it; `--min-families 1` is the deliberate opt-in for lens-only runs (the evaluation's arm F). A debate that is not multi-model is allowed only on purpose, and is always labelled.
 
 ### 2.4 What readers of the receipts see
@@ -39,7 +39,20 @@ Phase 1's rules stand, with one change. The engine assigns each expert a provide
 ### 2.5 Pull requests (each flag-free and mergeable alone)
 
 1. **2a.1, the seam, no behavior change:** introduce `SEAT_ADAPTER` and make the loop, the helpers and the receipts use seat id versus adapter correctly, with every seat id equal to its adapter. **Proof:** the Phase 1.2 golden files (`v2`, `v3b`, `v3c`) and the existing debate, retry, seat-reliability, per-token, web-search and MCP tests all pass unchanged. This is the risky PR (surgery on a 1,100-line bash script) and carries the most tests. **Built in 2a.1 (settled while writing it):** `adapter_of` is the one place that maps a seat to its adapter, and it is used wherever the script runs an adapter, reads a per-provider limit, filters a search record, writes a usage row or chooses a fallback synthesizer; an **internal test seam** `E3D_DEBATE_SEAT_ADAPTERS` (a JSON object, validated, not documented for users) lets a test seat two participants on one adapter until 2a.2's assignment does it, and 2a.2 removes the seam; and **per-token pricing refuses two seats on one provider** (`per-token pricing prices one seat per provider`), because a quote prices one call per provider per round (hosted use is Phase 2b).
-2. **2a.2, the limit lifted:** the assignment above, the 8-seat bound, `--min-families`, the `independence` block and its stderr line. **Proof:** two and three seats on one adapter each get their own lens, files and usage row; one of two same-adapter seats can fail without dropping the other; `--min-families` refuses and allows as stated; existing panels of distinct providers are assigned exactly as before.
+2. **2a.2, the limit lifted:** the assignment above, the 6-seat bound, `--min-families`, `--show-panel` (section 2.6), the `independence` block and its stderr line. **Proof:** two and three seats on one adapter each get their own lens, files and usage row; one of two same-adapter seats can fail without dropping the other; `--min-families` refuses and allows as stated; existing panels of distinct providers are assigned exactly as before.
+
+### 2.6 `--show-panel`: see the pairs and the cost before spending anything (owner request, 2026-11-01)
+
+`E3D_SPECIALISTS=1 e3d-debate "question" (--panel NAME | --specialist a --specialist b ...) [--providers ...] [--rounds N] --show-panel` assigns exactly as a real run would and **prints without running anything**:
+
+- a table of seats: seat id, expert, adapter, vendor family, and whether the model hint was used or the pairing was forced (`skill:ai`);
+- the provider pool and where it came from (`--providers`, or the availability probe), and the `independence` label (seats, adapters, families);
+- the **number of calls**: `seats x rounds + 1` (the synthesis);
+- a **rough token estimate** from the cost model in the methodology draft: `Q` from the question length at about 4 characters a token, `A` from `--max-words` at about 1.4 tokens a word, `L` measured from each lens, the other constants as in that document. It is labelled an estimate, never a price;
+- every refusal a real run would hit (`--min-families`, more than 6 seats, an unavailable provider), stated as such;
+- the exact command line that would run it.
+
+Exit 0 when a real run would start, 1 when it would refuse. It makes no model call, opens no network connection and writes nothing. **Tests:** the table equals the seats a real run records in its receipt, for presets, explicit lists, overrides and one-vendor panels; each refusal matches the real refusal; the call count and the estimate match the model for stub-sized inputs; a debate with no expert flags is unaffected; no process or network is used.
 
 ## 3. Part B: `--suggest-panel` (free, rule-based, explainable)
 
@@ -56,7 +69,7 @@ Phase 1's rules stand, with one change. The engine assigns each expert a provide
 ## 4. Decisions for the owner (my recommendation first)
 
 - **D8. `--min-families` default 2.** A panel on one vendor is allowed only with `--min-families 1`, and is always labelled. (Keeps "multi-model" true by default.)
-- **D9. At most 8 seats** per panel.
+- **D9. At most 6 seats** per panel (decided by the owner on 2026-11-01).
 - **D10. Seat ids `adapter.2`**, `adapter.3`, with the first seat keeping the plain adapter name.
 - **D11. Rule-based `--suggest-panel` first**, named "suggest" (never "auto"), no model call; a language-model router is a later, quoted decision.
 
