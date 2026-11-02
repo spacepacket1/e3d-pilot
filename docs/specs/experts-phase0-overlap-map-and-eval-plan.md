@@ -77,6 +77,8 @@ So a Phase 3 that runs each task once per arm cannot support "the council helps"
 
 ## 4. Evaluation plan (to pre-register before any result is seen)
 
+*The equations behind this plan (cost, effective seats, coverage, lift and the decision rule) are written up, with a tested cost model, in [`docs/methodology/expert-councils.md`](../methodology/expert-councils.md).*
+
 *Clarified 2026-11-01: this plan costs the **evaluation** of the feature (does a council of experts help?). It is not the cost of **developing** it (Phase 1 makes no model calls) and not the per-debate price a user pays (quoted per seat, Phase 2). It is optional until we want to claim a gain or open Phase 4.*
 
 **Arms, per task**
