@@ -81,6 +81,8 @@ You don't need the rest of e3d-pilot to use `e3d-debate` on its own — see [e3d
 | `e3d_list_providers` | Shows which model providers are available on this machine. A debate needs at least two. |
 | `e3d_provenance_trace` | Read-only: traces why a change exists, from its origin through debates, approvals, execution, review, and outcome. |
 | `e3d_ideas_list` | Read-only: lists the ideas e3d-pilot tracks in a repo, to find an id for the trace. |
+| `e3d_gallery` | Opt-in (`E3D_MCP_GALLERY=1`; on at pilot.e3d.ai). Free and read-only: searches and reads the public Pilot Gallery, the debates people chose to publish, and returns the question, answer, consensus and any dissent with a link. Nothing is spent or written. |
+| `e3d_list_experts`, `e3d_get_expert` | Opt-in (`E3D_MCP_EXPERTS=1`). Free and read-only: describe the built-in [experts](docs/experts.md) and presets, and show the exact lens text a seat receives. They only describe: running experts through MCP is not available yet. |
 
 A real result in `quick` mode (11 seconds, two models), from asking whether a small CLI should default to a flat JSON file or SQLite:
 
@@ -959,6 +961,17 @@ bin/e3d-debate "Should we ship it?" --providers claude,codex --repo /path/to/rep
 ```
 
 This links the evidence, it does not create the idea — propose that separately (e.g. via `ideas ingest`) first. The transcript itself still needs to be committed for the evidence link to stay durable, the same way the existing `docs/debates/` transcripts are.
+
+### Experts (opt-in): choose the skills, not the models
+
+An expert is a reusable lens for one seat in a debate ("assume it fails", "you are the customer", "check the facts"), written as a standard [Agent Skill](https://agentskills.io/specification) folder. You choose the experts; the engine assigns each one a provider, spread across vendors, and records what it did in the receipt. It is off unless `E3D_SPECIALISTS=1`, and with no expert flag a debate is exactly what it was before.
+
+```bash
+E3D_SPECIALISTS=1 bin/e3d-debate "Should we ship this?" --panel risk-review
+E3D_SPECIALISTS=1 bin/e3d-debate "Should we ship this?" --specialist skeptic --specialist customer --specialist architect
+```
+
+Eight built-in experts and three four-seat presets ship in `lib/specialists`. Today one expert sits on one provider; several experts on one provider is planned. Experts can be listed over MCP (`E3D_MCP_EXPERTS=1`); running them through MCP or the hosted server is **not available yet**. Whether skills improve answers has **not been measured**: the plan, the equations and a tested cost model are in the [methodology draft](docs/methodology/expert-councils.md). How to use experts, write your own, and what is refused: [docs/experts.md](docs/experts.md).
 
 ## Running on a schedule
 
