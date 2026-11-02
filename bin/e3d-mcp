@@ -44,6 +44,7 @@ import { createRuns, validateRunsConfig } from '../lib/mcp/runs.js';
 import { startRunServer, validateRunServerConfig } from '../lib/mcp/run-server.js';
 import { validatePricingConfig, createPricingClient, limitsForPlan, pricedError, debateEnvFor, readUsageRows, searchCapable, searchCapFromEnv, requestedSearches } from '../lib/mcp/pricing.js';
 import { galleryFrom, createGalleryRead, GALLERY_INSTRUCTION } from '../lib/mcp/gallery-read.js';
+import { expertsFrom, createExpertsRead, EXPERTS_INSTRUCTION } from '../lib/mcp/experts-read.js';
 import { agentModeFrom, agentFieldsOf, AGENT_INSTRUCTIONS, SCHEMA_VERSION as AGENT_SCHEMA_VERSION, IDEMPOTENCY_KEY_RE, QUOTE_ID_RE, agentError, errorResult, reasonError, extendDebateTool, quoteTool, quoteResult, validQuote } from '../lib/mcp/agent.js';
 import { validatePanelConfig, validateRequiredConfig, withRequired, requireAvailable, createPanelClient, checkFamilies, requireFamilies, degrade, explicitPanel, familiesOf } from '../lib/mcp/panel.js';
 
@@ -60,6 +61,9 @@ const AGENT_ON = AGENT_CONFIG.on && HTTP_MODE && AUTH_HOOK;
 // e3d_gallery (lib/mcp/gallery-read.js): free read of the public Gallery, off unless E3D_MCP_GALLERY=1.
 const GALLERY_CONFIG = galleryFrom(process.env);
 const galleryRead = GALLERY_CONFIG.on ? createGalleryRead({ base: GALLERY_CONFIG.base }) : null;
+// e3d_list_experts and e3d_get_expert (lib/mcp/experts-read.js): free, read-only description of the built-in experts, off unless E3D_MCP_EXPERTS=1.
+const EXPERTS_CONFIG = expertsFrom(process.env);
+const expertsRead = EXPERTS_CONFIG.on ? createExpertsRead({ builtinDir: fileURLToPath(new URL('../lib/specialists', import.meta.url)) }) : null;
 // The version comes from package.json, so a development build (0.2.0-dev.N) reports itself correctly.
 const PKG_VERSION = (() => { try { return JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).version; } catch { return '0.0.0-unknown'; } })();
 const SERVER_INFO = { name: 'e3d-pilot', version: PKG_VERSION };
@@ -1058,7 +1062,7 @@ const sampling = createSampling({ rpc, log });
 const stdioConn = { send, session: { clientInfo: null, capabilities: {}, rootsReady: null }, principal: process.env.E3D_MCP_PRINCIPAL || 'local', rpc, hosted: false, allowed: null };
 const newHttpConn = (principal, allowed) => ({ send: () => {}, session: { clientInfo: null, capabilities: {}, rootsReady: null }, principal, rpc: null, hosted: true, allowed });
 const actions = createPipelineActions({ guard, jobs, base: pipeline, usage });
-TOOLS.push(...pipeline.tools, ...actions.tools, usageTool, ...(galleryRead ? [galleryRead.tool] : []));
+TOOLS.push(...pipeline.tools, ...actions.tools, usageTool, ...(galleryRead ? [galleryRead.tool] : []), ...(expertsRead ? expertsRead.tools : []));
 
 // The client's workspace folders (MCP roots) are the default set of repos the pipeline tools may touch.
 async function refreshRoots(session = stdioConn.session) {
@@ -1082,17 +1086,18 @@ const HANDLERS = {
   ...actions.handlers,
   e3d_usage: usageHandler(usage, () => hookState),
   ...(galleryRead ? { e3d_gallery: galleryRead.handler } : {}),
+  ...(expertsRead ? expertsRead.handlers : {}),
 };
 
 // A tool the connection may use. e3d_quote is free and only prices what e3d_debate runs, so whoever may debate may quote.
 // Phase 0 of debate threads (e3d-pilot-cloud docs/specs/debate-threads.md section 9): one log line per hosted debate call saying which client
 // and which session it came from, so the counts show whether calls from one chat share a session. The session is a one-way digest and the
 // client name is the self-reported clientInfo.name cut to safe characters; never a principal, a question or an answer. Nothing is grouped on it.
-const PROBED_TOOLS = new Set(['e3d_debate', 'e3d_debate_start', 'e3d_quote', 'e3d_gallery']);
+const PROBED_TOOLS = new Set(['e3d_debate', 'e3d_debate_start', 'e3d_quote', 'e3d_gallery', 'e3d_list_experts', 'e3d_get_expert']);
 const probeClient = (info) => String(info?.name ?? 'unknown').replace(/[^A-Za-z0-9._-]+/g, '_').slice(0, 40) || 'unknown';
 
 // e3d_gallery reads public pages and costs nothing, so while it is switched on every connection may use it, whatever its key's tool list says.
-const permits = (conn, name) => !conn.allowed || conn.allowed.has(name) || (name === 'e3d_quote' && conn.allowed.has('e3d_debate')) || (name === 'e3d_gallery' && Boolean(galleryRead));
+const permits = (conn, name) => !conn.allowed || conn.allowed.has(name) || (name === 'e3d_quote' && conn.allowed.has('e3d_debate')) || (name === 'e3d_gallery' && Boolean(galleryRead)) || ((name === 'e3d_list_experts' || name === 'e3d_get_expert') && Boolean(expertsRead));
 
 async function handle(msg, conn = stdioConn) {
   const { id, method, params } = msg;
@@ -1110,7 +1115,7 @@ async function handle(msg, conn = stdioConn) {
         protocolVersion: SUPPORTED_PROTOCOLS.includes(want) ? want : SUPPORTED_PROTOCOLS[0],
         capabilities: { tools: { listChanged: false }, prompts: { listChanged: false } },
         serverInfo: SERVER_INFO,
-        instructions: conn.hosted && AGENT_ON ? (galleryRead ? `${AGENT_INSTRUCTIONS}\n\n${GALLERY_INSTRUCTION}` : AGENT_INSTRUCTIONS)
+        instructions: conn.hosted && AGENT_ON ? [AGENT_INSTRUCTIONS, ...(galleryRead ? [GALLERY_INSTRUCTION] : []), ...(expertsRead ? [EXPERTS_INSTRUCTION] : [])].join('\n\n')
           : conn.hosted
           ? 'Use e3d_debate for contestable decisions where independent model perspectives and recorded dissent add value; always report its dissent, and never present a split verdict as settled. It uses a shared usage budget (see e3d_usage); do not use it for simple lookups.'
           : 'Use e3d_debate for contestable decisions where independent model perspectives and recorded dissent add value; always report its dissent. It costs credits; do not use it for simple lookups. The e3d_pilot_* tools run a human-gated pipeline: propose an idea, a human approves it (e3d_pilot_approve tells you how; never approve on your own), e3d_pilot_implement drafts and negotiates a spec and pauses, e3d_pilot_code_plan shows the plan, and only after the user agrees does e3d_pilot_execute write code and open a draft PR. Tools marked FREE spend nothing; tools marked SPENDS MODEL CREDITS do. Merging is never available here.',
@@ -1191,6 +1196,10 @@ if (!REQUIRED_CONFIG.ok) {
 }
 if (!GALLERY_CONFIG.ok) {
   process.stderr.write(`[e3d-mcp] refusing to start: ${GALLERY_CONFIG.errors.join('; ')}\n`);
+  process.exit(2);
+}
+if (!EXPERTS_CONFIG.ok) {
+  process.stderr.write(`[e3d-mcp] refusing to start: ${EXPERTS_CONFIG.errors.join('; ')}\n`);
   process.exit(2);
 }
 if (!AGENT_CONFIG.ok) {

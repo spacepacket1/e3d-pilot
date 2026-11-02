@@ -44,6 +44,13 @@ reads skills, with `--export-specialist <name> <folder>` (add `--no-sidecar` to 
 The lens text is printed before that seat's usual prompt, between two marker lines, and nothing else changes. `--show-specialist` prints
 the exact text. The synthesis step never receives a lens. With no expert named, every prompt and receipt is exactly what it was before.
 
+## Over MCP (read-only)
+
+With `E3D_MCP_EXPERTS=1` the MCP server offers two free tools, `e3d_list_experts` and `e3d_get_expert`, so an assistant can describe the built-in
+experts and presets and show the exact lens text a seat receives. They read this checkout's own files at start-up: no network, no credentials,
+nothing written, nothing charged, and a person's own expert folders are never listed. **Running a debate with experts through the connector is
+not available yet**; the command line above runs them today. Off by default; any value other than unset, `0` or `1` refuses to start.
+
 ## Safety
 
 - An expert's lens is text written by a person: it is delimited, shown whole, and cannot grant a tool or change a flag.
