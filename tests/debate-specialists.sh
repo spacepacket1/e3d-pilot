@@ -136,7 +136,7 @@ on "$T" "q?" --panel risk-review --providers claude,codex,gemini,grok-build --sy
 [[ "$(jq -r '.panel.preset' "$T/out/decision-log.json")" == risk-review && "$(jq '.panel.dropped | length' "$T/out/decision-log.json")" == 0 ]] || fail "preset and dropped in the receipt"
 jq -e '.panel.experts[] | select(.name=="skeptic") | .hint_used == true and .effort_requested == "high" and .effort_applied == false' "$T/out/decision-log.json" >/dev/null || fail "skeptic: hint and effort must be recorded, and effort not applied"
 jq -e '.panel.experts[] | select(.name=="implementer") | .hint_used == false' "$T/out/decision-log.json" >/dev/null || fail "implementer: its hint (codex) was taken by another seat, so hint_used must be false"
-grep -q '^panel: ' "$T/stderr" || fail "the run should say which expert sits on which provider"
+grep -q '^panel: skeptic on grok-build, premortem on claude, compliance on codex, implementer on gemini$' "$T/stderr" || fail "the run should say which expert sits on which provider: $(grep '^panel:' "$T/stderr")"
 
 on "$T" "q?" --specialist skeptic:claude --specialist customer --providers claude,codex,gemini,grok-build --synthesizer synth --out-dir "$T/o2"
 [[ $rc -eq 0 ]] || fail "the override run failed: $(cat "$T/stderr")"
@@ -153,7 +153,7 @@ on "$T" "q?" --specialist skeptic --specialist customer --specialist architect -
 [[ $rc -eq 1 ]] && grep -q 'only 2 providers are usable' "$T/stderr" || fail "an explicit list longer than the pool must refuse: $(cat "$T/stderr")"
 on "$T" "q?" --panel risk-review --providers claude,codex,gemini --synthesizer synth --out-dir "$T/out"; [[ $rc -eq 0 ]] || fail "a preset must shrink to fit: $(cat "$T/stderr")"
 [[ "$(jq -c '.panel.dropped' "$T/out/decision-log.json")" == '["implementer"]' && "$(jq '.panel.experts | length' "$T/out/decision-log.json")" == 3 ]] || fail "the lowest-priority expert should be dropped: $(panel_of "$T")"
-grep -q 'dropped: implementer' "$T/stderr" || fail "the dropped expert must be reported"
+grep -q '^panel: .* on claude.* (dropped: implementer)$' "$T/stderr" || fail "the dropped expert must be reported: $(grep '^panel:' "$T/stderr")"
 on "$T" "q?" --panel risk-review --providers claude,codex --synthesizer synth --out-dir "$T/out"; [[ $rc -eq 1 ]] && grep -q 'at least 3 seats' "$T/stderr" || fail "below the preset minimum must refuse: $(cat "$T/stderr")"
 
 # the default pool: providers that answer the availability probe
