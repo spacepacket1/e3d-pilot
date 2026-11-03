@@ -8,7 +8,7 @@
 
 Today a council can hold only as many experts as there are usable providers (usually 2 to 4), and nothing helps a person choose which experts to name. Phase 2a removes the first limit and adds a free, rule-based suggestion for the second. **Both are engine only, behind `E3D_SPECIALISTS=1`.** It also unlocks the evaluation plan's arm F ("same model, three lenses", Phase 0 section 4), which needs several seats on one provider.
 
-**Not in 2a:** anything hosted (passing expert parameters through `e3d_debate`, billing's agent routes, quotes and pricing: that is **Phase 2b**, option B); a language-model router (a later, quoted step); running a suggestion automatically (`--auto`); per-expert word limits; effort plumbing into adapters. With none of the new flags, every prompt, flag and receipt stays exactly as it is (golden tests).
+**Not in 2a:** anything hosted (passing expert parameters through `e3d_debate`, billing's agent routes, quotes and pricing: that is **Phase 2b**, option B; the hosted web part is specified in [the Phase 2b.1 spec](experts-phase2b1-hosted-lenses-spec.md)); a language-model router (a later, quoted step); running a suggestion automatically (`--auto`); per-expert word limits; effort plumbing into adapters. With none of the new flags, every prompt, flag and receipt stays exactly as it is (golden tests).
 
 ## 2. Part A: a seat is not a provider
 

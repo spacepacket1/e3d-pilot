@@ -1,0 +1,159 @@
+# Experts, Phase 2b.1: hosted lenses, one expert per vendor, flag off (specification, docs only)
+
+**Status:** draft 1, 2026-11-03. No code, no flag, no deploy, no model call. Owner direction of 2026-11-03: hosted web users pick experts (lenses) on the Ask page, or press a free "Suggest" button; the **existing four-vendor hosted panel** runs with **one expert per vendor**.
+**Parents:** [Phase 2a](experts-phase2a-seats-and-suggest-spec.md), [Phase 1](experts-phase1-private-experts-spec.md), [Phase 0](experts-phase0-overlap-map-and-eval-plan.md) (D5, D6), [methodology](../methodology/expert-councils.md), [F vs E result](../experiments/2026-11-02-fve-planted-errors/RESULTS.md).
+**Evidence tags:** **[E: path]** read today (engine paths are this repo at 56e0e45; `cloud:` paths are `e3d-pilot-cloud` origin/main at 4aab312, read-only). **[G]** guess. **[N]** not verified.
+
+## 0. Summary (what ships, what does not)
+
+1. The Ask page gets an optional **Experts** picker (2 up to the account's panel size, at most 4) from the **eight built-in experts**, and a free **Suggest experts** button that runs rules **in the browser** (no request, no model).
+2. A web debate with experts runs the **same panel** as today. The engine assigns each expert to a **different vendor**; panel vendors left without an expert answer as plain seats. Users never pick a model.
+3. The quote **adds the lens text to every seat call** (a new basis field, table-driven, upper bound), shows "up to X credits with experts (Y without)", and holds that maximum; settlement and refund are the existing path.
+4. New request field `experts` on the two web routes, behind **`PILOT_DEBATE_EXPERTS`** (default off; with it off the field is ignored and every quote, hold, run body and snapshot is byte-identical).
+5. The debate row stores the experts (id plus content hash); the Gallery snapshot lists them (ids only, no lens text).
+6. **Not in 2b.1:** MCP `e3d_debate` or agent-route parameters (they wait for the single billing agent-route change with `challenge_of`, D5 option B); more seats than vendors; your own experts (they stay local); per-seat expert labels in the published page; any claim that experts improve answers (unmeasured; copy says "perspectives").
+7. Three findings change the plan (section 9): the hosted engine would let a host-side folder **override a built-in expert by name**, the planner **drops panel vendors** when experts are fewer than vendors, and the quote must carry lens bytes **in the ledger's basis**, not just on the page. All three are small engine or cloud changes, specified below.
+8. Four PRs, each flag-off and mergeable alone: engine (2b.1a), cloud money path (2b.1b), cloud browser (2b.1c), then the owner-approved release request.
+
+## 1. Answers to the open items
+
+**1. Do billing's agent routes accept `challenge_of`?** **No.** `runFields` in `cloud:src/agent.js` accepts only `principal, providers, question_sha256, rounds, max_words` (plus `question_bytes, prompt_version, searches, idempotency_key, search_enabled, quote_id`); `challenge`/`challengeOf` appears nowhere in `agent.js`, `internal-api.js` or `public-api.js` (git grep, empty) [E]. `challengeOf` exists only on the **web** routes `POST /api/debates` and `/api/debates/quote` (`cloud:src/debates-routes.js`) [E]. The challenge spec plans `challenge_of` as a pass-through on `e3d_quote`/`e3d_debate` but it is not built [E: `cloud:docs/human-contributions-conversation-continuations-spec.md` line 66]. The engine has no `challenge_of` either (`git grep` in `bin lib`: empty) [E]. 2b.1 does not need it.
+
+**2. How are tokens priced, and how do lens tokens enter?** A web quote is `tp.quote(basis, table)` over a basis `{providers, rounds, maxWords, questionBytes, promptVersion[, searches]}` [E: `cloud:src/token-pricing.js`, `src/debate-saga.js` `webBasis`]. For each round and provider the manifest holds `inMax = overhead.round1 + Q` (round 1) or `overhead.roundN + Q + sum(answerBytes)` (round 2+), `outMax = outputCeiling` (words x tokensPerWord + overhead, clamped), and one synthesis call; **bytes are used as an upper bound on tokens** [E: `compute()`; `cloud:docs/debates/2026-10-22-token-pricing-spec-review/transcript.md` line 413]. The overheads (`promptOverheadBytes.v2` 600 / 1800 / 2400) live in `cloud:deploy/env/rate-table.json` [E]; `CLAUDE.md` says to re-measure them with `E3D_DEBATE_PROMPT_OVERHEAD=1` when engine prompt wording changes [E]. **The lens block is not in any of those numbers**: the engine prints it before the seat's prompt in every round (`round_prompt`, `bin/e3d-debate` line 723) and never in the synthesis [E]. The block for the eight built-ins is **371 to 480 bytes** (measured today with `lensBlock`, wrapper included) [E: run of `lib/debate/specialists-plan.mjs`]. **It matters for money**: at settlement each usage row is clamped to its manifest `inMax` (`minBig(row.in, m.inMax)`, `cloud:src/token-pricing.js` line 699) and the charge is never above the hold [E], so an under-priced lens is our loss, not the user's.
+
+*Proposed formula (deterministic, never under-estimates).* New optional basis field **`lensBytes` L** (integer 1 to 4096; absent means 0 and everything is as today). In `compute()`: `base_round1 = overhead.round1 + Q + L`, `base_roundN = overhead.roundN + Q + sumA + L`; the synthesis entry is unchanged. L is added to **every** seat call of every round, as if **every** seat were lensed (assignment is decided later by the engine, and over-counting only refunds at settlement). L comes from a new optional table field **`lensBytesMax`** (1 to 4096), set to **640** (the 480-byte maximum plus 33 percent headroom [G]); the quote uses it only when `experts` are named. Extra `s` is exactly `L x sum over (round, provider) of in_p`; for a 4-vendor, 2-round quote that is 8 calls x 640 bytes at each vendor's input rate. I did **not** compute the credit delta (it needs the live table); the 2b.1b PR prints before and after on the real table [N]. The engine **enforces** it: the run body carries `lens_bytes`, and the engine refuses (definitive, free) any chosen expert whose block is larger, the same "quoted limit honoured exactly or refused" pattern as `max_tokens` and `answer_bytes` [E: `lib/mcp/run-server.js` header]. **Prompt version:** no bump. `promptVersion` names the engine's v2 prompt text, which the lens block does not change (it is prepended outside it). The **table `version` is bumped** (new field, new value). A bump of `promptVersion` is needed only if the wrapper text of `lensBlock` changes; a test pins that the maximum built-in block is at most `lensBytesMax`. `lib/debate/cost-model.mjs` has `L: 130` tokens as a *relative* estimate [E]; it is not used for money (it is below the real 480 bytes).
+
+**3. Does e3d-mcp / the hosted run need more than pass-through?** **Yes, three small things** (section 3): the run listener's strict field list and capability, a built-in-only switch in the planner, and "plain" seats for unused panel vendors. The run body already reaches the engine as a strict JSON object validated by `validateRunRequest` (`FIELDS` set, unknown fields refused) and planned by `planWebRun` → `planDebate` → `executeDebate`, which spawns `bin/e3d-debate --providers ...` [E: `lib/mcp/run-server.js`, `bin/e3d-mcp` lines 213, 565-583, 1241]. Experts need `--specialist` flags and `E3D_SPECIALISTS=1` on that child [E: `bin/e3d-debate` lines 164-168, 206-229]. Per-token limits are keyed by provider and the engine refuses two seats on one provider under token limits (`bin/e3d-debate` line 276) [E]; with at most one expert per vendor and `assign` preferring a vendor with no seat yet, seat ids equal adapter names and that check passes [E: `lib/debate/specialists-plan.mjs`].
+
+## 2. Engine: what the hosted engine does (PR 2b.1a)
+
+### 2.1 Run body and validation (`lib/mcp/run-server.js`)
+
+- New fields in `FIELDS`: **`experts`**: an array of 2 to 16 objects `{ "id": "<catalogue id>", "hash": "sha256:<64 hex>" }`, ids matching `^[a-z0-9]+(-[a-z0-9]+)*$`, **distinct**; and **`lens_bytes`**: integer 1 to 4096. Both or neither; both only with the four per-token fields (like `max_searches`); anything else is `400 invalid` before anything runs [E: pattern from `validatePerTokenFields`].
+- **Capability `experts_v1`**, advertised next to `per_token_v1` only when `E3D_MCP_EXPERTS_RUN=1` and per-token pricing is on (same mechanism as `per_token_search_v1`) [E: `capabilities` in `startRunServer`]. Any other value of the variable refuses to start (as `E3D_MCP_EXPERTS` does) [E: `lib/mcp/experts-read.js`].
+- In `planWebRun`, after the panel has been degraded by availability, **`experts.length` must be at most the number of providers actually in the plan**, else `400 invalid` (reason `experts_exceed_panel`). With fewer providers than experts the engine **refuses; it never adds seats** and never silently drops an expert. Billing fails such a debate through its existing definitive-refusal path (hold released, zero charge) [E: `cloud:src/debate-saga.js` `submit`].
+- The listener's idempotency key is `sha256(canonicalJson(fields))`, so `experts` and `lens_bytes` are part of it; a retried submit sends the stored body and gets `200 existing`; a changed body is `409 conflict` [E].
+
+### 2.2 Planner changes (`lib/debate/specialists-cli.mjs`, `bin/e3d-debate`; all refuse without `E3D_SPECIALISTS=1`)
+
+- **`--builtin-only`** (or env `E3D_SPECIALISTS_BUILTIN_ONLY=1`): the user and repo tiers are not read. **Needed because** `SPEC_USER=$HOME/.config/e3d-pilot/specialists` and `SPEC_REPO=${LINK_REPO:-$PWD}/.e3d-pilot/specialists` are loaded after the built-ins and **win by name** [E: `bin/e3d-debate` lines 175-177; Phase 1 load order]. A hosted debate must never run a folder found on the host.
+- **`--expert-pin name=sha256:...`** (repeatable): the planner refuses if a loaded expert's content hash differs. The cloud sends the hash it showed the user; a drifted catalogue fails closed (`invalid`, free) instead of running text the user did not see.
+- **`--fill-pool`**: after assigning the named experts, every pool provider that has no seat becomes a **plain seat** (empty lens, `expert: null` in the receipt). So the **account's panel runs exactly as billing priced it**, including any required provider (`E3D_MCP_REQUIRED_PROVIDERS`), instead of shrinking to the number of experts. `independence` is computed over all seats. Today's planner makes seats equal to experts, and the `--specialist` path needs at least two [E: `cmdPlan`]; 2b.1 keeps that minimum of **2**.
+- `e3d-mcp` passes: `--providers <the degraded panel>` (this is the **pool** when experts are given [E: `PROVIDERS_GIVEN`]), `--specialist <id>` per expert in request order, `--builtin-only --fill-pool --expert-pin ...`, env `E3D_SPECIALISTS=1`, and keeps every other argument. The synthesizer is still chosen by `e3d-mcp` and never receives a lens [E: docs/experts.md "What a seat receives"].
+
+### 2.3 Receipt and transcript
+
+The hosted result schema is frozen (`finalize` has `result.positions[{provider, model, position}]` and `transcript`) [E: `cloud:test/fixtures/external-auth/schemas/finalize.schema.json`], so **no per-seat expert field is added**. The engine instead writes **one info line** after the question in `transcript.md`: `**Experts (perspectives, not measured):** skeptic on claude, customer on gemini; plain seat: codex.` The Gallery parser already skips `**Label:** ...` info lines up to 400 characters (`INFO_LINE` in `cloud:src/gallery-snapshot.js`) [E], so publishing keeps working; a cloud test pins it. Headings stay `## Round N -- <adapter>` (seat id equals adapter). The full receipt (`decision-log.json` `panel` block with name, version, hash, tier, seat) is written as today [E: docs/experts.md]; hosted storage does not keep it.
+
+### 2.4 Tests (engine, targeted)
+
+`tests/mcp-runserver.sh`: unknown field refused without the capability; experts without per-token refused; duplicate / unknown / non-catalogue id, 1 expert, more experts than providers, bad hash, `lens_bytes` smaller than a block: all `400 invalid` and **nothing runs**; identical retry is `200 existing`. A debate-level test with stub adapters: 2 and 4 experts on a 4-vendor pool give distinct adapters, plain seats for the rest, the info line, no lens in the synthesis prompt, a planted `~/.config/e3d-pilot/specialists/skeptic` and `./.e3d-pilot/specialists/skeptic` **ignored** with `--builtin-only`, a pin mismatch refused. A guard test: every built-in lens block is at most 640 bytes. Without any new flag, golden prompts and receipts unchanged.
+
+## 3. Cloud: money path (PR 2b.1b)
+
+### 3.1 Flag and catalogue
+
+- **`PILOT_DEBATE_EXPERTS`**, default `false`, in `cloud:src/config.js` beside `PILOT_DEBATE_THREADS` / `PILOT_DEBATE_CHALLENGES` [E]. Startup **fails** if it is `true` without `PILOT_PRICING_MODE=per_token` or when the rate table has no `lensBytesMax` (same style as the challenges and council checks [E: `config.js` lines 493-498, 478-481]).
+- A checked-in **catalogue** `src/experts-catalogue.json`: for each of the eight experts `{id, label, one_line, tags, hash, lensBlockBytes}` taken from the engine's `e3d_list_experts` output (`content_hash`, `lens`, `tags`) [E: `lib/mcp/experts-read.js`]. It is the only source of ids the routes accept. Drift against the engine is caught by the **pin** (2.2) at run time and by a script `ops/` check that compares hashes; I did not design how the cloud repo gets the engine's files in CI [N].
+- With the flag on, `/auth/me` gains `features.experts: true` (the Ask page's switch, like `features.challenges`) [E: `cloud:src/auth-routes.js` line 167]; absent when off.
+
+### 3.2 Request and validation (follow `challengeOf` / `followUpOf`)
+
+- Field **`experts`**: an array of catalogue ids, on `POST /api/debates/quote` and `POST /api/debates` (added to `createFields` and the quote's allowed list only when the flag is on; **with it off the field is deleted in `readBody`, ignored not refused**, exactly as `challengeOf` [E: `debates-routes.js` lines 156, 262-271]).
+- Validation, one helper `expertsOf(body, panelSize)`: array of strings; **2 to N** where N is the account's effective panel size resolved by `panel.resolveForUser` (at most 4 by default [E: `cloud:src/panel.js` `DEFAULT_MAX`/`MAX_MAX`]); every id in the catalogue; distinct; else `400 invalid_experts` with `reason` in `type | too_few | too_many | unknown | duplicate`. Never echo a value. A non-array is `invalid_request` as other typed fields.
+- New errors in `CREATE_ERRORS`: `invalid_experts` (400), **`experts_unavailable`** (503, retryable: the run listener lacks `experts_v1`, or it refused an expert run inside the capability-cache window; the hold is released in full, as `search_unavailable` [E: `saga.submit`]).
+- **Quote answer:** `quote.experts = { ids, creditsOff }`: `credits` is the maximum **with** lenses, `creditsOff` the maximum without, from one table snapshot (the `search.creditsOff` pattern [E: `quoteView`]); `tiers` are quoted with the same experts. Combining `experts` with `followUpOf`, `challengeOf` or `forkOf` is **allowed** (lenses are separate from the carried block; a test pins that the quote prices both).
+
+### 3.3 Quote row, saga, reserve, settle
+
+- `saga.quote({..., experts})`: `webBasis` gains `lensBytes: table.lensBytesMax` **only when experts are present**; `tp.canonicalBasis` accepts `lensBytes` (integer 1 to 4096) and carries it into the returned basis; `compute()` adds it as in section 1, item 2. The stored web quote row gains `experts` (ordered ids). The connector quote key `canonical()` appends `lensBytes` when present so rows cannot collide [E: `quotes.js`].
+- `saga.create({..., experts})`: the reserve plan's basis is rebuilt with the **row's** `lensBytes`; the ledger recomputes the quote from the live table and holds it only if at most the row's `credits`, else `quote_changed` [E: `ledger.perTokenHold`]. A body whose `experts` differ from the row's (set or order) is **`quote_changed`** with a fresh quote, not a hold. The debate row stores **`experts: [{id, hash}]`** (the catalogue hash shown) in `debates.createIn`, inside the reserve transaction, with `panelRequested` [E: `saga.create`].
+- `runRequest(d)` adds `experts` (from the row) and `lens_bytes` (from the reservation snapshot `p.basis.lensBytes`, as `maxTokens` comes from `pricingOf`) **only when the row has experts**; it never reads the flag, so a retried submit after a rollback sends the same body [E: comment on `runRequest`].
+- `submit`: a definitive `invalid` refusal of a body with `experts` fails the debate as `experts_unavailable` (free), like the search rollback race [E].
+- **Settlement:** unchanged: usage rows, per-row clamp to the manifest, charge at most the hold, failed policy `zero` [E: `token-pricing.js` 834-852]. With fewer experts than vendors the plain seats cost what they cost today; the over-count of L on them is refunded.
+- **Idempotency:** `webRequestId(userId, requestId)` is the ledger key; a replay is answered from the ledger **before** any quote check and returns the **stored** debate (with its stored experts) whatever the body says, exactly as it does for the question today [E: `saga.create`, `replayed`]. A replay with other experts therefore returns the first debate and creates nothing; a test pins it. No new ledger path.
+- **Views:** `debateView` adds `experts: [id]` when present; History and the result show "Experts: Skeptic, Customer". The transcript route is unchanged (the info line is in the text).
+
+### 3.4 Gallery publish snapshot
+
+`buildSnapshot` adds **`experts: [{id, label}]`** only when the debate row has experts (so every existing snapshot hash is unchanged; `SNAPSHOT_VERSION` stays 1) [E: `gallery-snapshot.js` `hashOf` covers the fields]. The preview and the public page show "Lenses used: Skeptic, Customer. Chosen by the asker; perspectives, not measured." **Ids and labels only: no lens text, no model assignment.** A fork or challenge of a published debate does **not** carry experts in 2b.1 [G].
+
+### 3.5 Tests required (money path; targeted files, no full suite)
+
+`test/token-pricing*.test.js` (+ vectors), `test/debate-saga.test.js`, `test/debates-routes.test.js`, a new `test/debate-experts.test.js`, `test/gallery-publish.test.js`, `test/config*.test.js`.
+
+1. **Quote:** with experts, `credits` rises by **exactly** `ceilDiv(L x sum(in_p) x calls, 1e9)` for stub tables (4 vendors x 1, 2, 3 rounds; 2, 3, 4 providers); without experts every existing quote vector is **byte-identical** (`test/fixtures/search-pricing/quote-vectors.json` and its `SHA256SUMS` unchanged); `creditsOff` equals the no-expert quote; the synthesis entry is unchanged; `lensBytes` above 4096 or 0 is invalid; a table without `lensBytesMax` refuses the flag at startup.
+2. **Never under-estimates:** for every built-in expert, `lensBlockBytes` is at most `lensBytesMax`; a settlement test feeds usage rows whose input equals `inMax` and shows the charge is at most the hold and nothing is clamped away.
+3. **Reserve / settle / refund:** hold equals the quoted maximum; ok run charges actual (at least `minCharge`); failed run charges per `failedPolicy`; fewer experts than vendors refunds the difference; refused by the listener (`invalid`, `busy`) releases the hold in full.
+4. **Replay:** same `requestId` twice makes one debate and one hold; replay with different experts returns the first debate; a retry after the flag is turned off still returns it.
+5. **Validation:** unknown, duplicate, non-string, 1 expert, more than the panel size (panel of 2, 3 and 4), over 4 ids: `invalid_experts`, **nothing held**; user text and ids never logged (extend the saga privacy test).
+6. **Flag off:** `experts` ignored on both routes; the quote, hold, stored row, run body, snapshot and `/auth/me` equal today's (golden); `features.experts` absent.
+7. **Concurrency:** two simultaneous creates with one `requestId` and experts make one debate; a third active debate is `too_many_debates` as today [E: `maxOutstanding = 2` counted inside the reserve transaction]; a SIGKILL between reserve and submit resubmits the **same body with experts** (extend the existing crash test) [E: `test/debate-saga.test.js`].
+8. **Quote changed:** experts differ from the row; table version changes between quote and create; the panel changes; each gives `quote_changed` with a fresh quote and no hold.
+9. **Publish:** a debate with experts publishes; the snapshot hash verifies; the info line does not break `parseTranscript`; no lens text appears in the preview or public JSON.
+10. **Mutation checks (each must make a test fail):** drop `lensBytes` from `compute`; drop it from the ledger's recomputed basis; change `<= panelSize` to `<`; skip the flag gate in `readBody`; omit `experts` from the run body; drop `experts` from the replay path; let a duplicate id through; send `lens_bytes` smaller than the quote's.
+
+## 4. Browser (PR 2b.1c)
+
+- **Ask page:** with `features.experts`, a lazy module `site/app/lazy/experts/experts.js` (loaded only then, like `lazy/threads`, so the main bundle does not grow with the flag off [E: `ask.js` comments on `ext`]) fills `this.ext = { experts: [...] }`, which `quoteDebate` and `createDebate` already spread into the request [E: `site/app/api.js` lines 160-162]; a change calls the existing debounced `scheduleQuote` (as `followChanged`). The bundle budget is **[N]**: I did not read how `build-site.js` or `test/site.test.js` enforce it.
+- **Suggest runs in the browser.** Decision: rules JSON served from the site (`/js/experts-suggest.json`, same origin, allowed by `connect-src 'self'`; the taster already does this with `/js/try-samples.json` [E: `ask.js`, CSP in `cloud:src/gallery-page.js`]) plus a ~40-line port of `matches`/`suggest` (`lib/specialists/suggest.mjs`, whole-word, Unicode-aware regex [E]). **Why not a server route:** a route adds an endpoint, a rate limit, a log line and a copy of the engine's code on the server, and the question would leave the browser a second time; the browser does it with no request, no tracking (the site has no analytics) and no new third party. **Cost:** the logic exists in two languages; a test runs shared vectors (question to experts, generated once from the engine's `suggest.mjs`, checked in with the rules' hash) and a sync note in the runbook. Fallback if the port drifts: the server route, as a later change.
+- **Behaviour:** Suggest fills the selection (up to N); it never runs a debate and the user can change it; low confidence selects the `risk-review` preset's first N experts and says so. Fewer than 2 selected: the form behaves as without experts (the field is not sent).
+- **Exact copy (all marked unmeasured; none says "better"):**
+  - Heading: `Experts (optional)`.
+  - Help: `Pick 2 to {N} experts. Each is a lens: it tells one model what to look for. You do not choose models; Pilot gives each expert to a different vendor on your panel.`
+  - Notice (always visible): `Lenses give the models different perspectives. We have not measured whether they improve answers, and a lens can pull a model's attention away from other checks.` (the last clause is from the F vs E data: seats with a lens stopped checking arithmetic under a cap [E: RESULTS.md]; one inconclusive test, so it says "can".)
+  - Button: `Suggest experts`. Under it: `Free. Runs in your browser, matches words in your question and does not use a model.`
+  - Result: `Suggested: {Skeptic}, {Customer}. Matched words: ship, pricing. Rule-based advice, not a measurement. It matches words; it does not understand your question.` Low confidence: `No clear match. Showing the general risk review set instead.`
+  - Limit: `Your panel has {N} vendors, so you can pick up to {N} experts.`
+  - Price: `Up to {X} credits with experts ({Y} without). The difference is the lens text sent to each model.`
+  - After the run: `Experts: {Skeptic}, {Customer}`; the transcript line says `perspectives, not measured`.
+  - Never: "smarter", "better", "improves", "accuracy", or "multi-model" for a panel that is not 2+ vendor families (the panel guarantee already holds [E: `panel.runnable`]).
+- **Accessibility:** a `fieldset` with a `legend`; native checkboxes with labels (keyboard and screen-reader operable); the count and limit in a `role="status"` region (`aria-live="polite"`) tied with `aria-describedby`; a disabled box when N are chosen says why in text; Suggest is a real `button`; focus returns to it after a result; no colour-only state; works at phone width (16 px gutter).
+- **Docs:** `docs/site/experts.md` (currently says experts are not available in the hosted council [E]) gets a flag-gated paragraph in the release PR only; `docs/site/errors.md` lists `invalid_experts` and `experts_unavailable` in 2b.1b.
+- Tests: `test/dashboard-ask.test.js` style (picker limits, quote refresh on change, ext sent, flag-off page and request identical to today's golden `test/fixtures/dashboard-flag-off.json`), the Suggest vectors, a no-network test (no `fetch` besides the rules file), a copy test that the banned words are absent, and the exact strings.
+
+## 5. Security and privacy
+
+- Expert ids and hashes are **catalogue identifiers, not text**; the user's question is not logged by this feature (logs carry ids, states and codes only [E: saga header]); the rules run in the browser and send nothing.
+- **No new third party; no analytics.** No new origin in CSP.
+- **Prompt injection:** the lens text is ours (built-in, version-pinned by hash, shown whole by `--show-specialist`), delimited, grants no tool and never reaches the synthesis [E: docs/experts.md]. The user's question remains the injection surface exactly as today. A user cannot supply lens text in 2b.1, so no new untrusted text reaches a model.
+- The built-in-only switch and the hash pin close the one new path (a host folder overriding a lens).
+- Experts do not change who is paid or which vendors run: the account's panel, allowlist and required providers are respected (plain seats).
+
+## 6. Phases and pull requests (each flag-off, mergeable alone)
+
+| PR | Repo | Files likely | Tests | Size |
+| --- | --- | --- | --- | --- |
+| **2b.1a** engine | e3d-pilot | `lib/mcp/run-server.js`, `bin/e3d-mcp` (planWebRun, executeDebate), `lib/debate/specialists-cli.mjs`, `bin/e3d-debate` (flags, info line), `lib/mcp/pricing.js` (capability) | `mcp-runserver.sh`, `mcp-runs.sh`, `debate-specialists.sh`, `experts-assignment.sh` | about 300 lines code, 300 tests; medium risk (bash) |
+| **2b.1b** cloud money | e3d-pilot-cloud | `token-pricing.js`, `quotes.js`, `debate-saga.js`, `debates.js`, `debates-routes.js`, `config.js`, `auth-routes.js`, `gallery-snapshot.js`, `experts-catalogue.json`, `deploy/env/rate-table*.json` (field only, flag off), `docs/runbook.md`, `docs/site/errors.md` | section 3.5 | about 400 lines code, 600 tests; **the risky PR** |
+| **2b.1c** cloud browser | e3d-pilot-cloud | `site/app/lazy/experts/`, `ask.js` (hook only), `site/copy`, `/js/experts-suggest.json`, `docs/site/experts.md` (draft, not live), CSS | section 4 | about 300 lines, 250 tests |
+| **Release** | both | deploy order below; owner request | section 7 | no code |
+
+Dependencies: 2b.1a before the flag is ever on; 2b.1b and 2b.1c independent of each other but 2b.1c needs 2b.1b's routes to be useful. Total is roughly 1,300 lines of code and 1,150 of tests [G].
+
+## 7. Release criteria and rollback
+
+**Release criteria (owner-approved step, separate from merging):** all three PRs merged flag-off and a deploy with the flag off shows quotes, holds and a real debate unchanged; the rate table carries `lensBytesMax` and a new `version`; the engine is deployed first and the health check advertises `experts_v1`; on the **test instance** a quote with experts shows the expected delta, two real debates (2 and 4 experts) settle at or below the hold, one is published and renders, one forced failure refunds; `ops/billing-check.js` is clean; a replay and a SIGKILL drill pass; the copy matches section 4. Deploy order: engine, rate table, cloud with the flag **off**, then the flag.
+**Rollback:** set `PILOT_DEBATE_EXPERTS=false` and restart billing: the field is ignored, the picker disappears, nothing else changes; rows and snapshots with experts stay valid and inert; an in-flight or reserved debate still sends its stored `experts` body, so it finishes and settles normally. The engine can keep `experts_v1` advertised. If the quote proves too low, raise `lensBytesMax` (a table change) or turn the flag off; nothing needs ledger repair.
+
+## 8. Decisions for the owner (my recommendation first)
+
+- **D12. Panel vendors without an expert run as plain seats** (`--fill-pool`), minimum 2 experts. Alternative: only expert seats run (cheaper, but can drop a required vendor and runs a different panel from the one priced); or require exactly N picks (worse to use).
+- **D13. Lens cost is a basis field with a table cap (`lensBytesMax` = 640), applied to every seat call** (conservative, refunded at settlement), not a bump of `promptOverheadBytes` (which would reprice every debate with the flag off).
+- **D14. Suggest runs in the browser** from a served rules file; the server route is the fallback if the two implementations drift.
+- **D15. Pin expert hashes** from the cloud catalogue into the run; a mismatch fails the debate free (the alternative, ids only, can run text the user did not see).
+- **D16. `experts` is ignored, not refused, with the flag off** (the challenge pattern; flag-off is byte-identical).
+- **D17. Snapshot lists expert labels only**; per-seat pairing (which vendor played which lens) waits until the finalize schema can carry it.
+- **D18. Do not ship before the copy keeps the "unmeasured" notice**, including the arithmetic caveat from the F vs E result; drop that clause only if the owner prefers shorter copy.
+
+## 9. What I found that changes the plan
+
+1. **A host folder can override a built-in expert by name** in the hosted engine (user and repo tiers load after built-ins) [E]. Plan: `--builtin-only` and the hash pin (2.2).
+2. **The planner shrinks the council to the number of experts** and `--specialist` needs at least 2 [E]; on a 4-vendor panel with 2 experts that would drop two vendors the quote priced and could drop a required one. Plan: `--fill-pool`.
+3. **Lens tokens are in no number of the quote or the manifest**, and settlement clamps usage to the manifest [E]. Plan: the `lensBytes` basis field; without it we would absorb the cost.
+4. **The F vs E test is inconclusive and showed lens seats skipping basic checks** [E]; the copy says so.
+5. The plan is otherwise feasible: the run body, the quote basis, the ledger recompute and the Ask page `ext` hook already have the shapes needed.
+
+## 10. Not verified
+
+The credit delta of the lens bytes (needs the live rate table); whether the production host has `jq` and `node` for the experts path (the per-token path already uses `jq` [E: `bin/e3d-debate` line 276], not checked on the host); how the cloud repo will get the engine's expert hashes in CI; the dashboard's main-bundle byte budget and how `build-site.js` enforces it; the exact shape of the run listener's health answer that carries capabilities (read from `run-server.js`, not exercised); whether `e3d-mcp`'s daily-budget estimate (`worstFor`) needs the lens bytes (it is tiny; not checked); the 640-byte headroom (a guess); that no other cloud caller builds a `webBasis` (I read `saga.quote` and `saga.create` only, not the Gallery council path `gallery-council-run.js`, which also quotes); that browsers' Unicode regex support matches Node's for the suggest port; the line and size estimates in section 6.
