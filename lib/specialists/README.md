@@ -24,3 +24,5 @@ a measured track record, and nothing here claims one.
 
 To add your own, copy a folder into `~/.config/e3d-pilot/specialists/` (yours) or `<repo>/.e3d-pilot/specialists/` (a project's); a later
 location wins by name. Check it with `E3D_SPECIALISTS=1 e3d-debate --validate-specialist <folder>`. Licensed MIT, like the engine.
+
+**Suggest a panel (free, rule-based).** `E3D_SPECIALISTS=1 e3d-debate "question" --suggest-panel [--task decide|review-spec|find-gaps]` prints the experts whose trigger words appear in the question, the words that matched, a confidence (`low` or `medium`, never higher) and the command to run them. It runs nothing, calls no model and writes nothing. The table is `suggest.json` (list it with `--show-suggest-rules`); fewer than two matching experts proposes the `risk-review` preset instead. Rule-based advice, not a measurement: it matches words; it does not understand your question.

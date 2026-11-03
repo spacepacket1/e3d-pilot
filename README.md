@@ -969,9 +969,10 @@ An expert is a reusable lens for one seat in a debate ("assume it fails", "you a
 ```bash
 E3D_SPECIALISTS=1 bin/e3d-debate "Should we ship this?" --panel risk-review
 E3D_SPECIALISTS=1 bin/e3d-debate "Should we ship this?" --specialist skeptic --specialist customer --specialist architect
+E3D_SPECIALISTS=1 bin/e3d-debate "Should we ship this?" --suggest-panel   # free: proposes experts from trigger words; runs nothing
 ```
 
-Eight built-in experts and three four-seat presets ship in `lib/specialists`. A panel holds up to 6 experts; with fewer providers than experts the extras share a provider (seats `claude`, `claude.2`, ...), and a panel on fewer than 2 vendor families is refused unless you pass `--min-families 1` (lenses differ, the model does not). Experts can be listed over MCP (`E3D_MCP_EXPERTS=1`); running them through MCP or the hosted server is **not available yet**. Whether skills improve answers has **not been measured**: the plan, the equations and a tested cost model are in the [methodology draft](docs/methodology/expert-councils.md). How to use experts, write your own, and what is refused: [docs/experts.md](docs/experts.md).
+Eight built-in experts and three four-seat presets ship in `lib/specialists`. A panel holds up to 6 experts; with fewer providers than experts the extras share a provider (seats `claude`, `claude.2`, ...), and a panel on fewer than 2 vendor families is refused unless you pass `--min-families 1` (lenses differ, the model does not). `--suggest-panel` is a free, rule-based proposal (it matches words, runs no debate and calls no model); `--show-suggest-rules` lists its table. Experts can be listed over MCP (`E3D_MCP_EXPERTS=1`); running them through MCP or the hosted server is **not available yet**. Whether skills improve answers has **not been measured**: the plan, the equations and a tested cost model are in the [methodology draft](docs/methodology/expert-councils.md). How to use experts, write your own, and what is refused: [docs/experts.md](docs/experts.md).
 
 ## Running on a schedule
 
