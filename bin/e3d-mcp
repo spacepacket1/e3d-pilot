@@ -35,7 +35,7 @@ import { chooseVoices, independence, isSampling } from '../lib/mcp/voices.js';
 import { startHttpServer } from '../lib/mcp/http.js';
 import { createSlots } from '../lib/mcp/slots.js';
 import { createUsage, usageFromTranscript, worstCase, usageTool, usageHandler } from '../lib/mcp/usage.js';
-import { webSearchConfig, sanitizeText, cleanUrl, hostOf, API_PROVIDERS, PRIVACY_NOTICE, searchAvailability } from '../lib/debate/websearch.mjs';
+import { webSearchConfig, sanitizeText, cleanUrl, hostOf, API_PROVIDERS, PRIVACY_NOTICE, searchAvailability, stripAnswerPrefix } from '../lib/debate/websearch.mjs';
 import { createExternalAuth, validateConfig as validateAuthConfig } from '../lib/mcp/external-auth.js';
 import { createOutbox, outboxStatus, outboxExport, outboxRetryDead } from '../lib/mcp/outbox.js';
 import { createMetering, createReadiness, modelsFromTranscript, orphanPolicy } from '../lib/mcp/metering.js';
@@ -509,7 +509,7 @@ function agentReplay(b, plan, args) {
   const result = {
     final_answer: res.final_answer, consensus: res.consensus,
     dissent: { present: !none, summary: none ? 'none' : res.dissent },
-    positions: (Array.isArray(res.positions) ? res.positions : []).map((p) => ({ provider: p.provider, text: p.position })),
+    positions: (Array.isArray(res.positions) ? res.positions : []).map((p) => ({ provider: p.provider, text: stripAnswerPrefix(String(p.position ?? '')) })),
     mode: args.mode ?? 'quick', providers: Array.isArray(d.providers) && d.providers.length ? d.providers : plan.providers, rounds_ran: Number.isSafeInteger(d.rounds) ? d.rounds : plan.rounds,
     warnings: [], replayed: true, ...(typeof b.debate_id === 'string' ? { debate_id: b.debate_id } : {}),
     ...(res.web_search && typeof res.web_search === 'object' ? { web_search: res.web_search } : {}),
@@ -629,7 +629,9 @@ async function executeDebate(plan, handle, ctx, { progress, onStarted, signal } 
     // Every outcome settles what actually ran (no transcript = zero calls = release).
     const outcome = r.cancelled ? 'error' : r.timedOut ? 'timeout' : (r.code !== 0 || !verdict ? 'error' : 'ok');
     const { roundsRan, positions: rawPositions } = parsePositions(transcript);
-    const positions = rawPositions.map((p) => ({ ...p, text: clean(p.text) }));
+    // the answer only: the source list and notices ride in the transcript (data for later rounds) and in web_search, not in the position
+    const positions = rawPositions.map((p) => ({ ...p, text: clean(stripAnswerPrefix(p.text)) }));
+    const seatModelMap = (() => { try { const m = JSON.parse(readFileSync(join(dir, 'out', 'seat-models.json'), 'utf8')); return m && typeof m === 'object' ? m : {}; } catch { return {}; } })();
     const samplingCalls = sampling.drain(tag).map((m) => ({ provider: m.voice === 'b' ? 'mcp-sampling-b' : 'mcp-sampling', model: m.model, hint: m.hint }));
     // One entry per provider+model, with how many calls it answered (a voice that also wrote the verdict made two).
     const samplingModels = [...samplingCalls.reduce((acc, m) => {
@@ -642,7 +644,7 @@ async function executeDebate(plan, handle, ctx, { progress, onStarted, signal } 
       final_answer: verdict.final_answer, consensus: verdict.consensus,
       dissent: verdict.dissent.present === false ? 'none' : verdict.dissent.summary,
       positions: positions.map((p) => {
-        const model = samplingModels.find((m) => m.provider === p.provider)?.model;
+        const model = samplingModels.find((m) => m.provider === p.provider)?.model ?? seatModelMap[p.provider];
         return { provider: p.provider, model: typeof model === 'string' && /^[!-~]{1,128}$/.test(model) ? model : 'unspecified', position: p.text };
       }),
       web_search: webSearch,
@@ -794,7 +796,7 @@ function renderStored(d) {
   if (res.web_search && typeof res.web_search === 'object') lines.push(...renderWebSearch(res.web_search));
   if (res.positions?.length) {
     lines.push('**Each model\'s final position:**');
-    for (const p of res.positions) lines.push('', `**${p.provider}:**`, ...String(p.position).split('\n').map((l) => `> ${l}`));
+    for (const p of res.positions) lines.push('', `**${p.provider}:**`, ...stripAnswerPrefix(String(p.position)).split('\n').map((l) => `> ${l}`));
   }
   if (typeof d.transcript === 'string') lines.push('', '<details><summary>Full transcript</summary>', '', d.transcript, '', '</details>');
   return lines.join('\n');

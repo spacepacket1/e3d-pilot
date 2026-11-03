@@ -142,6 +142,10 @@ The log stays text-free. One new top-level object, `web_search`:
   domains and URLs only):` followed by `- domain: url` lines. It never holds titles, excerpts, queries or page text. A
   fallback answer starts with `[Web search was unavailable for this answer (<reason>), so <provider> answered without web
   access.]`.
+- The stored result's `positions[].position` (and the position text e3d-mcp prints) is the answer only: the source list and the
+  two bracketed notices above are stripped (`stripAnswerPrefix` in `lib/debate/websearch.mjs`, next to `citeList`, which writes
+  them). The citations are in `web_search`; the transcript keeps the prefix. `positions[].model` is the model the seat's adapter
+  reported (`seat-models.json` in `--out-dir`, read from the `e3d_provider_usage` line), `unspecified` only when none was.
 
 ## 7. Sanitisation guarantees (what e3d-debate and e3d-mcp emit when search was on)
 
