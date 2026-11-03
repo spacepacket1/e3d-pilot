@@ -118,11 +118,11 @@ Columns: planted errors caught (scriptable, no grading); unique valid points and
 | --- | --- | --- | --- | --- |
 | B vs A | pending | pending | pending | not run |
 | E vs B | pending | pending | pending | not run |
-| F vs E | pending | pending | pending | not run |
+| F vs E | +2.8 points (5% of baseline) | -4.6 to +10.2 points | 1.09x | run 2026-11-02: inconclusive |
 | D vs F | pending | pending | pending | not run |
 | C vs D | pending | pending | pending | not run |
 
-*Delta: pending, protocol section 4.* Observations so far are anecdotes, not results: in two real runs on one question the seats' emphasis followed their skills (a skeptic naming failure modes, a customer speaking as a user) and both runs ended "yes, conditionally" with the skeptic as the dissenter. One question, two runs.
+*F vs E was run once on 12 planted-error tasks (one model on three seats, 220-token answers, 144 debates, about 0.65 million tokens): no detectable lift, and false alarms were not measured, so E7 could not be met. The lenses mostly changed which errors were named, not how many. Details and limits: [`docs/experiments/2026-11-02-fve-planted-errors/RESULTS.md`](../experiments/2026-11-02-fve-planted-errors/RESULTS.md). The other four rows are pending, protocol section 4.* Observations so far are anecdotes, not results: in two real runs on one question the seats' emphasis followed their skills (a skeptic naming failure modes, a customer speaking as a user) and both runs ended "yes, conditionally" with the skeptic as the dissenter. One question, two runs.
 
 ## 6. What is and is not claimed
 

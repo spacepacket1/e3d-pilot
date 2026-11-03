@@ -1,0 +1,7 @@
+debates: E 72, F 72; tasks paired: 12; token cost per debate: E 4295, F 4678 (ratio 1.09)
+union catch rate (share of planted errors caught by any seat): E 56.5%  F 59.3%
+paired lift F-E: 2.8 points (relative 5%), 95% bootstrap interval [-4.6, 10.2] points, task sd 13.5
+per task F-E (points): t01:-28 t02:0 t03:0 t04:6 t05:0 t06:0 t07:6 t08:6 t09:0 t10:33 t11:11 t12:0
+E7 (partial): lift >= 15% of baseline: false | interval excludes 0: false | cost ratio <= 3: true | false alarms: NOT MEASURED, so the full rule cannot be met
+E: p=0.469 rho=0.746 n_eff=1.20 predicted union=53.3% observed union=56.5%
+F: p=0.448 rho=0.593 n_eff=1.37 predicted union=55.7% observed union=59.3%
