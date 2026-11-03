@@ -139,10 +139,27 @@ eq "$holders" "jev-council.json " "only the artifact holds Jev's statements; no 
 [[ -s "$WORK/transcript.prompt.md" ]] || fail "the prompt copy of the transcript should exist"
 if grep -q 'Jev council' "$WORK/transcript.prompt.md"; then fail "the synthesis prompt must not carry the Jev line"; fi
 
+# the existing obviousness pre-screen is a shadow signal too: in the record (transcript.md), never in the synthesis prompt or its transcript copy
+grep -q 'Jev pre-screen (shadow mode, informational only)' "$WORK/transcript.md" || fail "the record carries the pre-screen line"
+for f in transcript.prompt.md synthesis.prompt.md; do
+  if grep -q 'Jev pre-screen' "$WORK/$f"; then fail "the synthesis prompt must not carry the pre-screen line ($f)"; fi
+done
+
 # no output changes: same stdout, same decision log apart from the new field and timing
 eq "$(cat "$T/stdout")" "$(cat "$T/base.stdout")" "stdout is identical with and without the flag"
 eq "$(jq -S 'del(.ts, .seconds, .jev_council)' "$T/on/decision-log.json")" "$(jq -S 'del(.ts, .seconds)' "$T/base/decision-log.json")" "decision log identical apart from jev_council"
 echo "ok - e3d-debate: artifact, record, decision log, hidden from the prompts, output unchanged"
+
+# the pre-screen alone (no --jev-propositions): the record has it, the prompts do not
+echo '{"model":"jev-test","answers":{"obviousness":{"type":"noul","noul":0.5}},"usage":{"input_tokens":10,"output_tokens":2}}' > "$T/ps.json"
+run "$T/ps" TYPESAFE_API_KEY=test-key E3D_PILOT_JEV_STUB_RESPONSE="$T/ps.json" --
+WORK="$(ls -d "$T"/tmp/e3d-debate.* | head -1)"
+grep -q 'obviousness noul=0.5' "$WORK/transcript.md" || fail "pre-screen alone: the record carries the line"
+grep -q 'obviousness noul=0.5' "$T/ps/transcript.md" || fail "pre-screen alone: --out-dir transcript carries the line"
+for f in transcript.prompt.md synthesis.prompt.md; do
+  if grep -q 'Jev pre-screen' "$WORK/$f"; then fail "pre-screen alone: the synthesis prompt must not carry it ($f)"; fi
+done
+eq "$(cat "$T/stdout")" "$(cat "$T/base.stdout")" "pre-screen alone: stdout unchanged"
 
 # an undecided pair is recorded as such
 run "$T/und" TYPESAFE_API_KEY=test-key E3D_PILOT_JEV_STUB_DIR="$(new_stub_dir_ps 0.42 0.42)" -- --jev-propositions "$PROPS"

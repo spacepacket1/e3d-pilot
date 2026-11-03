@@ -47,9 +47,9 @@ A missing key, a vendor error, a malformed or out-of-range answer gives `no_sign
 - Not shown to the other models. Whether showing it helps or anchors them is the next experiment: run the same debates with the signal visible and hidden and judge both against outcomes.
 - No framing call. A model that rewrote the question into statements would bring its own perspective and would be one more priced vendor call.
 
-## Known related issue (not changed here)
+## The existing obviousness pre-screen is hidden too
 
-The existing obviousness pre-screen (`Jev pre-screen (shadow mode, informational only)`) is written to the transcript before the synthesis-prompt copy, so the synthesizer sees it today whenever `TYPESAFE_API_KEY` is set. That contradicts "informational only". Writing it after the copy, as the experts line already is, would fix it. This change leaves it alone.
+The obviousness pre-screen (`Jev pre-screen (shadow mode, informational only)`) used to be written to the transcript before the synthesis-prompt copy, so the synthesizer saw it whenever `TYPESAFE_API_KEY` was set. That contradicted "informational only". It is now written after the copy, as the experts line already was: it is in `transcript.md` (the record) and in neither the synthesis prompt nor its transcript copy. The priced prompt bytes (`E3D_DEBATE_PROMPT_OVERHEAD=1`) are unchanged, since that mode and per-token mode never made the call. `tests/jev-council.sh` covers it with and without `--jev-propositions`.
 
 ## Tests
 

@@ -595,6 +595,7 @@ fi
 # transcript for later calibration of whether Jev's obviousness judgment is
 # trustworthy enough to ever gate on. Silently skipped with no
 # TYPESAFE_API_KEY; a failed call is logged and otherwise ignored.
+JEV_PRESCREEN_NOUL=""
 if (( PT_ON == 0 )) && [[ "$PROMPT_OVERHEAD" != "1" ]] && jev_available; then
   jev_state="$(jq -ncS --arg q "$QUESTION" '{question:$q}')"
   jev_questions="$(jq -ncS '{
@@ -614,7 +615,9 @@ if (( PT_ON == 0 )) && [[ "$PROMPT_OVERHEAD" != "1" ]] && jev_available; then
     # (that's Choice/Score-only) -- see https://docs.typesafe.ai/api.md.
     jev_noul="$(jq -r '.answers.obviousness.noul // "unknown"' <<< "$jev_response" 2>/dev/null || echo "unknown")"
     echo "=== Jev pre-screen (shadow mode, informational only -- does not skip the debate): obviousness noul=$jev_noul ===" >&2
-    printf '**Jev pre-screen (shadow mode, informational only):** obviousness noul=%s (1.0 = clearly obvious, 0.0 = clearly needs debate) -- logged for calibration, does not affect whether this debate runs.\n\n' "$jev_noul" >> "$transcript_md"
+    # Kept for the record only: the line is written to transcript.md AFTER the synthesis-prompt copy below, so the
+    # synthesizer never sees it (it used to, which made a "shadow, informational only" signal visible to a model).
+    JEV_PRESCREEN_NOUL="$jev_noul"
   fi
 fi
 
@@ -626,6 +629,11 @@ cp "$transcript_md" "$prompt_transcript_md"
 # prompt never carries it (the hosted quote prices the synthesis input without it). The Gallery parser skips `**Label:** ...` lines of this kind.
 if [[ -n "$PLAN_JSON" ]] && (( SPEC_FILL_POOL == 1 )); then
   printf '**Experts (perspectives, not measured):** %s.\n\n' "$(jq -r '(.panel.experts | map(.name + " on " + .seat) | join(", ")) + (if (.panel.plain_seats // [] | length) > 0 then "; plain seat" + (if (.panel.plain_seats | length) > 1 then "s" else "" end) + ": " + (.panel.plain_seats | map(.seat) | join(", ")) else "" end)' <<< "$PLAN_JSON")" >> "$transcript_md"
+fi
+# The Jev obviousness pre-screen (shadow, informational only), in the record only and written AFTER the copy above for the same reason:
+# a signal that is documented as informational must not be visible to the synthesizer.
+if [[ -n "$JEV_PRESCREEN_NOUL" ]]; then
+  printf '**Jev pre-screen (shadow mode, informational only):** obviousness noul=%s (1.0 = clearly obvious, 0.0 = clearly needs debate) -- logged for calibration, does not affect whether this debate runs.\n\n' "$JEV_PRESCREEN_NOUL" >> "$transcript_md"
 fi
 
 # Jev council signal (docs/jev-council.md, issue #66 Phase 1): SHADOW ONLY. Asked now, before round 1, and never shown to any model:
