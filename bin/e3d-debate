@@ -1221,6 +1221,8 @@ if [[ -n "$OUT_DIR" ]]; then
   [[ -s "$work_dir/decision-log.json" ]] && cp "$work_dir/decision-log.json" "$OUT_DIR/decision-log.json"
   [[ -s "$work_dir/web-search.json" ]] && cp "$work_dir/web-search.json" "$OUT_DIR/web-search.json"
   [[ -s "$work_dir/seats.json" ]] && cp "$work_dir/seats.json" "$OUT_DIR/seats.json"
+  # seat -> the model its adapter reported (display only; e3d-mcp puts it on the stored positions)
+  node "$PT_LIB" models "$work_dir" > "$OUT_DIR/seat-models.json" 2>/dev/null || rm -f "$OUT_DIR/seat-models.json"
   if [[ -s "$work_dir/usage.unreported.rows" ]]; then jq -s . "$work_dir/usage.unreported.rows" > "$OUT_DIR/usage-unreported.json" 2>/dev/null || true; fi
   cp "$transcript_md" "$OUT_DIR/transcript.md"
   echo "transcript: $OUT_DIR/transcript.md" >&2
