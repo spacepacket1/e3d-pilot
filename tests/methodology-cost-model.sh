@@ -77,8 +77,12 @@ assert.equal((tokens({ n: 6, r: 2 }).total / base).toFixed(1), '1.9');
 assert.equal((tokens({ n: 8, r: 2 }).total / base).toFixed(1), '2.8');
 // the constants stated in the paper are the model's
 for (const [k, v] of Object.entries(DEFAULTS)) assert.ok(new RegExp(`\`${k}\`=${v}\\b`).test(doc), `the paper states ${k}=${v}`);
-// results are pending, not invented
-assert.equal((doc.match(/\| pending \| pending \| pending \| not run \|/g) ?? []).length, 5, 'five comparisons, all pending');
+// results are pending or measured, never invented: four comparisons are still pending, and F vs E carries its recorded run
+assert.equal((doc.match(/\| pending \| pending \| pending \| not run \|/g) ?? []).length, 4, 'four comparisons are still pending');
+const fve = doc.split('\n').find((l) => l.startsWith('| F vs E'));
+assert.ok(fve && fve.includes('inconclusive'), 'F vs E carries its run and says inconclusive');
+const rj = readFileSync(`${root}/docs/experiments/2026-11-02-fve-planted-errors/RESULTS.md`, 'utf8');
+assert.ok(rj.length > 500 && /inconclusive/i.test(rj), 'the F vs E write-up exists and says inconclusive');
 // the model uses no network, process or file access
 const src = readFileSync(`${root}/lib/debate/cost-model.mjs`, 'utf8');
 for (const w of ['fetch(', 'node:fs', 'node:net', 'node:http', 'child_process', 'spawn', 'import(', 'writeFile']) assert.ok(!src.includes(w), `the model must not use ${w}`);
