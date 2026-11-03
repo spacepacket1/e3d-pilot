@@ -42,7 +42,9 @@ import { createMetering, createReadiness, modelsFromTranscript, orphanPolicy } f
 import { createHash, randomUUID } from 'node:crypto';
 import { createRuns, validateRunsConfig } from '../lib/mcp/runs.js';
 import { startRunServer, validateRunServerConfig } from '../lib/mcp/run-server.js';
-import { validatePricingConfig, createPricingClient, limitsForPlan, pricedError, debateEnvFor, readUsageRows, searchCapable, searchCapFromEnv, requestedSearches } from '../lib/mcp/pricing.js';
+import { validatePricingConfig, createPricingClient, limitsForPlan, pricedError, debateEnvFor, readUsageRows, searchCapable, searchCapFromEnv, requestedSearches, expertsRunFrom } from '../lib/mcp/pricing.js';
+import { loadExperts } from '../lib/debate/specialists.mjs';
+import { lensBlock } from '../lib/debate/specialists-plan.mjs';
 import { galleryFrom, createGalleryRead, GALLERY_INSTRUCTION } from '../lib/mcp/gallery-read.js';
 import { expertsFrom, createExpertsRead, EXPERTS_INSTRUCTION } from '../lib/mcp/experts-read.js';
 import { agentModeFrom, agentFieldsOf, AGENT_INSTRUCTIONS, SCHEMA_VERSION as AGENT_SCHEMA_VERSION, IDEMPOTENCY_KEY_RE, QUOTE_ID_RE, agentError, errorResult, reasonError, extendDebateTool, quoteTool, quoteResult, validQuote } from '../lib/mcp/agent.js';
@@ -53,6 +55,10 @@ const HTTP_MODE = process.argv.includes('--http');
 const AUTH_HOOK = Boolean(process.env.E3D_MCP_AUTH_URL);
 // E3D_MCP_PRICING=per_token (token pricing, lib/mcp/pricing.js): advertises per_token_v1 and honours the run fields billing sends with it.
 const PRICING_CONFIG = validatePricingConfig(process.env, { http: HTTP_MODE, hook: AUTH_HOOK });
+// E3D_MCP_EXPERTS_RUN=1 (docs/specs/experts-phase2b1-hosted-lenses-spec.md section 2): the run listener advertises experts_v1 and runs the built-in
+// experts of a web run, one per vendor. Unset or 0: the fields are refused and nothing else changes.
+const EXPERTS_RUN = expertsRunFrom(process.env, { mode: PRICING_CONFIG.mode });
+const BUILTIN_EXPERTS_DIR = fileURLToPath(new URL('../lib/specialists', import.meta.url));
 let pricingClient = null; // billing's quote and usage-report client, once the external hook is running under per_token
 // E3D_MCP_AGENT (lib/mcp/agent.js): the agent contract (e3d_quote, quote_id and idempotency_key, structured errors, instructions).
 // On by default exactly when E3D_MCP_PRICING=per_token; 0 turns it off without a release. Never on for stdio or self-hosted use.
@@ -581,6 +587,14 @@ async function executeDebate(plan, handle, ctx, { progress, onStarted, signal } 
     const cliArgs = ['--question-file', qfile, '--providers', providers.join(','), '--rounds', String(rounds),
       '--max-words', String(maxWords), '--out-dir', join(dir, 'out'), '--synthesizer', synthesizer,
       '--web-search', webSearchRequested ? 'on' : 'off'];
+    // A web run with experts (planWebRun): the pool is --providers; the built-in experts only, pinned to the hashes the user was shown, one per
+    // provider, the rest of the pool as plain seats, and never a lens block larger than the quote allowed (bin/e3d-debate).
+    const ex = plan.experts ?? null;
+    if (ex) {
+      for (const e of ex.list) cliArgs.push('--specialist', e.id);
+      cliArgs.push('--builtin-only', '--fill-pool', '--lens-bytes-max', String(ex.lensBytes));
+      for (const e of ex.list) cliArgs.push('--expert-pin', `${e.id}=${e.hash}`);
+    }
     let step = 0;
     const tag = `debate-${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 8)}`;
     const usesSampling = providers.some(isSampling) || isSampling(synthesizer);
@@ -591,7 +605,7 @@ async function executeDebate(plan, handle, ctx, { progress, onStarted, signal } 
     await onStarted?.();
     const r = await run(debateBin, cliArgs, {
       timeoutMs, signal,
-      env: { ...process.env, ...samplingEnv, ...debateEnvFor(limits), E3D_DEBATE_TIMEOUT_SEC: String(Math.max(Math.floor(timeoutMs / 1000), 1)) },
+      env: { ...process.env, ...samplingEnv, ...debateEnvFor(limits), ...(ex ? { E3D_SPECIALISTS: '1' } : {}), E3D_DEBATE_TIMEOUT_SEC: String(Math.max(Math.floor(timeoutMs / 1000), 1)) },
       onStderr: (s) => { for (const m of s.matchAll(/^=== (.+?) ===$/gm)) progress?.(++step, m[1]); },
     });
     lastRun = r;
@@ -1210,6 +1224,10 @@ if (!PRICING_CONFIG.ok) {
   process.stderr.write(`[e3d-mcp] refusing to start: ${PRICING_CONFIG.errors.join('; ')}\n`);
   process.exit(2);
 }
+if (!EXPERTS_RUN.ok) {
+  process.stderr.write(`[e3d-mcp] refusing to start: ${EXPERTS_RUN.errors.join('; ')}\n`);
+  process.exit(2);
+}
 if (PANEL_CONFIG.panel && !HTTP_MODE) {
   process.stderr.write('[e3d-mcp] E3D_MCP_PANEL is only supported in hosted mode (--http) with E3D_MCP_AUTH_URL; unset it for stdio.\n');
   process.exit(2);
@@ -1238,7 +1256,24 @@ async function runAsyncDebate({ plan, handle, principal, onStarted, progress, si
 // A web run's plan: the same validation and customer maxima as e3d_debate_start; no client, so no sampling.
 // With the per-token run fields (perToken, already validated by the run listener) the plan is exactly what was quoted: rounds and
 // max_words are never clamped, web search is off (it is not priced), and every provider needs its output limit and answer-bytes limit.
-async function planWebRun(fields, { perToken = null } = {}) {
+// experts (a listener with experts_v1; validated by run-server.js): { list: [{id, hash}], lens_bytes }. Everything below is refused 400 invalid before
+// anything runs: more experts than providers in the plan (never more seats, never a dropped expert), an id that is not a built-in expert, a
+// content hash other than the pinned one, a lens block larger than lens_bytes. bin/e3d-debate checks the same again when it runs.
+function expertsPlan(experts, providers) {
+  if (experts.list.length > providers.length) return { error: `error: invalid: experts_exceed_panel: ${experts.list.length} experts for ${providers.length} provider${providers.length === 1 ? '' : 's'} in the panel; nothing was run` };
+  let loaded;
+  try { loaded = loadExperts({ tiers: [{ name: 'built-in', dir: BUILTIN_EXPERTS_DIR }] }).experts; } catch { return { error: 'error: invalid: the built-in experts could not be read' }; }
+  const byName = new Map(loaded.map((e) => [e.name, e]));
+  for (const { id, hash } of experts.list) {
+    const e = byName.get(id);
+    if (!e) return { error: 'error: invalid: an expert id is not a built-in expert' };
+    if (e.hash !== hash) return { error: 'error: invalid: an expert does not match its pinned content hash' };
+    if (Buffer.byteLength(lensBlock(e)) > experts.lens_bytes) return { error: 'error: invalid: an expert lens block is larger than lens_bytes' };
+  }
+  return { experts: { list: experts.list.map((e) => ({ id: e.id, hash: e.hash })), lensBytes: experts.lens_bytes } };
+}
+
+async function planWebRun(fields, { perToken = null, experts = null } = {}) {
   const ctx = { session: { clientInfo: null, capabilities: {}, rootsReady: null }, principal: null };
   const clamp = perToken ? { ...runsConfig.customer, rounds: Infinity, max_words: Infinity } : runsConfig.customer;
   const plan = await planDebate({ question: fields.question, providers: fields.providers, rounds: fields.rounds, max_words: fields.max_words, web_search: perToken ? Boolean(perToken.max_searches) : fields.web_search }, ctx, { clamp, web: true });
@@ -1249,7 +1284,9 @@ async function planWebRun(fields, { perToken = null } = {}) {
     // the searches the run will make are exactly the quoted ones: the daily search estimate uses them, and search is off without them
     const caps = limits.maxSearches;
     const searchPart = caps ? { webSearch: true, searchProviders: Object.keys(caps).length, maxSearchesPerCall: Math.max(...Object.values(caps)) } : { webSearch: false, searchProviders: 0, maxSearchesPerCall: 0 };
-    const priced = { ...plan, ...searchPart, perToken: limits };
+    const x = experts ? expertsPlan(experts, plan.providers) : null;
+    if (x?.error) return x;
+    const priced = { ...plan, ...searchPart, perToken: limits, ...(x ? { experts: x.experts } : {}) };
     return { plan: priced, worst: worstFor(priced) };
   }
   return { plan, worst: worstFor(plan) };
@@ -1315,7 +1352,7 @@ if (HTTP_MODE) {
     // a separate loopback-only listener; the public one above never serves /internal/*
     if (hook && RUN_SERVER.enabled) {
       runServer = await startRunServer({ port: RUN_SERVER.config.port, token: RUN_SERVER.config.token, failsPerMin: RUN_SERVER.config.failsPerMin,
-        runs, external: hook.external, plan: planWebRun, log, pricing: { mode: PRICING_CONFIG.mode, customer: runsConfig.customer, search: searchCapable(process.env, { mode: PRICING_CONFIG.mode }) } });
+        runs, external: hook.external, plan: planWebRun, log, pricing: { mode: PRICING_CONFIG.mode, customer: runsConfig.customer, search: searchCapable(process.env, { mode: PRICING_CONFIG.mode }), experts: EXPERTS_RUN.on } });
     }
   } catch (e) { process.stderr.write(`[e3d-mcp] ${redact(e.message)}\n`); process.exit(2); }
   if (process.env.E3D_MCP_PORT_FILE) await writeFile(process.env.E3D_MCP_PORT_FILE, String(server.port));
