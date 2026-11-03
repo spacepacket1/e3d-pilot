@@ -35,6 +35,7 @@ DEBATE_MAX_WORDS=200
 PROVIDERS_GIVEN=0
 SPEC_PANEL=""
 SPEC_LIST=()
+SPEC_MIN_FAMILIES=""; SPEC_MIN_SET=0
 SPEC_ACTION=""
 SPEC_ARG1=""
 SPEC_ARG2=""
@@ -115,8 +116,11 @@ idea-82a5c2225266). No key set means this is silently skipped.
 Experts (off unless E3D_SPECIALISTS=1; docs/specs/experts-phase1-private-experts-spec.md). An expert is a standard skill folder
 (SKILL.md plus an optional e3d/expert.json) found in lib/specialists, ~/.config/e3d-pilot/specialists and <repo>/.e3d-pilot/specialists
 (later wins). You choose experts, not models: the engine assigns one provider to each, spread across vendors.
-  --panel <preset>            a preset from lib/specialists/panels.json (shrinks to its minimum when providers are few)
-  --specialist <name>[:p]     one expert per flag (at least two); :p forces a provider
+  --panel <preset>            a preset from lib/specialists/panels.json (never shrinks for lack of providers; at most 6 seats)
+  --specialist <name>[:p]     one expert per flag (at least two, at most 6); :p forces a provider. With fewer providers than experts
+                              the extra experts share a provider (seats claude, claude.2, ...), on the vendor family with the fewest seats
+  --min-families N            refuse a panel on fewer than N vendor families (default 2); --min-families 1 runs lenses on one vendor on
+                              purpose, and says "lenses differ, the model does not"
   --providers a,b,c           with a panel, the pool the engine may assign from (default: the providers that answer E3D_PILOT_CHECK)
   --list-specialists | --show-specialist <name> | --validate-specialist <folder> | --export-specialist <name> <folder> [--no-sidecar]
 Nothing is changed when none of these is given.
@@ -128,6 +132,7 @@ while [[ $# -gt 0 ]]; do
     --providers) IFS=',' read -r -a DEBATE_PROVIDERS <<< "$2"; PROVIDERS_GIVEN=1; shift 2 ;;
     --panel) SPEC_PANEL="${2:-}"; SPEC_FLAG_USED=1; shift 2 ;;
     --specialist) SPEC_LIST+=("${2:-}"); SPEC_FLAG_USED=1; shift 2 ;;
+    --min-families) SPEC_MIN_FAMILIES="${2:-}"; SPEC_MIN_SET=1; SPEC_FLAG_USED=1; shift 2 ;;
     --list-specialists) SPEC_ACTION=list; SPEC_FLAG_USED=1; shift ;;
     --show-specialist) SPEC_ACTION=show; SPEC_ARG1="${2:-}"; SPEC_FLAG_USED=1; shift 2 ;;
     --validate-specialist) SPEC_ACTION=validate; SPEC_ARG1="${2:-}"; SPEC_FLAG_USED=1; shift 2 ;;
@@ -155,8 +160,12 @@ if [[ -n "${E3D_SPECIALISTS+x}" ]]; then
   case "$E3D_SPECIALISTS" in ''|0|1) ;; *) echo "error: E3D_SPECIALISTS must be 0 or 1" >&2; exit 2 ;; esac
 fi
 if (( SPEC_FLAG_USED == 1 )) && [[ "${E3D_SPECIALISTS:-0}" != "1" ]]; then
-  echo "error: experts are off. Set E3D_SPECIALISTS=1 to use --panel, --specialist and the --list/--show/--validate/--export-specialist commands." >&2
+  echo "error: experts are off. Set E3D_SPECIALISTS=1 to use --panel, --specialist, --min-families and the --list/--show/--validate/--export-specialist commands." >&2
   exit 1
+fi
+if (( SPEC_MIN_SET == 1 )); then
+  [[ "$SPEC_MIN_FAMILIES" =~ ^[1-9][0-9]?$ ]] || { echo "error: --min-families must be a whole number of at least 1" >&2; exit 1; }
+  [[ -n "$SPEC_PANEL" ]] || (( ${#SPEC_LIST[@]} > 0 )) || [[ -n "$SPEC_ACTION" ]] || { echo "error: --min-families applies to a panel; give --panel or --specialist" >&2; exit 1; }
 fi
 SPEC_BUILTIN="$REPO_ROOT/lib/specialists"
 SPEC_USER="${HOME:-/nonexistent}/.config/e3d-pilot/specialists"
@@ -205,18 +214,21 @@ if [[ -n "$SPEC_PANEL" ]] || (( ${#SPEC_LIST[@]} > 0 )); then
   for p in ${spec_pool[@]+"${spec_pool[@]}"}; do spec_pool_csv+="${spec_pool_csv:+,}$p"; done
   spec_plan_args=(plan --builtin "$SPEC_BUILTIN" --user "$SPEC_USER" --repo "$SPEC_REPO" --pool "$spec_pool_csv")
   [[ -z "$SPEC_PANEL" ]] || spec_plan_args+=(--panel "$SPEC_PANEL")
+  [[ -z "$SPEC_MIN_FAMILIES" ]] || spec_plan_args+=(--min-families "$SPEC_MIN_FAMILIES")
   for s in ${SPEC_LIST[@]+"${SPEC_LIST[@]}"}; do spec_plan_args+=(--specialist "$s"); done
   spec_rc=0; PLAN_JSON="$(node "$SPEC_CLI" "${spec_plan_args[@]}")" || spec_rc=$?
   if (( spec_rc != 0 )); then echo "error: $(jq -r '.error // "could not plan the panel"' <<< "$PLAN_JSON" 2>/dev/null || echo "could not plan the panel")" >&2; exit 1; fi
   while IFS= read -r w; do echo "warning: $w" >&2; done < <(jq -r '.warnings[]' <<< "$PLAN_JSON")
   DEBATE_PROVIDERS=()
   while IFS= read -r p; do DEBATE_PROVIDERS+=("$p"); done < <(jq -r '.providers[]' <<< "$PLAN_JSON")
+  # a second seat on one adapter is `adapter.2` (docs/specs/experts-phase2a-seats-and-suggest-spec.md D10); the plan says which adapter answers
+  while IFS=$'\t' read -r _s _a; do SEAT_ADAPTER[$_s]="$_a"; done < <(jq -r '.panel.experts[] | [.seat, .adapter] | @tsv' <<< "$PLAN_JSON")
 fi
 (( ${#DEBATE_PROVIDERS[@]} >= 2 )) || { echo "error: need at least 2 --providers to debate" >&2; exit 1; }
 
-for p in "${DEBATE_PROVIDERS[@]}"; do SEAT_ADAPTER[$p]="$p"; done
+for p in "${DEBATE_PROVIDERS[@]}"; do [[ -n "${SEAT_ADAPTER[$p]:-}" ]] || SEAT_ADAPTER[$p]="$p"; done
 if [[ -n "${E3D_DEBATE_SEAT_ADAPTERS:-}" ]]; then
-  # internal test seam, {"seat": "adapter"}: lets a test run two seats on one adapter before expert assignment does (Phase 2a.2 replaces it)
+  # internal test seam, {"seat": "adapter"}: lets a test run two seats on one adapter without a panel (expert assignment does it with a panel since Phase 2a.2)
   command -v jq >/dev/null 2>&1 || { echo "error: E3D_DEBATE_SEAT_ADAPTERS needs jq" >&2; exit 1; }
   jq -e 'type == "object" and all(.[]; type == "string")' <<< "$E3D_DEBATE_SEAT_ADAPTERS" >/dev/null 2>&1 || { echo "error: E3D_DEBATE_SEAT_ADAPTERS must be a JSON object of strings" >&2; exit 1; }
   while IFS=$'\t' read -r _s _a; do
@@ -532,6 +544,11 @@ if [[ -n "$PLAN_JSON" ]]; then
 fi
 transcript_md="$work_dir/transcript.md"
 printf '# Debate\n\n**Prompt version:** %s\n\n**Question:** %s\n\n' "$DEBATE_PROMPT_VERSION" "$QUESTION" > "$transcript_md"
+if [[ -n "$PLAN_JSON" ]] && (( $(jq -r '.panel.independence.families' <<< "$PLAN_JSON") < 2 )); then
+  one_family_note="$(jq -r '.panel.independence.seats' <<< "$PLAN_JSON") seats on 1 vendor family: lenses differ, the model does not"
+  echo "$one_family_note" >&2
+  printf '**Independence:** %s.\n\n' "$one_family_note" >> "$transcript_md"
+fi
 
 # Jev pre-screen: shadow-mode only (idea-82a5c2225266) -- this NEVER skips or
 # shortens the debate below, it just logs an informational signal into the
