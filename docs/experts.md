@@ -59,6 +59,19 @@ experts and presets and show the exact lens text a seat receives. They read this
 nothing written, nothing charged, and a person's own expert folders are never listed. **Running a debate with experts through the connector is
 not available yet**; the command line above runs them today. Off by default; any value other than unset, `0` or `1` refuses to start.
 
+## Hosted runs (engine side only, off by default)
+
+For the hosted web service (spec: [Phase 2b.1](specs/experts-phase2b1-hosted-lenses-spec.md)) the engine has four extra switches, all of which need
+`E3D_SPECIALISTS=1` and `--specialist`: `--builtin-only` (or `E3D_SPECIALISTS_BUILTIN_ONLY=1`) reads only the built-in experts, so a folder on the
+host can never override one by name; `--expert-pin name=sha256:...` (repeatable) refuses an expert whose content hash differs from the one named;
+`--lens-bytes-max N` refuses an expert whose lens block (markers included) is larger than N bytes; `--fill-pool` makes every provider of `--providers`
+that holds no expert a plain seat (no lens, `expert: null` under `panel.plain_seats` in the receipt), allows at most one expert per provider (more
+experts than providers is refused, seats are never added), and writes one line after the question in `transcript.md`:
+`**Experts (perspectives, not measured):** skeptic on claude, customer on gemini; plain seat: codex.` (the synthesis prompt never carries it).
+`e3d-mcp`'s internal run listener accepts the run fields `experts` (`[{id, hash}]`, 2 to 16 distinct ids) and `lens_bytes` (1 to 4096) only with
+`E3D_MCP_EXPERTS_RUN=1` (which needs `E3D_MCP_PRICING=per_token`; any other value refuses to start) and then advertises the capability `experts_v1`;
+without it both fields are refused `400 invalid`. Nothing here is on the public connector or in any user-facing product yet.
+
 ## Safety
 
 - An expert's lens is text written by a person: it is delimited, shown whole, and cannot grant a tool or change a flag.

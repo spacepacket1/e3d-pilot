@@ -40,6 +40,8 @@ SPEC_ACTION=""
 SPEC_ARG1=""
 SPEC_ARG2=""
 SPEC_NO_SIDECAR=0
+# hosted runs (docs/specs/experts-phase2b1-hosted-lenses-spec.md section 2.2): see the --builtin-only / --fill-pool / --expert-pin / --lens-bytes-max help
+SPEC_BUILTIN_ONLY=0; SPEC_FILL_POOL=0; SPEC_LENS_MAX=""; SPEC_PINS=()
 SUGGEST=0; SUGGEST_RULES=0; SUGGEST_TASK=""
 SPEC_FLAG_USED=0
 SPEC_CLI="$REPO_ROOT/lib/debate/specialists-cli.mjs"
@@ -123,6 +125,12 @@ Experts (off unless E3D_SPECIALISTS=1; docs/specs/experts-phase1-private-experts
   --min-families N            refuse a panel on fewer than N vendor families (default 2); --min-families 1 runs lenses on one vendor on
                               purpose, and says "lenses differ, the model does not"
   --providers a,b,c           with a panel, the pool the engine may assign from (default: the providers that answer E3D_PILOT_CHECK)
+  --builtin-only              read only the built-in experts (never ~/.config/e3d-pilot/specialists or <repo>/.e3d-pilot/specialists), so a folder on
+                              this machine cannot override a built-in by name; also E3D_SPECIALISTS_BUILTIN_ONLY=1 (hosted runs)
+  --fill-pool                 with --specialist: every provider of the pool without an expert answers as a plain seat (no lens); one seat per
+                              provider, so more experts than providers is refused; adds one "Experts" line to the transcript (hosted runs)
+  --expert-pin <name>=<hash>  refuse unless the expert's content hash is exactly this (repeatable; hosted runs)
+  --lens-bytes-max N          refuse an expert whose lens block (wrapper included) is larger than N bytes (hosted runs)
   --list-specialists | --show-specialist <name> | --validate-specialist <folder> | --export-specialist <name> <folder> [--no-sidecar]
 Nothing is changed when none of these is given.
 EOF
@@ -141,6 +149,10 @@ while [[ $# -gt 0 ]]; do
       [[ $# -ge 3 ]] || { echo "error: --export-specialist needs an expert name and an output folder" >&2; exit 1; }
       SPEC_ACTION=export; SPEC_ARG1="$2"; SPEC_ARG2="$3"; SPEC_FLAG_USED=1; shift 3 ;;
     --no-sidecar) SPEC_NO_SIDECAR=1; SPEC_FLAG_USED=1; shift ;;
+    --builtin-only) SPEC_BUILTIN_ONLY=1; SPEC_FLAG_USED=1; shift ;;
+    --fill-pool) SPEC_FILL_POOL=1; SPEC_FLAG_USED=1; shift ;;
+    --expert-pin) SPEC_PINS+=("${2:-}"); SPEC_FLAG_USED=1; shift 2 ;;
+    --lens-bytes-max) SPEC_LENS_MAX="${2:-}"; SPEC_FLAG_USED=1; shift 2 ;;
     --suggest-panel) SUGGEST=1; SPEC_FLAG_USED=1; shift ;;
     --show-suggest-rules) SUGGEST_RULES=1; SPEC_FLAG_USED=1; shift ;;
     --task) SUGGEST_TASK="${2:-}"; SPEC_FLAG_USED=1; shift 2 ;;
@@ -164,9 +176,13 @@ done
 if [[ -n "${E3D_SPECIALISTS+x}" ]]; then
   case "$E3D_SPECIALISTS" in ''|0|1) ;; *) echo "error: E3D_SPECIALISTS must be 0 or 1" >&2; exit 2 ;; esac
 fi
+case "${E3D_SPECIALISTS_BUILTIN_ONLY:-}" in ''|0) ;; 1) SPEC_BUILTIN_ONLY=1 ;; *) echo "error: E3D_SPECIALISTS_BUILTIN_ONLY must be 0 or 1" >&2; exit 2 ;; esac
 if (( SPEC_FLAG_USED == 1 )) && [[ "${E3D_SPECIALISTS:-0}" != "1" ]]; then
   echo "error: experts are off. Set E3D_SPECIALISTS=1 to use --panel, --specialist, --min-families and the --list/--show/--validate/--export-specialist commands." >&2
   exit 1
+fi
+if (( SPEC_FILL_POOL == 1 || ${#SPEC_PINS[@]} > 0 )) || [[ -n "$SPEC_LENS_MAX" ]]; then
+  (( ${#SPEC_LIST[@]} > 0 )) || { echo "error: --fill-pool, --expert-pin and --lens-bytes-max apply to --specialist experts" >&2; exit 1; }
 fi
 if (( SPEC_MIN_SET == 1 )); then
   [[ "$SPEC_MIN_FAMILIES" =~ ^[1-9][0-9]?$ ]] || { echo "error: --min-families must be a whole number of at least 1" >&2; exit 1; }
@@ -178,6 +194,7 @@ SPEC_REPO="${LINK_REPO:-$PWD}/.e3d-pilot/specialists"
 if [[ -n "$SPEC_ACTION" ]]; then
   command -v node >/dev/null 2>&1 || { echo "error: node is required for experts" >&2; exit 1; }
   spec_common=(--builtin "$SPEC_BUILTIN" --user "$SPEC_USER" --repo "$SPEC_REPO")
+  (( SPEC_BUILTIN_ONLY == 0 )) || spec_common+=(--builtin-only)
   case "$SPEC_ACTION" in
     list) node "$SPEC_CLI" list "${spec_common[@]}" ;;
     show)
@@ -222,6 +239,10 @@ if [[ -n "$SPEC_PANEL" ]] || (( ${#SPEC_LIST[@]} > 0 )); then
   [[ -z "$SPEC_PANEL" ]] || spec_plan_args+=(--panel "$SPEC_PANEL")
   [[ -z "$SPEC_MIN_FAMILIES" ]] || spec_plan_args+=(--min-families "$SPEC_MIN_FAMILIES")
   for s in ${SPEC_LIST[@]+"${SPEC_LIST[@]}"}; do spec_plan_args+=(--specialist "$s"); done
+  (( SPEC_BUILTIN_ONLY == 0 )) || spec_plan_args+=(--builtin-only)
+  (( SPEC_FILL_POOL == 0 )) || spec_plan_args+=(--fill-pool)
+  [[ -z "$SPEC_LENS_MAX" ]] || spec_plan_args+=(--lens-bytes-max "$SPEC_LENS_MAX")
+  for s in ${SPEC_PINS[@]+"${SPEC_PINS[@]}"}; do spec_plan_args+=(--expert-pin "$s"); done
   spec_rc=0; PLAN_JSON="$(node "$SPEC_CLI" "${spec_plan_args[@]}")" || spec_rc=$?
   if (( spec_rc != 0 )); then echo "error: $(jq -r '.error // "could not plan the panel"' <<< "$PLAN_JSON" 2>/dev/null || echo "could not plan the panel")" >&2; exit 1; fi
   while IFS= read -r w; do echo "warning: $w" >&2; done < <(jq -r '.warnings[]' <<< "$PLAN_JSON")
@@ -546,7 +567,7 @@ if [[ -n "$PLAN_JSON" ]]; then
   mkdir -p "$LENS_DIR"
   while IFS= read -r p; do jq -j --arg p "$p" '.lens[$p]' <<< "$PLAN_JSON" > "$LENS_DIR/lens-$p.txt"; done < <(jq -r '.providers[]' <<< "$PLAN_JSON")
   jq -c .panel <<< "$PLAN_JSON" > "$work_dir/panel.json"
-  echo "panel: $(jq -r '.panel.experts | map(.name + " on " + .seat) | join(", ")' <<< "$PLAN_JSON")$(jq -r 'if (.panel.dropped | length) > 0 then " (dropped: " + (.panel.dropped | join(", ")) + ")" else "" end' <<< "$PLAN_JSON")" >&2
+  echo "panel: $(jq -r '.panel.experts | map(.name + " on " + .seat) | join(", ")' <<< "$PLAN_JSON")$(jq -r 'if (.panel.plain_seats // [] | length) > 0 then "; plain: " + (.panel.plain_seats | map(.seat) | join(", ")) else "" end' <<< "$PLAN_JSON")$(jq -r 'if (.panel.dropped | length) > 0 then " (dropped: " + (.panel.dropped | join(", ")) + ")" else "" end' <<< "$PLAN_JSON")" >&2
 fi
 transcript_md="$work_dir/transcript.md"
 printf '# Debate\n\n**Prompt version:** %s\n\n**Question:** %s\n\n' "$DEBATE_PROMPT_VERSION" "$QUESTION" > "$transcript_md"
@@ -588,6 +609,11 @@ fi
 # (transcript.md, the record, always has the whole answer).
 prompt_transcript_md="$work_dir/transcript.prompt.md"
 cp "$transcript_md" "$prompt_transcript_md"
+# --fill-pool (hosted runs): which expert sits on which provider, in the record only. It is written AFTER the copy above, so the synthesis
+# prompt never carries it (the hosted quote prices the synthesis input without it). The Gallery parser skips `**Label:** ...` lines of this kind.
+if [[ -n "$PLAN_JSON" ]] && (( SPEC_FILL_POOL == 1 )); then
+  printf '**Experts (perspectives, not measured):** %s.\n\n' "$(jq -r '(.panel.experts | map(.name + " on " + .seat) | join(", ")) + (if (.panel.plain_seats // [] | length) > 0 then "; plain seat" + (if (.panel.plain_seats | length) > 1 then "s" else "" end) + ": " + (.panel.plain_seats | map(.seat) | join(", ")) else "" end)' <<< "$PLAN_JSON")" >> "$transcript_md"
+fi
 
 # --- experimental prompts (v3b / v3c), see docs/prompt-review-2026-10.md R1-R3 ---
 others_of() { local me="$1" o out=""; for o in "${DEBATE_PROVIDERS[@]}"; do [[ "$o" == "$me" ]] || out+="${out:+, }$o"; done; printf '%s' "$out"; }
