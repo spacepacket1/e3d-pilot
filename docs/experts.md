@@ -20,7 +20,7 @@ longer than that refuses (a preset longer than that drops its lowest-priority ex
 
 ## Providers
 
-One expert sits on one seat, and a seat is one provider (an adapter). With `--panel` or `--specialist`, `--providers a,b,c` names the pool the engine may assign from; without
+One expert sits on one seat, and a seat is one provider (an adapter) or, with more experts than providers, a numbered extra seat on one. With `--panel` or `--specialist`, `--providers a,b,c` names the pool the engine may assign from; without
 it the pool is every provider that answers the availability check. The engine prefers a different vendor family for each seat, uses an
 expert's own model list only to break ties, and never substitutes silently. When there are more experts than providers, the extra
 experts share a provider: the first seat on a provider keeps its name (`claude`), the next are `claude.2`, `claude.3`; each is its own
@@ -56,10 +56,12 @@ the exact text. The synthesis step never receives a lens. With no expert named, 
 
 With `E3D_MCP_EXPERTS=1` the MCP server offers two free tools, `e3d_list_experts` and `e3d_get_expert`, so an assistant can describe the built-in
 experts and presets and show the exact lens text a seat receives. They read this checkout's own files at start-up: no network, no credentials,
-nothing written, nothing charged, and a person's own expert folders are never listed. **Running a debate with experts through the connector is
-not available yet**; the command line above runs them today. Off by default; any value other than unset, `0` or `1` refuses to start.
+nothing written, nothing charged, and a person's own expert folders are never listed. **Passing experts through the `e3d_debate` connector tool is
+not built**; the command line above and hosted web debates (next section) run them. Off by default; any value other than unset, `0` or `1` refuses to start.
 
-## Hosted runs (engine side only, off by default)
+## Hosted runs (live on pilot.e3d.ai web debates since 2026-11-03, behind a flag)
+
+On pilot.e3d.ai the Ask page has a `Skills` menu (pick 2 up to the panel size, 4 vendors) and a free in-browser `Suggest skills` button. The hosted engine gives each skill to a different vendor of the quoted panel; vendors without a skill answer as plain seats; users never choose models. The lens text adds a little to the quote (about +1 credit on a standard 4-vendor debate). Results and Gallery entries list skill names only. The cloud side lives in `e3d-pilot-cloud`; this repo holds the engine side described below.
 
 For the hosted web service (spec: [Phase 2b.1](specs/experts-phase2b1-hosted-lenses-spec.md)) the engine has four extra switches, all of which need
 `E3D_SPECIALISTS=1` and `--specialist`: `--builtin-only` (or `E3D_SPECIALISTS_BUILTIN_ONLY=1`) reads only the built-in experts, so a folder on the
@@ -70,7 +72,7 @@ experts than providers is refused, seats are never added), and writes one line a
 `**Experts (perspectives, not measured):** skeptic on claude, customer on gemini; plain seat: codex.` (the synthesis prompt never carries it).
 `e3d-mcp`'s internal run listener accepts the run fields `experts` (`[{id, hash}]`, 2 to 16 distinct ids) and `lens_bytes` (1 to 4096) only with
 `E3D_MCP_EXPERTS_RUN=1` (which needs `E3D_MCP_PRICING=per_token`; any other value refuses to start) and then advertises the capability `experts_v1`;
-without it both fields are refused `400 invalid`. Nothing here is on the public connector or in any user-facing product yet.
+without it both fields are refused `400 invalid`. The `e3d_debate` MCP tool does not take experts. Stored result positions hold the answer only (no web-search source list or notices), and each position's `model` comes from the seat's usage line ([web-search-interface.md](web-search-interface.md) section 6).
 
 ## Safety
 
@@ -90,6 +92,6 @@ Design and decisions: `docs/specs/experts-phase1-private-experts-spec.md`.
 
 ## Status and methodology
 
-**Available today:** the command-line flags above, `--suggest-panel` and `--show-suggest-rules` (a free rule-based suggestion: it matches trigger words, runs nothing, and is not a measurement), the eight built-in experts and three presets, the receipt, and the free read-only MCP tools `e3d_list_experts` and `e3d_get_expert` (off unless `E3D_MCP_EXPERTS=1`). **Not available yet:** running experts through MCP or the hosted server, several experts on one provider, a preview of the panel and its cost before running; these are specified in [the Phase 2a spec](specs/experts-phase2a-seats-and-suggest-spec.md).
+**Available today:** the command-line flags above, `--suggest-panel` and `--show-suggest-rules` (a free rule-based suggestion: it matches trigger words, runs nothing, and is not a measurement), the eight built-in experts and three presets, the receipt, and the free read-only MCP tools `e3d_list_experts` and `e3d_get_expert` (off unless `E3D_MCP_EXPERTS=1`). Hosted web debates on pilot.e3d.ai can use skills (see Hosted runs). Several experts on one provider are supported (seats `claude`, `claude.2`). **Not built:** passing skills through the `e3d_debate` MCP tool, more skills than vendors on a hosted panel, automatic (model-chosen) skill selection, users' own skills on the hosted server, any marketplace, a preview of the panel and its cost before running (`--show-panel`, see [the Phase 2a spec](specs/experts-phase2a-seats-and-suggest-spec.md)).
 
-**Not measured:** whether experts improve answers, and by how much. The cost model, the coverage model, the measurement plan and the rule that decides whether a result is claimed are in the [methodology draft](methodology/expert-councils.md); its results table is marked pending until something has been measured.
+**Not measured:** whether experts change answer quality, and by how much. The one test so far (planted errors, 2026-11-02, #63) was inconclusive: +2.8 points, 95% interval -4.6 to +10.2, cost 1.09x, false alarms not measured; four other comparisons are not run. The cost model, the coverage model, the measurement plan and the rule that decides whether a result is claimed are in the [methodology draft](methodology/expert-councils.md); its results table is marked pending until something has been measured.
