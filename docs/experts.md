@@ -15,15 +15,23 @@ E3D_SPECIALISTS=1 e3d-debate --show-specialist skeptic
 
 `--panel` takes a preset from `lib/specialists/panels.json`: `risk-review` (skeptic, premortem, compliance, implementer), `spec-review`
 (implementer, architect, skeptic, customer) and `gap-finding` (facilitator, customer, architect, factchecker). A preset has four seats and
-a minimum of three: with fewer usable providers the lowest-priority experts are dropped (and listed in the receipt); below three the run
-refuses. An explicit `--specialist` list never shrinks: name more experts than there are usable providers and it refuses.
+a minimum of three. A preset is no longer shrunk for lack of providers; a panel holds at most 6 seats, and an explicit `--specialist` list
+longer than that refuses (a preset longer than that drops its lowest-priority experts, listed in the receipt).
 
 ## Providers
 
-One expert sits on one provider. With `--panel` or `--specialist`, `--providers a,b,c` names the pool the engine may assign from; without
+One expert sits on one seat, and a seat is one provider (an adapter). With `--panel` or `--specialist`, `--providers a,b,c` names the pool the engine may assign from; without
 it the pool is every provider that answers the availability check. The engine prefers a different vendor family for each seat, uses an
-expert's own model list only to break ties, and never substitutes silently: if no provider is left for an expert the run refuses.
-`--specialist skeptic:claude` forces a provider and is meant for people who know why.
+expert's own model list only to break ties, and never substitutes silently. When there are more experts than providers, the extra
+experts share a provider: the first seat on a provider keeps its name (`claude`), the next are `claude.2`, `claude.3`; each is its own
+call with its own lens, files and fate, and is seated on the vendor family with the fewest seats so far. `--specialist skeptic:claude`
+forces a provider and is meant for people who know why.
+
+**Independence is stated, never hidden.** The receipt's `panel.independence` gives `seats`, `adapters` and `families` (counts), and each
+seat records its `adapter`. A panel on fewer than 2 vendor families is refused: `--min-families N` (default 2) sets the floor, and
+`--min-families 1` is the deliberate opt-in for lens-only runs. Such a run prints `N seats on 1 vendor family: lenses differ, the model
+does not` on stderr and in the transcript header, and is never called multi-model. `--min-families` applies to `--panel` and `--specialist`
+runs only; a plain `--providers a,b` debate is unchanged. Per-token limits (`E3D_DEBATE_MAX_TOKENS`) still refuse two seats on one provider.
 
 ## What an expert is
 

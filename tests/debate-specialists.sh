@@ -147,19 +147,19 @@ T="$(newroot)"; build_root "$T" "$ROOT/bin/e3d-debate" v2 claude anthropic-api c
 on "$T" "q?" --specialist aa --specialist bb --providers claude,anthropic-api,codex --synthesizer synth --out-dir "$T/out"
 [[ "$(seat_of "$T" aa)" == claude && "$(seat_of "$T" bb)" == codex ]] || fail "the second seat should take the other vendor family, not the same one: $(panel_of "$T")"
 
-# too many experts for the providers; presets shrink to their minimum and then refuse
+# more experts than providers (Phase 2a.2): the extras share a provider instead of refusing; a preset no longer shrinks for lack of providers
 T="$(newroot)"; build_root "$T" "$ROOT/bin/e3d-debate" v2 "${PROVS[@]}"; starter "$T"
 on "$T" "q?" --specialist skeptic --specialist customer --specialist architect --providers claude,codex --synthesizer synth --out-dir "$T/out"
-[[ $rc -eq 1 ]] && grep -q 'only 2 providers are usable' "$T/stderr" || fail "an explicit list longer than the pool must refuse: $(cat "$T/stderr")"
-on "$T" "q?" --panel risk-review --providers claude,codex,gemini --synthesizer synth --out-dir "$T/out"; [[ $rc -eq 0 ]] || fail "a preset must shrink to fit: $(cat "$T/stderr")"
-[[ "$(jq -c '.panel.dropped' "$T/out/decision-log.json")" == '["implementer"]' && "$(jq '.panel.experts | length' "$T/out/decision-log.json")" == 3 ]] || fail "the lowest-priority expert should be dropped: $(panel_of "$T")"
-grep -q '^panel: .* on claude.* (dropped: implementer)$' "$T/stderr" || fail "the dropped expert must be reported: $(grep '^panel:' "$T/stderr")"
-on "$T" "q?" --panel risk-review --providers claude,codex --synthesizer synth --out-dir "$T/out"; [[ $rc -eq 1 ]] && grep -q 'at least 3 seats' "$T/stderr" || fail "below the preset minimum must refuse: $(cat "$T/stderr")"
+[[ $rc -eq 0 ]] || fail "three experts on two providers must be seated (Phase 2a.2): $(cat "$T/stderr")"
+[[ "$(jq -c '.providers' "$T/out/decision-log.json")" == '["claude","codex","claude.2"]' ]] || fail "the extra expert shares a provider as claude.2: $(panel_of "$T")"
+on "$T" "q?" --panel risk-review --providers claude,codex,gemini --synthesizer synth --out-dir "$T/out"; [[ $rc -eq 0 ]] || fail "a preset must be seated whole: $(cat "$T/stderr")"
+[[ "$(jq -c '.panel.dropped' "$T/out/decision-log.json")" == '[]' && "$(jq '.panel.experts | length' "$T/out/decision-log.json")" == 4 ]] || fail "a preset no longer drops experts for lack of providers: $(panel_of "$T")"
+grep -q '^panel: .* on claude.*$' "$T/stderr" || fail "the run should say which expert sits where: $(grep '^panel:' "$T/stderr")"
 
 # the default pool: providers that answer the availability probe
 T="$(newroot)"; build_root "$T" "$ROOT/bin/e3d-debate" v2 "${PROVS[@]}"; starter "$T"; : > "$T/down-gemini"
 on "$T" "q?" --panel risk-review --synthesizer synth --out-dir "$T/out"; [[ $rc -eq 0 ]] || fail "default pool run failed: $(cat "$T/stderr")"
-[[ "$(jq -r '.panel.experts | map(.seat) | sort | join(",")' "$T/out/decision-log.json")" == "claude,codex,grok-build" ]] || fail "an unavailable provider must be left out of the default pool: $(panel_of "$T")"
+[[ "$(jq -r '.panel.experts | map(.adapter) | unique | join(",")' "$T/out/decision-log.json")" == "claude,codex,grok-build" ]] || fail "an unavailable provider must be left out of the default pool: $(panel_of "$T")"
 
 # refusals with a clear message
 T="$(newroot)"; build_root "$T" "$ROOT/bin/e3d-debate" v2 "${PROVS[@]}"; starter "$T"
@@ -181,8 +181,8 @@ on "$T" "q?" --specialist skeptic --specialist tooly --providers claude,codex --
 grep -q 'allowed_tools_ignored' "$T/stderr" || fail "allowed-tools must be warned about"
 want="$(cd "$ROOT" && node --input-type=module -e "import { hashFolder } from './lib/debate/specialists.mjs'; console.log(hashFolder(process.argv[1]))" "$T/lib/specialists/skeptic")"
 [[ "$(jq -r '.panel.experts[] | select(.name=="skeptic") | .content_hash' "$T/out/decision-log.json")" == "$want" ]] || fail "the receipt hash must be the computed folder hash"
-jq -e '.panel.experts[0] | keys | sort == ["content_hash","effort_applied","effort_requested","hint_used","name","override","seat","tier","version"]' "$T/out/decision-log.json" >/dev/null || fail "unexpected receipt fields: $(panel_of "$T")"
-jq -e '.panel | keys | sort == ["dropped","experts","preset"]' "$T/out/decision-log.json" >/dev/null || fail "unexpected panel fields"
+jq -e '.panel.experts[0] | keys | sort == ["adapter","content_hash","effort_applied","effort_requested","hint_used","name","override","seat","tier","version"]' "$T/out/decision-log.json" >/dev/null || fail "unexpected receipt fields: $(panel_of "$T")"
+jq -e '.panel | keys | sort == ["dropped","experts","independence","preset"]' "$T/out/decision-log.json" >/dev/null || fail "unexpected panel fields"
 ! grep -q 'LENS-' "$T/out/decision-log.json" || fail "no lens text may be in the receipt"
 jq -e '.schema == 1' "$T/out/decision-log.json" >/dev/null || fail "the decision log schema stays 1 (the panel block is additive)"
 echo "specialists 6 (receipt): ok"
