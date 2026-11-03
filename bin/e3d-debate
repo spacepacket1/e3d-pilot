@@ -40,6 +40,7 @@ SPEC_ACTION=""
 SPEC_ARG1=""
 SPEC_ARG2=""
 SPEC_NO_SIDECAR=0
+SUGGEST=0; SUGGEST_RULES=0; SUGGEST_TASK=""
 SPEC_FLAG_USED=0
 SPEC_CLI="$REPO_ROOT/lib/debate/specialists-cli.mjs"
 PLAN_JSON=""
@@ -140,6 +141,10 @@ while [[ $# -gt 0 ]]; do
       [[ $# -ge 3 ]] || { echo "error: --export-specialist needs an expert name and an output folder" >&2; exit 1; }
       SPEC_ACTION=export; SPEC_ARG1="$2"; SPEC_ARG2="$3"; SPEC_FLAG_USED=1; shift 3 ;;
     --no-sidecar) SPEC_NO_SIDECAR=1; SPEC_FLAG_USED=1; shift ;;
+    --suggest-panel) SUGGEST=1; SPEC_FLAG_USED=1; shift ;;
+    --show-suggest-rules) SUGGEST_RULES=1; SPEC_FLAG_USED=1; shift ;;
+    --task) SUGGEST_TASK="${2:-}"; SPEC_FLAG_USED=1; shift 2 ;;
+    --auto) echo "error: --auto does not exist: a suggestion is never run by itself (see --suggest-panel)" >&2; exit 2 ;;
     --rounds) DEBATE_ROUNDS="$2"; shift 2 ;;
     --synthesizer) DEBATE_SYNTHESIZER="$2"; shift 2 ;;
     --max-words) DEBATE_MAX_WORDS="$2"; shift 2 ;;
@@ -190,6 +195,7 @@ if [[ -n "$QUESTION_FILE" ]]; then
   QUESTION="$(cat "$QUESTION_FILE")"
 fi
 
+if (( SUGGEST == 1 || SUGGEST_RULES == 1 )); then exec node "$REPO_ROOT/lib/specialists/suggest.mjs" $( (( SUGGEST_RULES == 1 )) && echo rules || echo suggest ) ${QUESTION:+--question "$QUESTION"} ${SUGGEST_TASK:+--task "$SUGGEST_TASK"}; fi
 case "$DEBATE_PROMPT_VERSION" in v2|v3b|v3c) ;; *) echo "error: --prompts must be v2, v3b or v3c" >&2; exit 1 ;; esac
 PROMPT_OVERHEAD="${E3D_DEBATE_PROMPT_OVERHEAD:-0}"
 [[ -n "$QUESTION" || "$PROMPT_OVERHEAD" == "1" ]] || { echo "error: question required (see --help)" >&2; exit 1; }

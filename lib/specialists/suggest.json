@@ -1,0 +1,31 @@
+{
+  "schema": "suggest/v1",
+  "note": "A starting table, not measured. Edit it, then run tests/experts-suggest.sh. Matching is case-insensitive and whole-word; a phrase matches its words in order, separated by spaces.",
+  "council_size": 4,
+  "max_hits_per_rule": 3,
+  "low_confidence_below": 5,
+  "task_boost": 1,
+  "fallback_preset": "risk-review",
+  "rules": [
+    { "id": "compliance-terms", "add": { "compliance": 1 },
+      "words": ["money", "legal", "law", "privacy", "security", "secure", "claim", "claims", "regulation", "regulations", "regulatory", "compliance", "gdpr", "hipaa", "license", "licence", "liability", "personal data", "pii", "payment", "payments", "contract", "terms of service"] },
+    { "id": "ship-terms", "add": { "skeptic": 1, "premortem": 1 },
+      "words": ["ship", "shipping", "launch", "launching", "release", "releasing", "migrate", "migrating", "deadline", "rollout", "roll out", "go live", "deploy", "deploying", "cutover"] },
+    { "id": "customer-terms", "add": { "customer": 1 },
+      "words": ["customer", "customers", "pricing", "price", "users", "user", "market", "onboarding", "churn", "adoption", "buyers", "audience"] },
+    { "id": "architecture-terms", "add": { "architect": 1 },
+      "words": ["design", "architecture", "schema", "migration", "monorepo", "scale", "scaling", "scalability", "refactor", "database", "api", "interface", "dependency", "dependencies"] },
+    { "id": "build-terms", "add": { "implementer": 1 },
+      "words": ["spec", "specification", "requirements", "plan", "estimate", "estimates", "timeline", "milestone", "build", "implement", "implementation", "effort"] },
+    { "id": "fact-terms", "add": { "factchecker": 1 },
+      "words": ["numbers", "dates", "statistics", "statistic", "percent", "data shows", "survey", "study", "evidence", "source", "sources"] },
+    { "id": "fact-phrases", "add": { "factchecker": 2 },
+      "words": ["according to", "studies show", "research shows"] },
+    { "id": "open-terms", "add": { "facilitator": 1 },
+      "words": ["options", "unclear", "brainstorm", "alternatives", "trade-offs", "tradeoffs", "unsure", "not sure"] },
+    { "id": "open-phrases", "add": { "facilitator": 2 },
+      "words": ["open question", "open questions", "we don't know", "we do not know"] },
+    { "id": "failure-terms", "add": { "skeptic": 1 },
+      "words": ["risk", "risks", "risky", "fail", "failure", "failing", "break", "outage", "incident", "rollback", "irreversible"] }
+  ]
+}

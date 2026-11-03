@@ -1,6 +1,6 @@
 # Experts, Phase 2a: seats that do not depend on providers, and a free "suggest a panel" (engine only)
 
-**Status:** draft 1, 2026-11-01. 2a.1 (the seam) merged (#60); **2a.2 (the limit lifted) built**; `--show-panel` and 2a.3 (`--suggest-panel`) not built.
+**Status:** draft 1, 2026-11-01. 2a.1 (the seam) merged (#60); 2a.2 (the limit lifted) merged (#64); **2a.3 (`--suggest-panel`) is built** (section 3); `--show-panel` not built.
 **Parents:** [Phase 1 spec](experts-phase1-private-experts-spec.md) (section 4 names the one-seat-per-provider limit as "lifted at the start of Phase 2"), [Phase 0](experts-phase0-overlap-map-and-eval-plan.md) and [#50](experts-auto-councils-marketplace-developer-talent.md).
 **Evidence tags:** **[E]** read in a file today. **[G]** guess. **[N]** not verified.
 
@@ -64,7 +64,9 @@ Exit 0 when a real run would start, 1 when it would refuse. It makes no model ca
 - **Honesty rules:** the question is only read locally; nothing is sent anywhere; a suggestion is never executed by itself and `--auto` does not exist yet; the output makes no claim about quality or accuracy.
 - **Why rules first:** it is free, deterministic, reproducible from the receipt and testable. A language-model router costs credits, must be quoted, and is only worth building once Stage 0 or later shows rules are not enough (Phase 0). The suggestion and the panel a person finally runs are both visible to the evaluation if it is ever run.
 
-**Pull request 2a.3:** the rules file, the command, and tests: each rule fires on its words and not on near-misses; matches are case-insensitive and whole-word; ties are stable; low confidence falls back to `risk-review`; the output names the matched words; the same question always gives the same answer; no network and no process is used; with the switch off the flags refuse.
+**Built in 2a.3 (settled while writing it):** `lib/specialists/suggest.json` (the table) and `lib/specialists/suggest.mjs` (all the logic; `bin/e3d-debate` only parses the flags and hands over). Each rule adds its weight once per matched word, at most 3 words per rule; matching is case-insensitive and whole-word, phrases match their words in order. Only experts a rule matched can be proposed (up to 4); ties keep catalogue order, which is the alphabetical order of `--list-specialists`; built-in experts only, so a person's own folders never change the answer. **Low confidence** is: fewer than 2 experts matched, or total rule weight of the proposed experts below **5** (a starting value, not tuned); otherwise `medium`; never `high`. Low confidence prints the `--panel risk-review` command (the real preset name) instead of `--specialist` flags. **`--task`** adds +1 to each expert whose `tasks` list it: it can reorder the panel, never adds an expert no rule matched and never changes the confidence. `--auto` is refused with exit 2. A bad `--task` value is refused.
+
+**Pull request 2a.3 (built):** the rules file, the command, and tests: each rule fires on its words and not on near-misses; matches are case-insensitive and whole-word; ties are stable; low confidence falls back to `risk-review`; the output names the matched words; the same question always gives the same answer; no network and no process is used; with the switch off the flags refuse.
 
 ## 4. Decisions for the owner (my recommendation first)
 
