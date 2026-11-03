@@ -70,6 +70,7 @@ DEBATE_PROMPT_VERSION="v2"
 OUT_DIR=""
 QUESTION=""
 QUESTION_FILE=""
+JEV_PROPOSITIONS_FILE=""   # --jev-propositions: shadow-only Jev signal (docs/jev-council.md); the library is loaded only when this is set
 LINK_REPO=""
 LINK_IDEA=""
 WEB_SEARCH_REQUESTED=1
@@ -115,6 +116,12 @@ unnecessary?" -- and logs the answer into the transcript as a shadow-mode,
 informational-only signal. It never skips or shortens the debate; this is
 calibration data for a possible future live pre-screen gate (see
 idea-82a5c2225266). No key set means this is silently skipped.
+
+--jev-propositions <file> (shadow only, docs/jev-council.md): a JSON array of {"id", "text", "negation"?} yes/no
+statements you wrote. Before round 1 Jev is asked about each statement (and its negation, for a polarity check) and the
+raw answers, a consistency flag and a provisional confidence band go to jev-council.json in --out-dir and a labelled line
+in transcript.md. No model sees them: not a round prompt, not the synthesis. It changes no answer, consensus or exit code.
+Needs TYPESAFE_API_KEY (otherwise the artifact says no_signal); makes no call in per-token mode.
 
 Experts (off unless E3D_SPECIALISTS=1; docs/specs/experts-phase1-private-experts-spec.md). An expert is a standard skill folder
 (SKILL.md plus an optional e3d/expert.json) found in lib/specialists, ~/.config/e3d-pilot/specialists and <repo>/.e3d-pilot/specialists
@@ -162,6 +169,7 @@ while [[ $# -gt 0 ]]; do
     --max-words) DEBATE_MAX_WORDS="$2"; shift 2 ;;
     --prompts) DEBATE_PROMPT_VERSION="$2"; shift 2 ;;
     --question-file) QUESTION_FILE="$2"; shift 2 ;;
+    --jev-propositions) JEV_PROPOSITIONS_FILE="${2:-}"; shift 2 ;;
     --out-dir) OUT_DIR="$2"; shift 2 ;;
     --repo) LINK_REPO="$2"; shift 2 ;;
     --idea) LINK_IDEA="$2"; shift 2 ;;
@@ -218,6 +226,11 @@ PROMPT_OVERHEAD="${E3D_DEBATE_PROMPT_OVERHEAD:-0}"
 [[ -n "$QUESTION" || "$PROMPT_OVERHEAD" == "1" ]] || { echo "error: question required (see --help)" >&2; exit 1; }
 [[ "$DEBATE_MAX_WORDS" =~ ^[0-9]+$ ]] && (( DEBATE_MAX_WORDS >= 1 )) || { echo "error: --max-words must be a positive integer" >&2; exit 1; }
 [[ "$DEBATE_ROUNDS" =~ ^[0-9]+$ ]] && (( DEBATE_ROUNDS >= 1 )) || { echo "error: --rounds must be a positive integer" >&2; exit 1; }
+if [[ -n "$JEV_PROPOSITIONS_FILE" ]]; then
+  # Loaded only now: the other tests copy bin/e3d-debate next to a few libraries, and a plain debate must not need this one.
+  source "$REPO_ROOT/lib/debate/jev-council.sh"
+  jev_council_validate "$JEV_PROPOSITIONS_FILE" || exit 1   # a bad file fails here, before any paid call
+fi
 if [[ -n "$SPEC_PANEL" ]] || (( ${#SPEC_LIST[@]} > 0 )); then
   # A council is chosen by experts, not models: the engine assigns a provider to each expert from a pool of usable providers.
   command -v jq >/dev/null 2>&1 || { echo "error: jq is required for --panel and --specialist" >&2; exit 1; }
@@ -613,6 +626,21 @@ cp "$transcript_md" "$prompt_transcript_md"
 # prompt never carries it (the hosted quote prices the synthesis input without it). The Gallery parser skips `**Label:** ...` lines of this kind.
 if [[ -n "$PLAN_JSON" ]] && (( SPEC_FILL_POOL == 1 )); then
   printf '**Experts (perspectives, not measured):** %s.\n\n' "$(jq -r '(.panel.experts | map(.name + " on " + .seat) | join(", ")) + (if (.panel.plain_seats // [] | length) > 0 then "; plain seat" + (if (.panel.plain_seats | length) > 1 then "s" else "" end) + ": " + (.panel.plain_seats | map(.seat) | join(", ")) else "" end)' <<< "$PLAN_JSON")" >> "$transcript_md"
+fi
+
+# Jev council signal (docs/jev-council.md, issue #66 Phase 1): SHADOW ONLY. Asked now, before round 1, and never shown to any model:
+# it goes to jev-council.json and to the transcript RECORD, both written after the prompt copy above, so no round prompt and no
+# synthesis prompt carries it. It changes no answer, no consensus and no exit code. Per-token mode makes no Jev call.
+if [[ -n "$JEV_PROPOSITIONS_FILE" && "$PROMPT_OVERHEAD" != "1" ]]; then
+  if (( PT_ON == 1 )); then
+    jev_council_skipped "$work_dir/jev-council.json" skipped "per-token mode makes no Jev call"
+  elif ! jev_available; then
+    jev_council_skipped "$work_dir/jev-council.json" no_signal "TYPESAFE_API_KEY is not set"
+  else
+    echo "=== Jev council signal (shadow mode, hidden from the models, informational only) ===" >&2
+    jev_council_run "$QUESTION" "$JEV_PROPOSITIONS_FILE" "$work_dir/jev-council.json"
+  fi
+  [[ -s "$work_dir/jev-council.json" ]] && jev_council_transcript_line "$work_dir/jev-council.json" >> "$transcript_md"
 fi
 
 # --- experimental prompts (v3b / v3c), see docs/prompt-review-2026-10.md R1-R3 ---
@@ -1183,11 +1211,13 @@ write_decision_log() {
     --argjson at "$converged_at_round" --argjson fast "$fast_synthesis" --argjson sok "$synth_ok" \
     --argjson dissent "$dissent_present" --argjson secs "$SECONDS" --slurpfile rounds "$work_dir/decision-rounds.jsonl" \
     --argjson ws "$( [[ -n "$ws_summary_json" ]] && jq -c .decision_log <<< "$ws_summary_json" || echo null)" \
+    --argjson jc "$( [[ -s "$work_dir/jev-council.json" ]] && jev_council_log_summary "$work_dir/jev-council.json" || echo null)" \
     '{schema:1, ts:$ts, question_sha256:$qhash, prompt_version:$pv, providers:$providers, synthesizer:$synth,
       max_rounds:$maxr, rounds_ran:$ran, stop_reason:$stop, converged_at_round:(if $at>0 then $at else null end),
       fast_synthesis:($fast==1), synthesis_ok:($sok==1), consensus:(if $consensus=="" then null else $consensus end),
       dissent_present:$dissent, seconds:$secs, rounds:$rounds}
       + {web_search: (if $ws == null then {search_enabled: false} else $ws end)}
+      + (if $jc == null then {} else {jev_council: $jc} end)
       + (if $panel == null then {} else {panel: $panel} end)' > "$work_dir/decision-log.json" || return 0
   if [[ -n "${E3D_DEBATE_DECISION_LOG:-}" ]]; then
     { mkdir -p "$(dirname "$E3D_DEBATE_DECISION_LOG")" && jq -c . "$work_dir/decision-log.json" >> "$E3D_DEBATE_DECISION_LOG"; } 2>/dev/null \
@@ -1220,6 +1250,7 @@ if [[ -n "$OUT_DIR" ]]; then
   mkdir -p "$OUT_DIR"
   [[ -s "$work_dir/decision-log.json" ]] && cp "$work_dir/decision-log.json" "$OUT_DIR/decision-log.json"
   [[ -s "$work_dir/web-search.json" ]] && cp "$work_dir/web-search.json" "$OUT_DIR/web-search.json"
+  [[ -s "$work_dir/jev-council.json" ]] && cp "$work_dir/jev-council.json" "$OUT_DIR/jev-council.json"
   [[ -s "$work_dir/seats.json" ]] && cp "$work_dir/seats.json" "$OUT_DIR/seats.json"
   # seat -> the model its adapter reported (display only; e3d-mcp puts it on the stored positions)
   node "$PT_LIB" models "$work_dir" > "$OUT_DIR/seat-models.json" 2>/dev/null || rm -f "$OUT_DIR/seat-models.json"

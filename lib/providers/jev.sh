@@ -22,8 +22,12 @@ jev_available() {
 # response). Every caller must treat failure as "no signal" and skip -- never
 # fabricate an answer.
 #
-# Testing seam: if E3D_PILOT_JEV_STUB_RESPONSE names a readable file, its
-# contents are returned as-is instead of making a real request.
+# Testing seams (no real request is made when either is set):
+# - E3D_PILOT_JEV_STUB_RESPONSE names a readable file; its contents are returned as-is for every call.
+# - E3D_PILOT_JEV_STUB_DIR names a directory holding 1.json, 2.json, ...; call N returns N.json, so a test can
+#   script a different answer per call. The call counter lives in <dir>/.calls (a file, so it survives the
+#   $(...) subshells callers use). A call with no matching file fails like a vendor error would.
+#   E3D_PILOT_JEV_STUB_RESPONSE wins when both are set.
 jev_call() {
   local model="$1" state_json="$2" questions_json="$3"
   local body tmp_body http_status
@@ -34,6 +38,20 @@ jev_call() {
       return 1
     }
     cat "$E3D_PILOT_JEV_STUB_RESPONSE"
+    return 0
+  fi
+
+  if [[ -n "${E3D_PILOT_JEV_STUB_DIR:-}" ]]; then
+    local stub_n=0 stub_file
+    [[ -f "$E3D_PILOT_JEV_STUB_DIR/.calls" ]] && stub_n="$(cat "$E3D_PILOT_JEV_STUB_DIR/.calls")"
+    stub_n=$((stub_n + 1))
+    printf '%s' "$stub_n" > "$E3D_PILOT_JEV_STUB_DIR/.calls"
+    stub_file="$E3D_PILOT_JEV_STUB_DIR/$stub_n.json"
+    [[ -f "$stub_file" ]] || {
+      echo "jev: no stub response for call $stub_n in $E3D_PILOT_JEV_STUB_DIR" >&2
+      return 1
+    }
+    cat "$stub_file"
     return 0
   fi
 

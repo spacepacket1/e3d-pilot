@@ -955,6 +955,8 @@ Round 1: every listed provider answers independently. Round 2+: each provider se
 
 Any `lib/providers` adapter can take part, including `devin` — useful if a Devin/Windsurf subscription would otherwise sit unused. The full transcript (prompts, every round's raw responses, and the synthesis) is written to a temp directory by default, or to `--out-dir <path>` if given.
 
+Optional, shadow only: `--jev-propositions <file>` records what Jev (TypeSafe System One, a typed yes/no judge) says about statements you wrote, before round 1, in `jev-council.json` in `--out-dir`. No model sees it and it changes no answer, consensus or exit code; it needs `TYPESAFE_API_KEY` and makes no call in per-token mode. See [docs/jev-council.md](docs/jev-council.md), covered by `tests/jev-council.sh`.
+
 By default a debate's verdict goes nowhere but stdout/the transcript file — it isn't wired into any repo's provenance graph. Pass `--repo <path> --idea <idea-id>` (both required together, plus `--out-dir` pointed somewhere inside `--repo`, e.g. `docs/debates/<slug>`) to automatically record the verdict on an idea that already exists in that repo's ledger once synthesis succeeds, equivalent to running `e3d-pilot ideas note --decision --evidence <transcript-path> <idea-id> "<verdict>"` by hand:
 
 ```bash

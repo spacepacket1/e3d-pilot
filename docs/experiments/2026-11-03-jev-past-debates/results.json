@@ -1,0 +1,145 @@
+{
+ "items": [
+  {
+   "debate": "e3d-pilot-2026-09-06-discovery-mode-reframing",
+   "q_chars": 96,
+   "P": "Reframing Insight Mode as Discovery Mode fixes its core problem.",
+   "notP": "Reframing Insight Mode as Discovery Mode does not fix its core problem.",
+   "council": "N",
+   "consensus": "majority",
+   "noul_P": 0.18,
+   "noul_notP": 0.76
+  },
+  {
+   "debate": "e3d-pilot-2026-09-06-shared-cognition-vs-insight-mode",
+   "q_chars": 967,
+   "P": "The three ideas belong together and should be built as one effort.",
+   "notP": "The three ideas should be kept as separate, independent efforts.",
+   "council": "N",
+   "consensus": "majority",
+   "noul_P": 0.25,
+   "noul_notP": 0.48
+  },
+  {
+   "debate": "e3d-pilot-2026-09-07-e3d-graph-generalization",
+   "q_chars": 2400,
+   "P": "E3D should ship a standalone, generalized graph product now.",
+   "notP": "E3D should not ship a standalone, generalized graph product now.",
+   "council": "N",
+   "consensus": "majority",
+   "noul_P": 0.35,
+   "noul_notP": 0.39
+  },
+  {
+   "debate": "e3d-pilot-2026-09-07-hugging-face-strategy",
+   "q_chars": 2400,
+   "P": "Hugging Face should become a distribution, evaluation or ecosystem surface for e3d-pilot.",
+   "notP": "Hugging Face should not become a distribution, evaluation or ecosystem surface for e3d-pilot.",
+   "council": "N",
+   "consensus": "majority",
+   "noul_P": 0.81,
+   "noul_notP": 0.15
+  },
+  {
+   "debate": "e3d-pilot-2026-09-15-gemini-qwen-provider-addition",
+   "q_chars": 185,
+   "P": "e3d-pilot should add Gemini (via the Gemini CLI) as a provider.",
+   "notP": "e3d-pilot should not add Gemini as a provider.",
+   "council": "Y",
+   "consensus": "full",
+   "noul_P": 0.42,
+   "noul_notP": 0.42
+  },
+  {
+   "debate": "e3d-pilot-2026-09-16-linear-work-management-layer",
+   "q_chars": 1417,
+   "P": "E3D Pilot should build Linear integration code now.",
+   "notP": "E3D Pilot should not build Linear integration code now.",
+   "council": "N",
+   "consensus": "majority",
+   "noul_P": 0.67,
+   "noul_notP": 0.44
+  },
+  {
+   "debate": "e3d-pilot-2026-09-22-jev-debate-gate",
+   "q_chars": 2400,
+   "P": "TypeSafe's Jev should be piloted as a pre-screen inside the debate engine.",
+   "notP": "TypeSafe's Jev should not be piloted as a pre-screen inside the debate engine.",
+   "council": "Y",
+   "consensus": "majority",
+   "noul_P": 0.76,
+   "noul_notP": 0.27
+  },
+  {
+   "debate": "e3d-pilot-2026-09-27-openrouter-provider-adapter",
+   "q_chars": 2400,
+   "P": "OpenRouter should be added to e3d-pilot's model-selection layer.",
+   "notP": "OpenRouter should not be added to e3d-pilot's model-selection layer.",
+   "council": "Y",
+   "consensus": "majority",
+   "noul_P": 0.46,
+   "noul_notP": 0.49
+  },
+  {
+   "debate": "e3d-pilot-2026-10-06-e3d-ai-appliance",
+   "q_chars": 1787,
+   "P": "E3D should sell an always-on local AI operations appliance (hardware) as its first product.",
+   "notP": "E3D should not sell an always-on local AI operations appliance (hardware) as its first product.",
+   "council": "N",
+   "consensus": "majority",
+   "noul_P": 0.17,
+   "noul_notP": 0.77
+  },
+  {
+   "debate": "e3d-pilot-2026-10-08-decision-memory-as-product",
+   "q_chars": 2270,
+   "P": "Decision memory should be built and sold as a standalone product.",
+   "notP": "Decision memory should not be a standalone product.",
+   "council": "N",
+   "consensus": "majority",
+   "noul_P": 0.18,
+   "noul_notP": 0.62
+  }
+ ],
+ "sanity": [
+  {
+   "P": "A production database holding customer orders should be backed up regularly.",
+   "notP": "A production database holding customer orders should never be backed up.",
+   "expected": "Y",
+   "noul_P": 0.98,
+   "noul_notP": 0.01
+  },
+  {
+   "P": "Passwords should be stored in plaintext.",
+   "notP": "Passwords should not be stored in plaintext.",
+   "expected": "N",
+   "noul_P": 0.02,
+   "noul_notP": 0.99
+  },
+  {
+   "P": "A company should test its software before releasing it to customers.",
+   "notP": "A company should release software to customers without any testing.",
+   "expected": "Y",
+   "noul_P": 0.97,
+   "noul_notP": 0.02
+  }
+ ],
+ "repeat": [
+  [
+   "discovery-mode-reframing",
+   0.17
+  ],
+  [
+   "ognition-vs-insight-mode",
+   0.26
+  ],
+  [
+   "e3d-graph-generalization",
+   0.37
+  ]
+ ],
+ "tokens": {
+  "input": 18706,
+  "output": 580
+ }
+}
