@@ -238,6 +238,22 @@ AM=claude-sonnet-5-5 debate "$T/s5d" --providers anthropic-api,openai-api --roun
 E3D_DEBATE_WEB_SEARCH=off AM=claude-sonnet-5-5 ANTHROPIC_API_THINKING= debate "$T/s5e" --providers anthropic-api,openai-api --rounds 1
 [[ "$(reqs_to /v1/messages | sed -n 1p | jq -c '.body | fromjson | has("thinking")')" == false ]] || fail "ANTHROPIC_API_THINKING empty sends nothing"
 ok "Claude 5 models send thinking off"
+# Each model turns thinking off its own way, and the wrong value is a 400 (measured on the real API 2026-11-04):
+# expected "<thinking or -> <effort or ->" per model, on the plain request and the search request alike
+for spec in "claude-sonnet-5-5 between_tools -" "claude-opus-5 disabled -" "claude-sonnet-5 disabled -" "claude-haiku-5-5 disabled -" \
+            "claude-opus-5-5 - low" "claude-fable-5-1 - low" "claude-mythos-5-1 - low" "claude-sonnet-4-6 - -"; do
+  read -r m want_t want_e <<< "$spec"
+  for search in off on; do
+    E3D_DEBATE_WEB_SEARCH=$search AM=$m debate "$T/think-$m-$search" --providers anthropic-api,openai-api --rounds 1
+    got="$(reqs_to /v1/messages | sed -n 1p | jq -r '.body | fromjson | "\(.thinking.type // "-") \(.output_config.effort // "-")"')"
+    [[ "$got" == "$want_t $want_e" ]] || fail "$m (search $search): thinking/effort sent '$got', want '$want_t $want_e'"
+  done
+done
+E3D_DEBATE_WEB_SEARCH=off AM=claude-opus-5-5 ANTHROPIC_API_EFFORT= debate "$T/s5f" --providers anthropic-api,openai-api --rounds 1
+[[ "$(reqs_to /v1/messages | sed -n 1p | jq -c '.body | fromjson | has("output_config")')" == false ]] || fail "ANTHROPIC_API_EFFORT empty sends nothing"
+E3D_DEBATE_WEB_SEARCH=off AM=claude-sonnet-5-5 ANTHROPIC_API_EFFORT=medium debate "$T/s5g" --providers anthropic-api,openai-api --rounds 1
+[[ "$(reqs_to /v1/messages | sed -n 1p | jq -c '.body | fromjson | [.thinking.type, .output_config.effort]')" == '["between_tools","medium"]' ]] || fail "ANTHROPIC_API_EFFORT override"
+ok "thinking off is sent per model (between_tools / disabled / effort low / nothing)"
 
 p0="$(reqs_to /v1/messages | sed -n 1p | jq -r '.body | fromjson | .messages[0].content')"
 [[ "$(sed -n 4p <<< "$p0")" == "You are one of several AI models independently answering a question, before comparing notes with the others in later rounds." ]] || fail "search-off prompt body changed"
