@@ -595,6 +595,8 @@ async function executeDebate(plan, handle, ctx, { progress, onStarted, signal } 
       cliArgs.push('--builtin-only', '--fill-pool', '--lens-bytes-max', String(ex.lensBytes));
       for (const e of ex.list) cliArgs.push('--expert-pin', `${e.id}=${e.hash}`);
     }
+    // An opted-in web run (jev: true): one unpriced Jev pre-screen call, record only (bin/e3d-debate --jev).
+    if (plan.jev) cliArgs.push('--jev');
     let step = 0;
     const tag = `debate-${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 8)}`;
     const usesSampling = providers.some(isSampling) || isSampling(synthesizer);
@@ -1288,10 +1290,10 @@ async function planWebRun(fields, { perToken = null, experts = null } = {}) {
     const searchPart = caps ? { webSearch: true, searchProviders: Object.keys(caps).length, maxSearchesPerCall: Math.max(...Object.values(caps)) } : { webSearch: false, searchProviders: 0, maxSearchesPerCall: 0 };
     const x = experts ? expertsPlan(experts, plan.providers) : null;
     if (x?.error) return x;
-    const priced = { ...plan, ...searchPart, perToken: limits, ...(x ? { experts: x.experts } : {}) };
+    const priced = { ...plan, ...searchPart, perToken: limits, ...(x ? { experts: x.experts } : {}), ...(fields.jev === true ? { jev: true } : {}) };
     return { plan: priced, worst: worstFor(priced) };
   }
-  return { plan, worst: worstFor(plan) };
+  return { plan: fields.jev === true ? { ...plan, jev: true } : plan, worst: worstFor(plan) };
 }
 
 // The external hook: validate everything, then recover crashed work and start outbox delivery BEFORE listening.
