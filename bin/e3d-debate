@@ -70,6 +70,7 @@ DEBATE_PROMPT_VERSION="v2"
 OUT_DIR=""
 QUESTION=""
 QUESTION_FILE=""
+JEV_FORCE=0   # --jev: run the Jev obviousness pre-screen even in per-token mode (one unpriced call; the hosted service, opted-in accounts only)
 JEV_PROPOSITIONS_FILE=""   # --jev-propositions: shadow-only Jev signal (docs/jev-council.md); the library is loaded only when this is set
 LINK_REPO=""
 LINK_IDEA=""
@@ -116,6 +117,9 @@ unnecessary?" -- and logs the answer into the transcript as a shadow-mode,
 informational-only signal. It never skips or shortens the debate; this is
 calibration data for a possible future live pre-screen gate (see
 idea-82a5c2225266). No key set means this is silently skipped.
+
+--jev: run that pre-screen even in per-token mode (E3D_DEBATE_MAX_TOKENS): one Jev call that is not priced, for the hosted service's
+opted-in accounts. Still record only (transcript.md), never in a prompt, and a missing key or failed call is skipped.
 
 --jev-propositions <file> (shadow only, docs/jev-council.md): a JSON array of {"id", "text", "negation"?} yes/no
 statements you wrote. Before round 1 Jev is asked about each statement (and its negation, for a polarity check) and the
@@ -169,6 +173,7 @@ while [[ $# -gt 0 ]]; do
     --max-words) DEBATE_MAX_WORDS="$2"; shift 2 ;;
     --prompts) DEBATE_PROMPT_VERSION="$2"; shift 2 ;;
     --question-file) QUESTION_FILE="$2"; shift 2 ;;
+    --jev) JEV_FORCE=1; shift ;;
     --jev-propositions) JEV_PROPOSITIONS_FILE="${2:-}"; shift 2 ;;
     --out-dir) OUT_DIR="$2"; shift 2 ;;
     --repo) LINK_REPO="$2"; shift 2 ;;
@@ -596,7 +601,7 @@ fi
 # trustworthy enough to ever gate on. Silently skipped with no
 # TYPESAFE_API_KEY; a failed call is logged and otherwise ignored.
 JEV_PRESCREEN_NOUL=""
-if (( PT_ON == 0 )) && [[ "$PROMPT_OVERHEAD" != "1" ]] && jev_available; then
+if { (( PT_ON == 0 )) || (( JEV_FORCE == 1 )); } && [[ "$PROMPT_OVERHEAD" != "1" ]] && jev_available; then
   jev_state="$(jq -ncS --arg q "$QUESTION" '{question:$q}')"
   jev_questions="$(jq -ncS '{
     obviousness: {

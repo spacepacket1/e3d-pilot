@@ -135,6 +135,10 @@ const runCount = (dir) => (existsSync(join(dir, 'runs')) ? readdirSync(join(dir,
   assert.ok(validateRunRequest(b).key);
   assert.equal(validateRunRequest(b).key, validateRunRequest({ question: 'Q?', debate_id: b.debate_id, reservation_id: 'rsv_1' }).key, 'key order does not matter');
   assert.notEqual(validateRunRequest(b).key, validateRunRequest({ ...b, rounds: 1 }).key);
+  // jev (the hosted Jev opt-in): true or absent; part of the idempotency key; anything else is refused.
+  assert.equal(validateRunRequest({ ...b, jev: true }).fields.jev, true);
+  assert.notEqual(validateRunRequest(b).key, validateRunRequest({ ...b, jev: true }).key, 'jev is part of the key');
+  for (const j of [false, 'true', 1, null]) assert.ok(validateRunRequest({ ...b, jev: j }).error, `jev ${JSON.stringify(j)} is refused`);
   for (const bad of [null, [], 'x', { ...b, principal: 'acct_evil' }, { ...b, reservation_id: 'a b' }, { ...b, debate_id: 'dbt_XYZ' }, { ...b, question: '' }, { ...b, question: '   ' },
     { ...b, question: 'a\u0001b' }, { ...b, question: 'x'.repeat(8001) }, { ...b, providers: [] }, { ...b, providers: ['Bad Name'] }, { ...b, rounds: 1.5 }, { ...b, max_words: -1 }]) {
     assert.ok(validateRunRequest(bad).error, JSON.stringify(bad)?.slice(0, 60));

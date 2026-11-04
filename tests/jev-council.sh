@@ -205,4 +205,20 @@ eq "$(jq -r '[.status, .reason] | join(": ")' "$T/pt/jev-council.json")" "skippe
 eq "$(wc -l < "$VREQ" | tr -d ' ')" 3 "exactly the planned vendor calls: 2 seats + the synthesis, no extra call"
 echo "ok - per-token mode: no Jev call, planned vendor calls only"
 
+# ---------------------------------------------------------------- --jev: the hosted opt-in makes one unpriced call in per-token mode
+: > "$VREQ"
+S3="$(new_stub_dir 0.9 0.1)"
+rc=0
+env -u E3D_PILOT_JEV_STUB_RESPONSE ANTHROPIC_API_KEY=k-anth ANTHROPIC_API_BASE_URL="http://127.0.0.1:$VP" OPENAI_API_KEY=k-oai OPENAI_API_BASE_URL="http://127.0.0.1:$VP/v1" \
+  ANTHROPIC_API_MODEL=claude-test OPENAI_API_MODEL=gpt-test OPENAI_API_TIMEOUT=2 ANTHROPIC_API_TIMEOUT=2 E3D_DEBATE_WEB_SEARCH=off \
+  TYPESAFE_API_KEY=test-key E3D_PILOT_JEV_STUB_DIR="$S3" E3D_DEBATE_MAX_TOKENS='{"anthropic-api":321,"openai-api":456}' \
+  "$ROOT/bin/e3d-debate" "Which?" --providers anthropic-api,openai-api --synthesizer anthropic-api --rounds 1 --out-dir "$T/ptjev" --jev > "$T/ptjev.out" 2>&1 || rc=$?
+eq "$rc" 0 "the --jev per-token debate runs: $(tail -3 "$T/ptjev.out")"
+eq "$(calls_of "$S3")" 1 "--jev makes exactly one Jev call in per-token mode"
+eq "$(wc -l < "$VREQ" | tr -d ' ')" 3 "--jev adds no vendor call: 2 seats + the synthesis"
+grep -q "Jev pre-screen (shadow mode" "$T/ptjev/transcript.md" || fail "the pre-screen line must be in the record"
+[[ ! -e "$T/ptjev/jev-council.json" ]] || fail "--jev alone writes no council artifact"
+grep -rl "obviousness noul" "$T/ptjev" | grep -qv "transcript.md$" && fail "the pre-screen must not leak into another file" || true
+echo "ok - --jev: one unpriced call in per-token mode, record only"
+
 echo "jev-council: ok"
