@@ -45,6 +45,7 @@ import { createMetering, createReadiness, modelsFromTranscript, orphanPolicy } f
 import { createHash, randomUUID } from 'node:crypto';
 import { createRuns, validateRunsConfig } from '../lib/mcp/runs.js';
 import { startRunServer, validateRunServerConfig, EXPERTS_LIMITS } from '../lib/mcp/run-server.js';
+import { CASE_SYNTH_EXTRA_TOKENS } from '../lib/debate/case.mjs';
 import { validatePricingConfig, createPricingClient, limitsForPlan, pricedError, debateEnvFor, readUsageRows, searchCapable, searchCapFromEnv, requestedSearches, expertsRunFrom } from '../lib/mcp/pricing.js';
 import { loadExperts } from '../lib/debate/specialists.mjs';
 import { lensBlock } from '../lib/debate/specialists-plan.mjs';
@@ -333,7 +334,7 @@ function searchPlan(providers, webSearch) {
   return { searchProviders: searching.length, maxSearchesPerCall: cfg.maxSearches };
 }
 const worstFor = (plan) => worstCase({ providers: plan.providers.length, rounds: plan.rounds, maxWords: plan.maxWords, questionChars: plan.question.length,
-  searchProviders: plan.searchProviders ?? 0, maxSearchesPerCall: plan.maxSearchesPerCall ?? 0 });
+  searchProviders: plan.searchProviders ?? 0, maxSearchesPerCall: plan.maxSearchesPerCall ?? 0, caseExtraTokens: plan.case ? CASE_SYNTH_EXTRA_TOKENS : 0 });
 
 // The web-search part of a debate's result, from the out/web-search.json bin/e3d-debate writes. Everything is re-checked and
 // re-sanitised here: titles and excerpts are page text, so they are bounded and stripped of markup; URLs are http(s) with no

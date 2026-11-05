@@ -250,6 +250,7 @@ if [[ -n "$ANSWERS_FILE" && -z "$CONTINUE_DIR" ]]; then echo "error: --answers n
 if (( FOLLOW_UP == 1 )); then
   command -v node >/dev/null 2>&1 && [[ -f "$CASE_LIB" ]] || { echo "error: --follow-up needs node and $CASE_LIB" >&2; exit 1; }
   CASE_META="$(mktemp "${TMPDIR:-/tmp}/e3d-case-meta.XXXXXX")"
+  CASE_SYNTH_EXTRA_TOKENS="$(node "$CASE_LIB" synth-extra)" || exit 1
 fi
 if [[ -n "$CONTINUE_DIR" ]]; then
   [[ -d "$CONTINUE_DIR" ]] || { echo "error: --continue: not a directory: $CONTINUE_DIR" >&2; exit 1; }
@@ -358,7 +359,7 @@ if (( PT_ON == 1 )); then
   # search only for the providers the quote named (the kill switch and --web-search off still win); no quote for search: off, as before
   (( PT_SEARCH == 1 )) || WEB_SEARCH_REQUESTED=0
 fi
-# pt_env <provider>: sets PT_ENV to the one environment assignment that gives that provider's adapter its output limit.
+# pt_env <provider> [key]: sets PT_ENV to the one environment assignment that gives that provider's adapter its output limit.
 PT_ENV=()
 pt_env() {
   PT_ENV=()
@@ -370,7 +371,14 @@ pt_env() {
     gemini-api) var=GEMINI_API_MAX_TOKENS ;; xai-api) var=XAI_API_MAX_TOKENS ;;
     *) echo "error: no output-limit setting for provider $a" >&2; exit 1 ;;
   esac
-  PT_ENV=("$var=$(jq -r --arg p "$a" '.[$p]' <<< "$PT_MAX_JSON")" E3D_PROVIDER_PER_TOKEN=1)
+  PT_ENV=("$var=$(pt_limit "$a" "${2:-}")" E3D_PROVIDER_PER_TOKEN=1)
+}
+# pt_limit <adapter> <key>: the output limit of one call. The quoted one, and in case mode (--follow-up) the synthesis call (key synth, or synth-failed:*) gets
+# CASE_SYNTH_EXTRA_TOKENS more: its reply carries the questions and their json copy, which the hosted bound prices for the synthesis only (lib/debate/case.mjs).
+pt_limit() {
+  local base
+  base="$(jq -r --arg p "$1" '.[$p]' <<< "$PT_MAX_JSON")"
+  if (( FOLLOW_UP == 1 )) && [[ "$2" == synth* ]] && [[ "$base" =~ ^[0-9]+$ ]]; then echo $(( base + CASE_SYNTH_EXTRA_TOKENS )); else echo "$base"; fi
 }
 # WS_CAP: the per-call search cap each searching provider was quoted at (per-token search); ws_cap_for is the number the prompt tells the
 # model and the adapter enforces: the quote's, never the global E3D_DEBATE_SEARCH_MAX_PER_CALL
@@ -985,7 +993,7 @@ pt_usage_row() {
   local mode="" a
   a="$(adapter_of "$2")"
   if (( PT_SEARCH == 1 )); then mode=none; [[ "$1" != synth ]] && search_on_for "$2" && mode=search; fi
-  node "$PT_LIB" row "$1" "$a" "$3" "$4" "$5" "$6" "$(jq -r --arg p "$a" '.[$p]' <<< "$PT_MAX_JSON")" "$mode" >> "$work_dir/usage.rows" 2>/dev/null || true
+  node "$PT_LIB" row "$1" "$a" "$3" "$4" "$5" "$6" "$(pt_limit "$a" "$1")" "$mode" >> "$work_dir/usage.rows" 2>/dev/null || true
 }
 pt_usage_write() {
   (( PT_ON == 1 )) || return 0
@@ -1186,7 +1194,7 @@ SYNTH_FALLBACK_TO=""; SYNTH_FALLBACK_REASON=""
 synth_call() {
   local p="$1" rc
   SYNTH_CUR="$p"
-  pt_env "$p"
+  pt_env "$p" synth
   PT_PHASE=synth
   RWR_BG=$(( PT_ON == 1 ? 1 : 0 )) run_with_retry "$p" synth "$synth_out" "$work_dir/synthesis.stderr" no_search_env ${PT_ENV[@]+"${PT_ENV[@]}"} "$PROVIDERS_DIR/$p" "$synth_prompt"
   rc=$?
@@ -1210,7 +1218,7 @@ else
       # the failed attempt may have been billed by its vendor: kept for the operator (usage-unreported.json), never sent as a second `synth` row
       if (( PT_ON == 1 )); then
         node "$PT_LIB" row "synth-failed:$SYNTH_CUR" "$SYNTH_CUR" "$synth_prompt" "$synth_out" "$work_dir/synthesis.stderr" 1 \
-          "$(jq -r --arg p "$SYNTH_CUR" '.[$p]' <<< "$PT_MAX_JSON")" >> "$work_dir/usage.unreported.rows" 2>/dev/null || true
+          "$(pt_limit "$SYNTH_CUR" synth-failed)" >> "$work_dir/usage.unreported.rows" 2>/dev/null || true
       fi
       cp "$work_dir/synthesis.stderr" "$work_dir/synthesis.$SYNTH_CUR.stderr" 2>/dev/null || true
       echo "warning: synthesizer $DEBATE_SYNTHESIZER failed ($synth_first_reason); falling back to $cand" >&2
