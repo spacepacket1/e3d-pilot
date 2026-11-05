@@ -75,10 +75,16 @@ JEV_PROPOSITIONS_FILE=""   # --jev-propositions: shadow-only Jev signal (docs/je
 LINK_REPO=""
 LINK_IDEA=""
 WEB_SEARCH_REQUESTED=1
+# Case mode (lib/debate/case.mjs): --follow-up makes the synthesis ask up to 3 questions; --continue/--answers start the next round of a case.
+FOLLOW_UP=0
+CONTINUE_DIR=""
+ANSWERS_FILE=""
+CASE_LIB="$REPO_ROOT/lib/debate/case.mjs"
+CASE_META=""
 
 usage() {
   cat <<'EOF'
-e3d-debate "<question>" [--providers claude,codex] [--rounds 2] [--synthesizer claude] [--max-words 200] [--prompts v2|v3b|v3c] [--question-file <path>] [--out-dir <dir>] [--repo <path> --idea <idea-id>] [--web-search on|off]
+e3d-debate "<question>" [--providers claude,codex] [--rounds 2] [--synthesizer claude] [--max-words 200] [--prompts v2|v3b|v3c] [--question-file <path>] [--out-dir <dir>] [--repo <path> --idea <idea-id>] [--web-search on|off] [--follow-up] [--continue <previous out-dir> --answers <file>]
 
 Runs the question through N rounds across the given lib/providers/<name>
 adapters (round 1: independent answers; round 2+: each provider sees every
@@ -110,6 +116,18 @@ never search. E3D_DEBATE_WEB_SEARCH=off turns it off everywhere, E3D_DEBATE_WEB_
 providers may search, and E3D_DEBATE_SEARCH_* set the caps and domain lists (docs/web-search-interface.md).
 A search call that fails is asked again without search and the answer says so. The source list (domains and
 URLs only) travels with each answer; web-search.json in --out-dir holds the bounded citation list.
+
+--follow-up (case mode) makes the verdict also end with a "## Questions for you" section: up to 3 questions that would change or
+sharpen it (each with why it matters, which way an answer could swing the verdict, and answerable_by "user" or "checkable"), or a
+statement that the case is closed when no remaining question would change the verdict. questions.json in --out-dir holds the same
+as {"status":"open"|"closed","questions":[{"id","text","why","swing","answerable_by"}]}; case.json records the chain. If the
+questions cannot be parsed the status is "open" with no questions and a warning goes to stderr; the debate never fails for it. The
+all-agreed fast path is skipped so the synthesizer can ask. Output without --follow-up is unchanged.
+--continue <previous out-dir> runs the next round of a case (implies --follow-up). The new question is built from the earlier run's
+original question, verdict (with dissent), questions and --answers <file>: a JSON array
+[{"id":"q1","answer":"...","source":"optional url/file/tool citation","answered_by":"user"|"agent"}], or a plain-text file (one
+free-form answer). Unanswered questions and "don't know" are allowed. Everything carried over is framed as untrusted data. case.json
+in the new --out-dir records parent_out_dir. Needs node.
 
 If TYPESAFE_API_KEY is set, e3d-debate also asks Jev (TypeSafe System One) a
 single Noul question up front -- "is this obvious enough that debate is
@@ -176,6 +194,9 @@ while [[ $# -gt 0 ]]; do
     --jev) JEV_FORCE=1; shift ;;
     --jev-propositions) JEV_PROPOSITIONS_FILE="${2:-}"; shift 2 ;;
     --out-dir) OUT_DIR="$2"; shift 2 ;;
+    --follow-up) FOLLOW_UP=1; shift ;;
+    --continue) CONTINUE_DIR="${2:-}"; FOLLOW_UP=1; shift 2 ;;
+    --answers) ANSWERS_FILE="${2:-}"; shift 2 ;;
     --repo) LINK_REPO="$2"; shift 2 ;;
     --idea) LINK_IDEA="$2"; shift 2 ;;
     --web-search)
@@ -225,6 +246,20 @@ if [[ -n "$QUESTION_FILE" ]]; then
   QUESTION="$(cat "$QUESTION_FILE")"
 fi
 
+if [[ -n "$ANSWERS_FILE" && -z "$CONTINUE_DIR" ]]; then echo "error: --answers needs --continue <previous out-dir>" >&2; exit 1; fi
+if (( FOLLOW_UP == 1 )); then
+  command -v node >/dev/null 2>&1 && [[ -f "$CASE_LIB" ]] || { echo "error: --follow-up needs node and $CASE_LIB" >&2; exit 1; }
+  CASE_META="$(mktemp "${TMPDIR:-/tmp}/e3d-case-meta.XXXXXX")"
+fi
+if [[ -n "$CONTINUE_DIR" ]]; then
+  [[ -d "$CONTINUE_DIR" ]] || { echo "error: --continue: not a directory: $CONTINUE_DIR" >&2; exit 1; }
+  [[ -z "$ANSWERS_FILE" || -f "$ANSWERS_FILE" ]] || { echo "error: --answers not found: $ANSWERS_FILE" >&2; exit 1; }
+  case_args=(build --prev "$CONTINUE_DIR" --meta "$CASE_META")
+  [[ -z "$ANSWERS_FILE" ]] || case_args+=(--answers "$ANSWERS_FILE")
+  [[ -z "$QUESTION" ]] || case_args+=(--note "$QUESTION")   # a question given with --continue is an extra note from the asker
+  QUESTION="$(node "$CASE_LIB" "${case_args[@]}")" || { echo "error: --continue: could not build the next question from $CONTINUE_DIR" >&2; exit 1; }
+  echo "case: continuing $CONTINUE_DIR" >&2
+fi
 if (( SUGGEST == 1 || SUGGEST_RULES == 1 )); then exec node "$REPO_ROOT/lib/specialists/suggest.mjs" $( (( SUGGEST_RULES == 1 )) && echo rules || echo suggest ) ${QUESTION:+--question "$QUESTION"} ${SUGGEST_TASK:+--task "$SUGGEST_TASK"}; fi
 case "$DEBATE_PROMPT_VERSION" in v2|v3b|v3c) ;; *) echo "error: --prompts must be v2, v3b or v3c" >&2; exit 1 ;; esac
 PROMPT_OVERHEAD="${E3D_DEBATE_PROMPT_OVERHEAD:-0}"
@@ -579,6 +614,7 @@ ws_peer_notice() {
 SYNTH_CURRENT_DATA_TEXT="If the question depends on recent events or current data that the participants did not have, say so plainly in FINAL ANSWER instead of presenting the answer as current."
 
 work_dir="$(mktemp -d "${TMPDIR:-/tmp}/e3d-debate.XXXXXX")"
+if [[ -n "$CASE_META" ]]; then mv "$CASE_META" "$work_dir/case-meta.json" && CASE_META="$work_dir/case-meta.json"; fi
 if [[ -n "$PLAN_JSON" ]]; then
   # One lens text per assigned provider, printed before that provider's prompt (round_prompt). The synthesis prompt never reads these.
   LENS_DIR="$work_dir/lens"
@@ -840,7 +876,20 @@ synthesis_prompt() {
     printf 'CONSENSUS: <full | majority | split>\n'
     printf 'DISSENT: <one line, at most 40 words, on any remaining disagreement worth flagging, or "none">\n'
   fi
+  if (( FOLLOW_UP == 1 )); then case_synthesis_instructions; fi
   printf '%s\n' "$SYNTH_CURRENT_DATA_TEXT"
+}
+
+# --follow-up: what the synthesizer adds after DISSENT (and after the other lines of a v3c verdict). The word limit above does not cover it.
+case_synthesis_instructions() {
+  cat <<'EOP'
+
+CASE MODE. The 150-word limit above covers the lines above only. After them, add a section headed exactly "## Questions for you" with at most 3 questions to the person who asked: only things that would change or sharpen your FINAL ANSWER if answered. Write each as one line:
+<n>. <the question> | why it matters: <one sentence> | swing: <which way an answer could move the verdict> | answerable_by: <user or checkable>
+(user = needs the asker's own judgment or private knowledge; checkable = an agent with tools could verify it, for example by reading code or logs or a chain explorer.)
+Do not ask what the transcript already settles, and do not pad. If no remaining question would change the verdict, write "Case closed: <one sentence on why>" under that heading and ask nothing.
+Then end your reply with one fenced json block, and nothing after it, repeating the same questions: {"status":"open","questions":[{"id":"q1","text":"...","why":"...","swing":"...","answerable_by":"user"}]} -- or {"status":"closed","questions":[]} when the case is closed.
+EOP
 }
 
 # E3D_DEBATE_PROMPT_OVERHEAD=1: print the byte counts of the fixed text of each prompt kind (round 1, round N, synthesis) built with an
@@ -1089,7 +1138,8 @@ synth_out="$work_dir/synthesis.out"
 # the same as everyone else. Skip it and emit the first participant's
 # POSITION line directly (order = --providers order, deterministic).
 fast_synthesis=0
-if (( converged == 1 )); then
+# case mode never takes the fast path: a unanimous council can still have a question that would change its verdict
+if (( converged == 1 && FOLLOW_UP == 0 )); then
   first_provider="${DEBATE_PROVIDERS[0]}"
   fast_position="$(grep -m1 -E '^POSITION: ' <<< "${LAST_ANSWER[$first_provider]}" | sed -E 's/^POSITION: //')"
   if [[ -n "$fast_position" ]]; then
@@ -1187,6 +1237,19 @@ if [[ $synth_status -eq 0 && -s "$synth_out" ]]; then
   if (( WS_ANY == 1 )); then
     node "$WS_LIB" sanitize < "$synth_out" > "$synth_out.clean" 2>/dev/null && mv "$synth_out.clean" "$synth_out" || printf 'FINAL ANSWER: (withheld: the verdict could not be sanitised)\nCONSENSUS: unknown\nDISSENT: unknown\n' > "$synth_out"
   fi
+  if (( FOLLOW_UP == 1 )); then
+    # split the questions block (machine-readable) from the human verdict; any failure here leaves the debate intact
+    cp "$synth_out" "$work_dir/synthesis.raw"
+    if node "$CASE_LIB" extract "$work_dir/synthesis.raw" "$work_dir/questions.json" "$work_dir/synthesis.verdict" && [[ -s "$work_dir/synthesis.verdict" ]]; then
+      cp "$work_dir/synthesis.verdict" "$synth_out"
+    else
+      echo "warning: could not read the case questions; questions.json says open with no questions" >&2
+      printf '{"status":"open","questions":[]}\n' > "$work_dir/questions.json"
+    fi
+    case_args=(record "$work_dir/case.json" --questions "$work_dir/questions.json" --verdict "$synth_out")
+    if [[ -s "$CASE_META" ]]; then case_args+=(--meta "$CASE_META"); else printf '%s' "$QUESTION" > "$work_dir/case.question"; case_args+=(--question-file "$work_dir/case.question"); fi
+    node "$CASE_LIB" "${case_args[@]}" 2>/dev/null || echo "warning: could not write case.json" >&2
+  fi
   if (( WS_ANY == 1 )) && [[ -s "$work_dir/web-search.json" ]]; then
     jq -r --arg tail "$( (( PT_ON == 1 )) && jq -e 'select(.fallback_call == false)' "$work_dir"/ws-fallback-*.json >/dev/null 2>&1 && echo ', whose search call failed (a per-token debate makes no second call without search)' || echo ', which answered without web access')" '"WEB SEARCH: on for \(.models_with_search) of \(.models_total) models; \(.searches_total) search(es) used"
       + (if (.flags.unavailable | length) > 0 then "; unavailable for " + ([.flags.unavailable[] | "\(.provider) in round \(.round) (\(.reason))"] | join(", ")) + $tail else "" end)' "$work_dir/web-search.json"
@@ -1265,6 +1328,8 @@ if [[ -n "$OUT_DIR" ]]; then
   [[ -s "$work_dir/web-search.json" ]] && cp "$work_dir/web-search.json" "$OUT_DIR/web-search.json"
   [[ -s "$work_dir/jev-council.json" ]] && cp "$work_dir/jev-council.json" "$OUT_DIR/jev-council.json"
   [[ -s "$work_dir/seats.json" ]] && cp "$work_dir/seats.json" "$OUT_DIR/seats.json"
+  [[ -s "$work_dir/questions.json" ]] && cp "$work_dir/questions.json" "$OUT_DIR/questions.json"
+  [[ -s "$work_dir/case.json" ]] && cp "$work_dir/case.json" "$OUT_DIR/case.json"
   # seat -> the model its adapter reported (display only; e3d-mcp puts it on the stored positions)
   node "$PT_LIB" models "$work_dir" > "$OUT_DIR/seat-models.json" 2>/dev/null || rm -f "$OUT_DIR/seat-models.json"
   if [[ -s "$work_dir/usage.unreported.rows" ]]; then jq -s . "$work_dir/usage.unreported.rows" > "$OUT_DIR/usage-unreported.json" 2>/dev/null || true; fi

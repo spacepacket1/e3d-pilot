@@ -23,6 +23,8 @@ import { createInterface } from 'node:readline';
 import { ROOT, log, text, run, configuredProviders, providerLine, NAME_RE } from '../lib/mcp/util.js';
 import { redact } from '../lib/mcp/redact.js';
 import { parseVerdict } from '../lib/mcp/verdict.js';
+import { createCaseStore, checkAnswers, caseTool, renderCase } from '../lib/mcp/case.js';
+import { readCase, buildQuestion, normalizeAnswers, normalizeQuestions } from '../lib/debate/case.mjs';
 import { doctor, checkoutConfigHint } from '../lib/mcp/doctor.js';
 import { createRpc } from '../lib/mcp/rpc.js';
 import { createRepoGuard } from '../lib/mcp/repos.js';
@@ -597,6 +599,15 @@ async function executeDebate(plan, handle, ctx, { progress, onStarted, signal } 
     }
     // An opted-in web run (jev: true): one unpriced Jev pre-screen call, record only (bin/e3d-debate --jev).
     if (plan.jev) cliArgs.push('--jev');
+    // Case mode (e3d_case, or a web run with investigate: true): the verdict also asks up to 3 questions (questions.json). A later round
+    // continues from the stored earlier round; the engine builds the same question the plan was priced on, so the question file is empty
+    // (a question given with --continue would be read as an extra note).
+    const cs = plan.case ?? null;
+    if (cs?.continueDir) {
+      await writeFile(qfile, '');
+      await writeFile(join(dir, 'answers.json'), JSON.stringify(cs.answers ?? []));
+      cliArgs.push('--continue', cs.continueDir, '--answers', join(dir, 'answers.json'));
+    } else if (cs) cliArgs.push('--follow-up');
     let step = 0;
     const tag = `debate-${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 8)}`;
     const usesSampling = providers.some(isSampling) || isSampling(synthesizer);
@@ -641,6 +652,17 @@ async function executeDebate(plan, handle, ctx, { progress, onStarted, signal } 
       acc.set(k, { ...m, calls: (acc.get(k)?.calls ?? 0) + 1 });
       return acc;
     }, new Map()).values()];
+    // Case mode: the questions the engine wrote (an unreadable file is "open" with none), and the turn saved for the next round.
+    let caseOut = null;
+    if (cs && outcome === 'ok') {
+      const qs = normalizeQuestions(await readFile(join(dir, 'out', 'questions.json'), 'utf8').then(JSON.parse).catch(() => null)) ?? { status: 'open', questions: [] };
+      const rec = await readFile(join(dir, 'out', 'case.json'), 'utf8').then(JSON.parse).catch(() => null);
+      caseOut = { status: qs.status, questions: qs.questions, ...(Number.isSafeInteger(rec?.round) ? { round: rec.round } : {}) };
+      if (cs.id) {
+        const saved = await caseStore.save(ctx?.principal ?? 'local', join(dir, 'out'), cs.id);
+        if (saved.error) { log(`case: could not store the round: ${saved.error}`); caseOut.unsaved = true; }
+      }
+    }
     // The result as the service stores it (only an ok outcome carries one).
     const stored = outcome === 'ok' ? {
       final_answer: verdict.final_answer, consensus: verdict.consensus,
@@ -650,6 +672,7 @@ async function executeDebate(plan, handle, ctx, { progress, onStarted, signal } 
         return { provider: p.provider, model: typeof model === 'string' && /^[!-~]{1,128}$/.test(model) ? model : 'unspecified', position: p.text };
       }),
       web_search: webSearch,
+      ...(caseOut ? { case: { status: caseOut.status, questions: caseOut.questions } } : {}),
     } : null;
     // With finalize, the service stores the result with the charge.
     const finalizeMeta = handle.finalize ? { transcript: transcript || null, finished_at: Date.now(), result: stored } : {};
@@ -657,7 +680,7 @@ async function executeDebate(plan, handle, ctx, { progress, onStarted, signal } 
     const models = modelsFromTranscript(transcript, { synthesizer, calls: spent.calls }).map((m) => ({ ...m, searches: webSearch.searches_by_provider[m.provider] ?? 0 }));
     const { budget, billing } = await metering.commit(handle, { ...spent, searches: webSearch.searches_used }, { outcome, duration_ms: Date.now() - started, models, ...finalizeMeta });
     settled = true;
-    return { r, timeoutMs, transcript, spent, verdict, outcome, roundsRan, positions, samplingModels, stored, budget, billing, webSearch, engineWarnings, seats };
+    return { r, timeoutMs, transcript, spent, verdict, outcome, roundsRan, positions, samplingModels, stored, budget, billing, webSearch, engineWarnings, seats, caseOut };
   } finally {
     // Not settled (an unexpected error): give the reservation back, as before. With the hook, once the debate binary
     // has run the intent is kept instead, so the next start reconciles it per E3D_MCP_ORPHAN_POLICY (never free).
@@ -680,14 +703,15 @@ function billingResult(b) {
     ...(pricing.search ? { searches: pricing.search.searches, search_credits: pricing.search.charged_credits_search } : {}) } : rest;
 }
 
-async function toolDebate(args, progress, ctx) {
+async function toolDebate(args, progress, ctx, caseOpts = null) {
   // `agent` = this call uses the agent contract (a quote_id or an idempotency_key was sent): structured errors, the advice line, warnings.
   // A call with neither is the legacy path: its error texts and success text are exactly as before; only additive structuredContent fields are added.
   const agentOn = agentMode(ctx);
   const agent = agentOn && (args.idempotency_key !== undefined || args.quote_id !== undefined);
   if (agent) { const e = agentArgsError(args); if (e) return errorResult(e); }
-  const plan = await planDebate(args, ctx);
+  const plan = await planDebate(caseOpts ? { ...args, question: caseOpts.question } : args, ctx);
   if (plan.error) return agent ? errorResult(agentPlanError(plan)) : text(plan.error, true);
+  if (caseOpts) plan.case = caseOpts.run;
   const { question, mode, rounds, maxWords, providers, synthesizer, selection, selectionNote, panel } = plan;
 
   // Refuse BEFORE spending if the worst case for this request would break today's cap.
@@ -719,7 +743,7 @@ async function toolDebate(args, progress, ctx) {
   let x;
   try { x = await executeDebate(plan, handle, ctx, { progress }); } finally { slot.release(); }
   if (x.startFailed) return agent ? errorResult(agentError('service_unavailable', { message: 'billing is temporarily unavailable' })) : text('error: billing: temporarily unavailable', true);
-  const { r, timeoutMs, transcript, spent, verdict, roundsRan, positions, samplingModels, budget, billing, webSearch, seats } = x;
+  const { r, timeoutMs, transcript, spent, verdict, roundsRan, positions, samplingModels, budget, billing, webSearch, seats, caseOut } = x;
   if (agent && r.timedOut) return errorResult(agentError('debate_timeout', { message: `the debate timed out after ${timeoutMs / 1000} s and was stopped; ${spent.calls} model call(s) had already answered and were counted. Use a new idempotency_key with mode quick or fewer models` }));
   if (agent && (r.code !== 0 || !verdict)) return errorResult(agentError('debate_failed', { message: `the debate did not finish (exit ${r.code}); use a new idempotency_key to try again` }));
   if (r.timedOut) return text(`error: debate timed out after ${timeoutMs / 1000}s and was stopped. ${spent.calls} model call(s) had already answered and are counted against today's budget (${budget?.remaining_calls ?? 'no limit'} calls left). Try mode "quick", fewer providers, or a shorter question.`, true);
@@ -743,14 +767,49 @@ async function toolDebate(args, progress, ctx) {
     ...(agentOn ? (billing?.agent ? billing.agent : { schema_version: AGENT_SCHEMA_VERSION }) : {}),
     positions,
     ...(args.include_transcript ? { transcript: transcript.trim() } : {}),
+    ...(caseOut ? { status: caseOut.status, questions: caseOut.questions, ...(caseOut.round ? { round: caseOut.round } : {}), ...(caseOpts.run.id && !caseOut.unsaved ? { case_id: caseOpts.run.id } : {}) } : {}),
   };
   // the legacy path's text is unchanged: the advice line is only for calls that use the contract
-  return { content: [{ type: 'text', text: renderDebate(agent ? result : { ...result, recommended_next_step: undefined, notice: undefined }) }], structuredContent: result };
+  const body = renderDebate(agent ? result : { ...result, recommended_next_step: undefined, notice: undefined });
+  return { content: [{ type: 'text', text: caseOut ? `${body}\n${renderCase(result)}` : body }], structuredContent: result };
+}
+
+// e3d_case: a debate that asks follow-up questions, and the next round of one (lib/mcp/case.js). Everything else is e3d_debate's.
+async function toolCase(args, progress, ctx) {
+  const { question, case_id: caseId, answers, ...rest } = args;
+  const principal = ctx?.principal ?? 'local';
+  if ((question === undefined) === (caseId === undefined)) return text('error: give `question` (a new case) or `case_id` with `answers` (the next round), not both and not neither', true);
+  if (question !== undefined && answers !== undefined) return text('error: `answers` belongs to a later round: pass `case_id`, not `question`', true);
+  const key = typeof rest.idempotency_key === 'string' ? rest.idempotency_key : undefined;
+  const id = caseStore.idFor(principal, key);
+  let run = { id }; let q = question;
+  if (caseId !== undefined) {
+    const checked = checkAnswers(answers);
+    if (checked.error) return text(`error: ${checked.error}`, true);
+    const dir = await caseStore.find(principal, caseId);
+    if (!dir) return text('error: unknown case_id (it expired, belongs to another key, or was never issued by this server); start a new case with `question`', true);
+    let prev;
+    try { prev = readCase(dir); } catch { return text('error: unknown case_id (its record is unreadable); start a new case with `question`', true); }
+    const answerList = normalizeAnswers(checked.answers);
+    q = buildQuestion({ prev, answers: answerList }).question;
+    run = { id, continueDir: dir, answers: answerList };
+  } else if (typeof question !== 'string') return text('error: `question` must be a string', true);
+  const res = await toolDebate(rest, progress, ctx, { question: q, run });
+  // a replayed call (same idempotency_key) returns the stored verdict without running: attach the case it stored
+  const sc = res.structuredContent;
+  if (sc?.replayed && !sc.questions) {
+    const d = await caseStore.find(principal, id);
+    const stored = d ? normalizeQuestions(await readFile(join(d, 'questions.json'), 'utf8').then(JSON.parse).catch(() => null)) : null;
+    if (stored) { sc.status = stored.status; sc.questions = stored.questions; sc.case_id = id; res.content[0].text += `\n${renderCase(sc)}`; }
+  }
+  return res;
 }
 
 // ---- async debates (hosted, external hook only; lib/mcp/runs.js): start, check on, and get the result later ----
 let runs = null; // the run store, once the external hook is running
 let runsConfig = null;
+// e3d_case: always on for a local (stdio) server; on a hosted server only with E3D_MCP_CASE=1, so a deployment never gains a new paid tool by upgrading.
+const caseEnabled = (conn) => !conn.hosted || process.env.E3D_MCP_CASE === '1';
 const ASYNC_TOOLS = new Set(['e3d_debate_start', 'e3d_debate_status', 'e3d_debate_result']);
 // Exposed only when the service advertises both finalize (the result is stored with the charge) and fetch (it can be read
 // back after the local copy expires): otherwise a paid async result could become unreachable.
@@ -1061,6 +1120,8 @@ const TOOLS = [
     annotations: { title: 'List ideas', readOnlyHint: true, openWorldHint: false },
   },
 ];
+// e3d_case is listed after the original four tools, which keep their order
+TOOLS.splice(TOOLS.findIndex((t) => t.name === 'e3d_ideas_list') + 1, 0, caseTool(TOOLS[0], SEARCH_NOTICE));
 
 // ---- pipeline-over-MCP (jobs, repo allowlist, gates); the four tools above are unchanged ----
 const rpc = createRpc(send);
@@ -1071,6 +1132,8 @@ const pipeline = createPipelineTools({ guard, jobs });
 // a server that advertises per_token_search_v1 caps web searches at 160 per principal per day unless E3D_MCP_DAILY_SEARCHES says otherwise
 // (the owner's setting: ten worst-case four-vendor debates)
 const usage = createUsage({ defaults: HTTP_MODE ? { calls: 100, tokens: 500000, ...(searchCapable(process.env, { mode: PRICING_CONFIG.mode }) ? { searches: 160 } : {}) } : { calls: 0, tokens: 0 } });
+// e3d_case rounds (lib/mcp/case.js): stored next to the usage state
+const caseStore = createCaseStore({ dir: usage.dir });
 // Without E3D_MCP_AUTH_URL this is the local usage object unchanged; the hook is attached at hosted startup below.
 let metering = createMetering({ localUsage: usage, log });
 let hookState = null; // { metering, outbox } once the external hook is running (read by e3d_usage)
@@ -1093,6 +1156,7 @@ async function refreshRoots(session = stdioConn.session) {
 
 const HANDLERS = {
   e3d_debate: toolDebate,
+  e3d_case: toolCase,
   e3d_quote: toolQuote,
   e3d_debate_start: toolDebateStart,
   e3d_debate_status: toolDebateStatus,
@@ -1111,11 +1175,11 @@ const HANDLERS = {
 // Phase 0 of debate threads (e3d-pilot-cloud docs/specs/debate-threads.md section 9): one log line per hosted debate call saying which client
 // and which session it came from, so the counts show whether calls from one chat share a session. The session is a one-way digest and the
 // client name is the self-reported clientInfo.name cut to safe characters; never a principal, a question or an answer. Nothing is grouped on it.
-const PROBED_TOOLS = new Set(['e3d_debate', 'e3d_debate_start', 'e3d_quote', 'e3d_gallery', 'e3d_list_experts', 'e3d_get_expert']);
+const PROBED_TOOLS = new Set(['e3d_debate', 'e3d_case', 'e3d_debate_start', 'e3d_quote', 'e3d_gallery', 'e3d_list_experts', 'e3d_get_expert']);
 const probeClient = (info) => String(info?.name ?? 'unknown').replace(/[^A-Za-z0-9._-]+/g, '_').slice(0, 40) || 'unknown';
 
 // e3d_gallery reads public pages and costs nothing, so while it is switched on every connection may use it, whatever its key's tool list says.
-const permits = (conn, name) => !conn.allowed || conn.allowed.has(name) || (name === 'e3d_quote' && conn.allowed.has('e3d_debate')) || (name === 'e3d_gallery' && Boolean(galleryRead)) || ((name === 'e3d_list_experts' || name === 'e3d_get_expert') && Boolean(expertsRead));
+const permits = (conn, name) => !conn.allowed || conn.allowed.has(name) || ((name === 'e3d_quote' || name === 'e3d_case') && conn.allowed.has('e3d_debate')) || (name === 'e3d_gallery' && Boolean(galleryRead)) || ((name === 'e3d_list_experts' || name === 'e3d_get_expert') && Boolean(expertsRead));
 
 async function handle(msg, conn = stdioConn) {
   const { id, method, params } = msg;
@@ -1150,15 +1214,15 @@ async function handle(msg, conn = stdioConn) {
     }
     case 'tools/list': {
       // the async debate tools exist only while the service advertises finalize and fetch
-      const gated = asyncEnabled() ? TOOLS : TOOLS.filter((t) => !ASYNC_TOOLS.has(t.name));
+      const gated = (asyncEnabled() ? TOOLS : TOOLS.filter((t) => !ASYNC_TOOLS.has(t.name))).filter((t) => t.name !== 'e3d_case' || caseEnabled(conn));
       // agent mode (hosted, per-token): e3d_debate takes quote_id and idempotency_key, and e3d_quote is offered (to whoever may debate)
-      const listed = AGENT_ON && conn.hosted ? gated.flatMap((t) => (t.name === 'e3d_debate' ? [extendDebateTool(t), ...(permits(conn, 'e3d_quote') ? [quoteTool(t)] : [])] : [t])) : gated;
+      const listed = AGENT_ON && conn.hosted ? gated.flatMap((t) => (t.name === 'e3d_debate' ? [extendDebateTool(t), ...(permits(conn, 'e3d_quote') ? [quoteTool(t)] : [])] : t.name === 'e3d_case' ? [extendDebateTool(t)] : [t])) : gated;
       return reply({ tools: conn.allowed ? listed.filter((t) => permits(conn, t.name)) : listed });
     }
     case 'tools/call': {
       const handler = HANDLERS[params?.name];
       // A tool outside this connection's allowlist (or a gated one) is reported exactly like one that does not exist.
-      if (!handler || !permits(conn, params.name) || (params.name === 'e3d_quote' && !(AGENT_ON && conn.hosted)) || (ASYNC_TOOLS.has(params.name) && !asyncEnabled())) return fail(-32602, `unknown tool: ${params?.name}`);
+      if (!handler || !permits(conn, params.name) || (params.name === 'e3d_quote' && !(AGENT_ON && conn.hosted)) || (ASYNC_TOOLS.has(params.name) && !asyncEnabled()) || (params.name === 'e3d_case' && !caseEnabled(conn))) return fail(-32602, `unknown tool: ${params?.name}`);
       const token = params?._meta?.progressToken;
       const progress = token === undefined || conn.hosted ? undefined : (n, message) =>
         conn.send({ jsonrpc: '2.0', method: 'notifications/progress', params: { progressToken: token, progress: n, message } });
@@ -1290,10 +1354,10 @@ async function planWebRun(fields, { perToken = null, experts = null } = {}) {
     const searchPart = caps ? { webSearch: true, searchProviders: Object.keys(caps).length, maxSearchesPerCall: Math.max(...Object.values(caps)) } : { webSearch: false, searchProviders: 0, maxSearchesPerCall: 0 };
     const x = experts ? expertsPlan(experts, plan.providers) : null;
     if (x?.error) return x;
-    const priced = { ...plan, ...searchPart, perToken: limits, ...(x ? { experts: x.experts } : {}), ...(fields.jev === true ? { jev: true } : {}) };
+    const priced = { ...plan, ...searchPart, perToken: limits, ...(x ? { experts: x.experts } : {}), ...(fields.jev === true ? { jev: true } : {}), ...(fields.investigate === true ? { case: { investigate: true } } : {}) };
     return { plan: priced, worst: worstFor(priced) };
   }
-  return { plan: fields.jev === true ? { ...plan, jev: true } : plan, worst: worstFor(plan) };
+  return { plan: { ...plan, ...(fields.jev === true ? { jev: true } : {}), ...(fields.investigate === true ? { case: { investigate: true } } : {}) }, worst: worstFor(plan) };
 }
 
 // The external hook: validate everything, then recover crashed work and start outbox delivery BEFORE listening.
