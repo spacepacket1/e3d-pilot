@@ -416,7 +416,7 @@ async function connectorQuote(plan, { request_id, principal }) {
   const questionBytes = Buffer.byteLength(plan.question, 'utf8');
   if (questionBytes > 32000) return refuse('the question is too long to be priced (at most 32000 bytes)', 'billing', 'invalid');
   const body = { principal, request_id, providers: [...plan.providers], rounds: plan.rounds, max_words: plan.maxWords, question_bytes: questionBytes,
-    question_sha256: createHash('sha256').update(plan.question, 'utf8').digest('hex'), prompt_version: 'v2' };
+    question_sha256: createHash('sha256').update(plan.question, 'utf8').digest('hex'), prompt_version: 'v2', ...(plan.case ? { case_mode: true } : {}) };
   // web search is on unless this call turned it off (web_search: false): ask for the cap on every panel provider this server may search with.
   // The answer's `search` object is what runs (a missing one means off); without a request the quote is the version 1 one, byte for byte.
   const searches = plan.webSearch !== false ? requestedSearches(plan.providers, process.env) : null;
@@ -473,7 +473,9 @@ function agentArgsError(args) {
 function agentRunBody(plan, principal) {
   const searches = plan.webSearch !== false ? requestedSearches(plan.providers, process.env) : null;
   return { principal, providers: [...plan.providers], rounds: plan.rounds, max_words: plan.maxWords, question_bytes: Buffer.byteLength(plan.question, 'utf8'),
-    question_sha256: createHash('sha256').update(plan.question, 'utf8').digest('hex'), prompt_version: 'v2', ...(searches ? { searches } : {}) };
+    question_sha256: createHash('sha256').update(plan.question, 'utf8').digest('hex'), prompt_version: 'v2', ...(searches ? { searches } : {}),
+    // e3d_investigate: the verdict also writes the questions, so billing prices a longer synthesis (CASE_SYNTH_EXTRA) and begin checks the quote was one
+    ...(plan.case ? { case_mode: true } : {}) };
 }
 const unexpected = () => agentError('internal_error', { message: 'billing answered with something unexpected' });
 // The limits a debate runs under, from an agent quote that carries them (max_tokens, answer_bytes and, with search, cite_bytes), else null.
@@ -489,8 +491,10 @@ function limitsFromAgentQuote(q, plan) {
 // e3d_quote: free, read-only. The quote row is billing's; nothing is held.
 async function toolQuote(args, _progress, ctx) {
   if (!agentMode(ctx)) return text('error: unknown tool: e3d_quote', true);
+  if (args.investigate !== undefined && typeof args.investigate !== 'boolean') return errorResult(agentError('invalid_request', { message: '`investigate` must be a boolean' }));
   const plan = await planDebate(args, ctx);
   if (plan.error) return errorResult(agentPlanError(plan));
+  if (args.investigate === true && caseEnabled(ctx)) plan.case = { investigate: true };
   const bad = pricedError([...plan.providers, plan.synthesizer], { env: process.env });
   if (bad) return errorResult(agentError('panel_unavailable', { message: `this debate cannot be priced: ${bad}` }));
   const body = agentRunBody(plan, ctx.principal);
@@ -546,7 +550,7 @@ async function agentPrepare(args, plan, principal) {
     if (!lim.ok) return { error: agentBeginError(lim) };
     if ((aq && (lim.quote.credits !== aq.max_credits || lim.quote.rateVersion !== aq.rate_version)) || Boolean(lim.quote.maxSearches) !== searchEnabled) return { error: agentError('quote_changed') };
   }
-  const br = await pricingClient.agentBegin({ principal, idempotency_key: args.idempotency_key, quote_id: quoteId, question_sha256: body.question_sha256, providers: body.providers, rounds: body.rounds, max_words: body.max_words, search_enabled: searchEnabled });
+  const br = await pricingClient.agentBegin({ principal, idempotency_key: args.idempotency_key, quote_id: quoteId, question_sha256: body.question_sha256, providers: body.providers, rounds: body.rounds, max_words: body.max_words, search_enabled: searchEnabled, ...(body.case_mode ? { case_mode: true } : {}) });
   if (!br.ok) return { error: br.error };
   if (br.body.status === 'replayed') { log(`agent: replayed principal=${principal} quote_id=${quoteId}`); return { replay: agentReplay(br.body, plan, args) }; }
   if (br.body.status !== 'new' || br.body.request_id !== quoteId) return { error: unexpected() };
@@ -828,7 +832,7 @@ async function toolCase(args, progress, ctx) {
   if (experts) run.experts = experts;
   const res = await toolDebate(rest, progress, ctx, { question: q, run, experts });
   // a new case about agents, skills or prompts and no experts given: a hint, never run (the free rule in lib/specialists/suggest.json)
-  if (caseId === undefined && !experts && !res.isError && res.structuredContent && typeof question === 'string') {
+  if (caseId === undefined && !experts && !ctx?.hosted && !res.isError && res.structuredContent && typeof question === 'string') {
     const names = suggestExperts(question);
     if (names) {
       const hint = { experts: names, note: 'Rule-based hint (matches words, runs nothing). Pass these as `experts` on a new case to run them.' };
