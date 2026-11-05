@@ -45,7 +45,7 @@ DISSENT: codex: wait a week | "not yet."
 1. Is the migration reversible?
 
 ```json
-{"status":"open","questions":[{"id":"q1","text":"Is the migration reversible?","why":"rollback cost","swing":"yes: ship now","answerable_by":"checkable"},{"id":"q2","text":"Is there a launch date?","why":"timing","swing":"a date favours the flag","answerable_by":"user"}]}
+{"status":"open","questions":[{"id":"q1","text":"Is the migration reversible?","why":"rollback cost","swing":"yes: ship now","answerable_by":"checkable"},{"id":"q2","text":"Is there a launch date?","why":"timing","swing":"a date favours the flag","answerable_by":"user","kind":"intake"}]}
 ```'
 NEXT='FINAL ANSWER: Ship now.
 CONSENSUS: full
@@ -94,6 +94,9 @@ CID="$(jq -r "$s.case_id" <<< "$r")"
 [[ "$CID" =~ ^case_[0-9a-f]{24}$ ]] || fail "case_id"
 t="$(jq -r .result.content[0].text <<< "$r")"
 [[ "$t" == *"Case open"* && "$t" == *"[checkable]"* && "$t" == *"$CID"* && "$t" == *"Pass each \"user\" question to the human"* ]] || fail "text rendering"
+[[ "$(jq -r "$s.questions[1].kind" <<< "$r")" == intake && "$(jq -r "$s.questions[0] | has(\"kind\")" <<< "$r")" == false ]] || fail "kind must pass through when present and stay absent otherwise: $(jq -c "$s.questions" <<< "$r")"
+[[ "$t" == *"[user, intake]"* ]] || fail "kind not shown in the text: $t"
+[[ "$(jq -r '.result.tools[] | select(.name=="e3d_case") | .outputSchema.properties.questions.items | (.properties.kind.enum | join(",")), (.required | index("kind") == null)' <<< "$tools")" == $'discriminating,shared_assumption,intake\ntrue' ]] || fail "kind must be an optional enum in the output schema"
 grep -q 'follow=1 continue=$' "$STUB_LOG" || fail "engine not asked for --follow-up"
 
 # the plain e3d_debate is untouched
@@ -138,4 +141,7 @@ if (ok.error || ok.fields.investigate !== true) throw new Error('investigate ref
 if (!validateRunRequest({ ...base, investigate: false }).error) throw new Error('investigate false accepted');
 if (validateRunRequest({ ...base }).fields.investigate !== undefined) throw new Error('investigate appeared by itself');
 " || fail "run-server investigate field"
+# agent-diagnosis is a built-in expert: listed by the read-only experts tools (E3D_MCP_EXPERTS=1)
+ex="$(printf '%s\n' '{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"e3d_list_experts","arguments":{}}}' | E3D_MCP_EXPERTS=1 "$SERVER" 2>/dev/null)"
+grep -q 'agent-diagnosis' <<< "$ex" || fail "agent-diagnosis missing from e3d_list_experts: $ex"
 echo "mcp-case: ok"

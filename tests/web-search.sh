@@ -143,6 +143,21 @@ done
 for k in "$AKEY" "$OKEY" "$XKEY" "$GKEY"; do grep -F -- "$k" "$T/api.log" | jq -r .body | grep -qF -- "$k" && fail "a key was sent in a request body"; done
 ok "no queries, page text, keys or system text in any file or output"
 
+# ---- case mode (--follow-up): no search in round 1 (independent answers), search from round 2 (check claims, not hunt for a similar case) ----
+debate "$T/d1c" --providers "$ALL4" --follow-up
+for p in anthropic-api openai-api gemini-api xai-api; do
+  grep -qF "$NOWEB" "$WORK/round1-$p.prompt.md" || fail "case mode $p round 1 must say it has no web access"
+  grep -qF "You have a web search tool" "$WORK/round1-$p.prompt.md" && fail "case mode $p round 1 searched"
+  grep -qF "You have a web search tool for this answer (at most 3 searches)" "$WORK/round2-$p.prompt.md" || fail "case mode $p round 2 must search"
+  grep -qF "Use search to check claims, yours and the others', not to find a similar incident to argue from." "$WORK/round2-$p.prompt.md" || fail "case mode $p round 2: search-to-verify sentence missing"
+  [[ ! -e "$WORK/ws-raw-r1-$p.json" && -e "$WORK/ws-raw-r2-$p.json" ]] || fail "case mode $p: search record must exist for round 2 only"
+done
+[[ "$(reqs_to /v1/messages | jq -c '.body | fromjson | select(.tools)' | wc -l | tr -d ' ')" == 1 ]] || fail "case mode: anthropic should send one search call (round 2)"
+debate "$T/d1n" --providers "$ALL4"
+grep -qF "not to find a similar incident" "$WORK"/round*-*.prompt.md && fail "the search sentence leaked into a normal debate"
+grep -qF "You have a web search tool" "$WORK/round1-anthropic-api.prompt.md" || fail "a normal debate must still search in round 1"
+ok "case mode: search off in round 1, on in round 2; normal debates unchanged"
+
 # ================= 2. fail closed =================
 check_fallback() { # <provider> <expected reason> <out>
   local p="$1" why="$2" out="$3"

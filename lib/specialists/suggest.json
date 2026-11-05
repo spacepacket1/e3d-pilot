@@ -25,6 +25,8 @@
       "words": ["options", "unclear", "brainstorm", "alternatives", "trade-offs", "tradeoffs", "unsure", "not sure"] },
     { "id": "open-phrases", "add": { "facilitator": 2 },
       "words": ["open question", "open questions", "we don't know", "we do not know"] },
+    { "id": "agent-terms", "add": { "agent-diagnosis": 2 },
+      "words": ["agent", "agents", "subagent", "subagents", "skill", "skills", "prompt", "prompts", "harness", "mcp", "llm", "llms", "llm behaviour", "llm behavior", "model behaviour", "model behavior", "tool call", "tool calls"] },
     { "id": "failure-terms", "add": { "skeptic": 1 },
       "words": ["risk", "risks", "risky", "fail", "failure", "failing", "break", "outage", "incident", "rollback", "irreversible"] }
   ]

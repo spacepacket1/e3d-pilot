@@ -126,4 +126,64 @@ env -u TYPESAFE_API_KEY "$T/bin/e3d-debate" "q?" --providers alpha,beta --rounds
 [[ ! -e "$T/seen-synth.md" ]] || fail "fast path should skip the synthesizer without --follow-up"
 env -u TYPESAFE_API_KEY "$T/bin/e3d-debate" "q?" --providers alpha,beta --rounds 2 --synthesizer synth --prompts v3c --follow-up > "$T/stdout" 2> "$T/stderr" || { cat "$T/stderr"; exit 1; }
 [[ -e "$T/seen-synth.md" ]] || fail "--follow-up should call the synthesizer even when everyone agreed"
+
+# 9. seat questions, synthesizer wording, kind field, agent-diagnosis (stub providers, real prompts)
+source "$ROOT/tests/fixtures/specialists/harness.sh"
+for style in v2 v3; do
+  P="$T/seats-$style"; mkdir -p "$P"
+  build_root "$P" "$ROOT/bin/e3d-debate" "$style" claude codex
+  cp "$ROOT/lib/debate/case.mjs" "$P/lib/debate/"; cp -R "$ROOT/lib/specialists/." "$P/lib/specialists/"
+  flag=(); [[ "$style" == v3 ]] && flag=(--prompts v3c)
+  run_debate "$P" "q?" --providers claude,codex --rounds 2 --synthesizer synth "${flag[@]}"
+  for f in "$P"/seen-claude-0.md "$P"/seen-claude-1.md "$P"/seen-synth.md; do
+    grep -qE "What I'd need to know|CASE MODE|shared_assumption|rules out" "$f" && fail "$style: case wording present without --follow-up in $(basename "$f")"
+  done
+  rm -f "$P"/seen-* "$P"/count-*
+  run_debate "$P" "q?" --providers claude,codex --rounds 2 --synthesizer synth --follow-up "${flag[@]}"
+  for f in "$P"/seen-claude-0.md "$P"/seen-codex-1.md; do
+    grep -q 'What I'"'"'d need to know' "$f" && grep -q 'at most 2 questions' "$f" || fail "$style: seat prompt lacks the questions request in $(basename "$f")"
+  done
+  p="$P/seen-synth.md"
+  grep -q 'What I'"'"'d need to know' "$p" || fail "$style: synthesizer is not told to read the seat lists"
+  grep -q 'Prefer a question only one analyst raised' "$p" || fail "$style: single-seat preference missing"
+  grep -q 'assumption every analyst made' "$p" && grep -q 'shared_assumption' "$p" || fail "$style: shared-assumption wording missing"
+  grep -q 'swing: yes rules out X; no rules out Y' "$p" && grep -q 'rule nothing out' "$p" || fail "$style: swing wording missing"
+  grep -q 'agent-diagnosis' "$p" && fail "$style: agent-diagnosis wording without the expert"
+  [[ "$(wc -c < "$P/seen-claude-0.md")" -lt 6000 ]] || fail "$style: seat prompt grew too large"
+done
+# the round-2 search sentence is only for searching voices; stub voices never search, so it must not appear here
+grep -q 'similar incident' "$T/seats-v2/seen-claude-1.md" && fail "search sentence shown to a voice that cannot search"
+
+# kind is parsed, lower-cased, dropped when unknown, and everything else is unchanged
+printf 'FINAL ANSWER: ok\nCONSENSUS: full\nDISSENT: none\n\n## Questions for you\n\n1. x\n\n```json\n{"status":"open","questions":[{"id":"a","text":"Is it the brief?","why":"w","swing":"yes rules out a tool bug; no rules out the brief","answerable_by":"checkable","kind":"Shared_Assumption"},{"id":"b","text":"Did it happen before?","why":"w","swing":"s","answerable_by":"user","kind":"nonsense"},{"id":"c","text":"Which model?","why":"w","swing":"s","answerable_by":"user","kind":"intake"}]}\n```\n' > "$T/synth-reply"
+run "$T/outk" "q?" --follow-up || { cat "$T/stderr"; exit 1; }
+[[ "$(jq -r '[.questions[] | .kind // "none"] | join(",")' "$T/outk/questions.json")" == "shared_assumption,none,intake" ]] || fail "kind parsing: $(jq -c .questions "$T/outk/questions.json")"
+[[ "$(jq -r '.questions[0] | keys | join(",")' "$T/outk/questions.json")" == "answerable_by,id,kind,swing,text,why" ]] || fail "old fields must stay"
+run "$T/out1b" "q?" --follow-up; printf '%s\n' "$OPEN_REPLY" > "$T/synth-reply"; run "$T/out1b" "q?" --follow-up
+[[ "$(jq -r '.questions[0] | has("kind")' "$T/out1b/questions.json")" == false ]] || fail "kind must stay absent when the synthesizer sent none"
+
+# agent-diagnosis: listed, valid, suggested (never run by itself), and in case mode the synthesizer is asked to check intake gaps
+H="$(mktemp -d)"
+E3D_SPECIALISTS=1 HOME="$H" "$ROOT/bin/e3d-debate" --list-specialists 2>/dev/null | grep -q '^agent-diagnosis .*built-in' || fail "agent-diagnosis not listed"
+node "$ROOT/lib/debate/specialists-cli.mjs" validate "$ROOT/lib/specialists/agent-diagnosis" | grep -q '^OK: agent-diagnosis sha256:' || fail "agent-diagnosis does not validate"
+for q in "Why did our subagent loop for hours?" "Is the skill brief wrong?" "Our MCP tool returns odd output" "the harness retried forever" "LLM behaviour changed"; do
+  out="$(E3D_SPECIALISTS=1 HOME="$H" "$ROOT/bin/e3d-debate" "$q" --suggest-panel 2>&1)"
+  grep -q '^  agent-diagnosis matched' <<< "$out" || fail "not suggested for: $q"
+done
+# with enough other matches the suggestion carries a run command that names it (never run by itself)
+out="$(E3D_SPECIALISTS=1 HOME="$H" "$ROOT/bin/e3d-debate" "Should we ship the agent skill prompt change to customers, given the legal risk?" --suggest-panel 2>&1)"
+grep -q -- '--specialist agent-diagnosis' <<< "$out" || fail "a multi-match suggestion should name agent-diagnosis: $out"
+out="$(E3D_SPECIALISTS=1 HOME="$H" "$ROOT/bin/e3d-debate" "Should we raise the price?" --suggest-panel 2>&1)"; grep -q 'agent-diagnosis' <<< "$out" && fail "suggested for an unrelated question"
+P="$T/seats-diag"; mkdir -p "$P"; build_root "$P" "$ROOT/bin/e3d-debate" v2 claude codex
+cp "$ROOT/lib/debate/case.mjs" "$P/lib/debate/"; cp -R "$ROOT/lib/specialists/." "$P/lib/specialists/"
+E3D_SPECIALISTS=1 run_debate "$P" "q?" --providers claude,codex --rounds 1 --synthesizer synth --specialist agent-diagnosis --specialist skeptic
+grep -q 'biggest unanswered intake gap' "$P/seen-synth.md" && fail "intake-gap check present outside case mode"
+grep -q 'cover these and say which' "$P/seen-claude-0.md" "$P/seen-codex-0.md" || fail "the expert lens did not reach a seat"
+rm -f "$P"/seen-* "$P"/count-*
+E3D_SPECIALISTS=1 run_debate "$P" "q?" --providers claude,codex --rounds 1 --synthesizer synth --specialist agent-diagnosis --specialist skeptic --follow-up
+grep -q 'biggest unanswered intake gap' "$P/seen-synth.md" || fail "case mode with agent-diagnosis: intake-gap check missing"
+rm -f "$P"/seen-* "$P"/count-*
+E3D_SPECIALISTS=1 run_debate "$P" "q?" --providers claude,codex --rounds 1 --synthesizer synth --specialist skeptic --specialist customer --follow-up
+grep -q 'biggest unanswered intake gap' "$P/seen-synth.md" && fail "intake-gap check without the expert"
+rm -rf "$H"
 echo "case-mode: ok"

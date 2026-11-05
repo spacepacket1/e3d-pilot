@@ -1,6 +1,6 @@
 # Built-in experts
 
-Eight starter experts, each a standard skill folder (`SKILL.md`) with an optional `e3d/expert.json`. They come from the October design
+Eight starter experts (plus `agent-diagnosis`, below), each a standard skill folder (`SKILL.md`) with an optional `e3d/expert.json`. They come from the October design
 (`docs/prompt-review-2026-10.md`, Part 3). Use them with `E3D_SPECIALISTS=1`; see [`docs/experts.md`](../../docs/experts.md).
 
 | Expert | Lens | Presets |
@@ -26,3 +26,5 @@ To add your own, copy a folder into `~/.config/e3d-pilot/specialists/` (yours) o
 location wins by name. Check it with `E3D_SPECIALISTS=1 e3d-debate --validate-specialist <folder>`. Licensed MIT, like the engine.
 
 **Suggest a panel (free, rule-based).** `E3D_SPECIALISTS=1 e3d-debate "question" --suggest-panel [--task decide|review-spec|find-gaps]` prints the experts whose trigger words appear in the question, the words that matched, a confidence (`low` or `medium`, never higher) and the command to run them. It runs nothing, calls no model and writes nothing. The table is `suggest.json` (list it with `--show-suggest-rules`); fewer than two matching experts proposes the `risk-review` preset instead. Rule-based advice, not a measurement: it matches words; it does not understand your question.
+
+**`agent-diagnosis`** (not in a preset; suggested by `--suggest-panel` for questions about agents, skills, prompts, harnesses, MCP tools or LLM behaviour): intake for AI-agent incidents. It asks what the agent was told, what it saw, what it believed "done" meant, what changed recently and whether it happened before. In case mode (`--follow-up`) the synthesizer also checks the questions cover the biggest unanswered intake gap. Run it with `E3D_SPECIALISTS=1 e3d-debate "question" --follow-up --specialist agent-diagnosis --specialist skeptic`.
