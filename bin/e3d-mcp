@@ -23,7 +23,8 @@ import { createInterface } from 'node:readline';
 import { ROOT, log, text, run, configuredProviders, providerLine, NAME_RE } from '../lib/mcp/util.js';
 import { redact } from '../lib/mcp/redact.js';
 import { parseVerdict } from '../lib/mcp/verdict.js';
-import { createCaseStore, checkAnswers, caseTool, renderCase } from '../lib/mcp/case.js';
+import { createCaseStore, checkAnswers, checkExperts, caseTool, renderCase } from '../lib/mcp/case.js';
+import { suggest as suggestPanel } from '../lib/specialists/suggest.mjs';
 import { readCase, buildQuestion, normalizeAnswers, normalizeQuestions } from '../lib/debate/case.mjs';
 import { doctor, checkoutConfigHint } from '../lib/mcp/doctor.js';
 import { createRpc } from '../lib/mcp/rpc.js';
@@ -43,7 +44,7 @@ import { createOutbox, outboxStatus, outboxExport, outboxRetryDead } from '../li
 import { createMetering, createReadiness, modelsFromTranscript, orphanPolicy } from '../lib/mcp/metering.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { createRuns, validateRunsConfig } from '../lib/mcp/runs.js';
-import { startRunServer, validateRunServerConfig } from '../lib/mcp/run-server.js';
+import { startRunServer, validateRunServerConfig, EXPERTS_LIMITS } from '../lib/mcp/run-server.js';
 import { validatePricingConfig, createPricingClient, limitsForPlan, pricedError, debateEnvFor, readUsageRows, searchCapable, searchCapFromEnv, requestedSearches, expertsRunFrom } from '../lib/mcp/pricing.js';
 import { loadExperts } from '../lib/debate/specialists.mjs';
 import { lensBlock } from '../lib/debate/specialists-plan.mjs';
@@ -659,7 +660,7 @@ async function executeDebate(plan, handle, ctx, { progress, onStarted, signal } 
       const rec = await readFile(join(dir, 'out', 'case.json'), 'utf8').then(JSON.parse).catch(() => null);
       caseOut = { status: qs.status, questions: qs.questions, ...(Number.isSafeInteger(rec?.round) ? { round: rec.round } : {}) };
       if (cs.id) {
-        const saved = await caseStore.save(ctx?.principal ?? 'local', join(dir, 'out'), cs.id);
+        const saved = await caseStore.save(ctx?.principal ?? 'local', join(dir, 'out'), cs.id, { experts: cs.experts ?? null });
         if (saved.error) { log(`case: could not store the round: ${saved.error}`); caseOut.unsaved = true; }
       }
     }
@@ -712,6 +713,11 @@ async function toolDebate(args, progress, ctx, caseOpts = null) {
   const plan = await planDebate(caseOpts ? { ...args, question: caseOpts.question } : args, ctx);
   if (plan.error) return agent ? errorResult(agentPlanError(plan)) : text(plan.error, true);
   if (caseOpts) plan.case = caseOpts.run;
+  if (caseOpts?.experts) {
+    const x = expertsPlan({ list: caseOpts.experts, lens_bytes: EXPERTS_LIMITS.lensBytes[1] }, plan.providers);
+    if (x.error) return text(x.error, true);
+    plan.experts = x.experts;
+  }
   const { question, mode, rounds, maxWords, providers, synthesizer, selection, selectionNote, panel } = plan;
 
   // Refuse BEFORE spending if the worst case for this request would break today's cap.
@@ -775,14 +781,37 @@ async function toolDebate(args, progress, ctx, caseOpts = null) {
 }
 
 // e3d_case: a debate that asks follow-up questions, and the next round of one (lib/mcp/case.js). Everything else is e3d_debate's.
+// agent-terms in lib/specialists/suggest.json matched: the ranked expert names (agent-diagnosis first, at least 2), else null
+function suggestExperts(question) {
+  try {
+    const hit = suggestPanel({ question });
+    if (!hit.experts.some((e) => e.name === 'agent-diagnosis')) return null;
+    const names = ['agent-diagnosis', ...hit.experts.map((e) => e.name).filter((n) => n !== 'agent-diagnosis')];
+    if (names.length < 2) names.push('skeptic');
+    return names.slice(0, 4);
+  } catch { return null; }
+}
+
 async function toolCase(args, progress, ctx) {
-  const { question, case_id: caseId, answers, ...rest } = args;
+  const { question, case_id: caseId, answers, experts: expertsArg, ...rest } = args;
   const principal = ctx?.principal ?? 'local';
   if ((question === undefined) === (caseId === undefined)) return text('error: give `question` (a new case) or `case_id` with `answers` (the next round), not both and not neither', true);
   if (question !== undefined && answers !== undefined) return text('error: `answers` belongs to a later round: pass `case_id`, not `question`', true);
   const key = typeof rest.idempotency_key === 'string' ? rest.idempotency_key : undefined;
   const id = caseStore.idFor(principal, key);
   let run = { id }; let q = question;
+  // experts: catalogue ids, pinned to the content hash they have now (a later round is pinned to the stored hash, so an edited expert is refused)
+  const ec = checkExperts(expertsArg);
+  if (ec.error) return text(`error: invalid: ${ec.error}`, true);
+  if (ec.ids && ctx?.hosted) return text('error: invalid: experts on e3d_case are not available on a hosted server', true);
+  let experts = null;
+  if (ec.ids) {
+    let loaded;
+    try { loaded = loadExperts({ tiers: [{ name: 'built-in', dir: BUILTIN_EXPERTS_DIR }] }).experts; } catch { return text('error: invalid: the built-in experts could not be read', true); }
+    const byName = new Map(loaded.map((e) => [e.name, e]));
+    if (ec.ids.some((i) => !byName.has(i))) return text('error: invalid: an expert id is not a built-in expert (see e3d_list_experts)', true);
+    experts = ec.ids.map((i) => ({ id: i, hash: byName.get(i).hash }));
+  }
   if (caseId !== undefined) {
     const checked = checkAnswers(answers);
     if (checked.error) return text(`error: ${checked.error}`, true);
@@ -793,8 +822,19 @@ async function toolCase(args, progress, ctx) {
     const answerList = normalizeAnswers(checked.answers);
     q = buildQuestion({ prev, answers: answerList }).question;
     run = { id, continueDir: dir, answers: answerList };
+    if (!experts) experts = await caseStore.experts(dir);
   } else if (typeof question !== 'string') return text('error: `question` must be a string', true);
-  const res = await toolDebate(rest, progress, ctx, { question: q, run });
+  if (experts) run.experts = experts;
+  const res = await toolDebate(rest, progress, ctx, { question: q, run, experts });
+  // a new case about agents, skills or prompts and no experts given: a hint, never run (the free rule in lib/specialists/suggest.json)
+  if (caseId === undefined && !experts && !res.isError && res.structuredContent && typeof question === 'string') {
+    const names = suggestExperts(question);
+    if (names) {
+      const hint = { experts: names, note: 'Rule-based hint (matches words, runs nothing). Pass these as `experts` on a new case to run them.' };
+      res.structuredContent.suggested_experts = hint;
+      res.content[0].text += `\nSuggested experts (not run): ${names.join(', ')}. ${hint.note}`;
+    }
+  }
   // a replayed call (same idempotency_key) returns the stored verdict without running: attach the case it stored
   const sc = res.structuredContent;
   if (sc?.replayed && !sc.questions) {
@@ -1229,7 +1269,7 @@ async function handle(msg, conn = stdioConn) {
       if (conn.hosted && PROBED_TOOLS.has(params.name)) log(`thread-probe: tool=${params.name} client=${probeClient(session.clientInfo)} session=${conn.sessionDigest ?? 'none'}`);
       try {
         await session.rootsReady;
-        return reply(await handler(params.arguments ?? {}, progress, { session, rpc: conn.rpc, sampling, principal: conn.principal, samplingEnv: (tag) => sampling.env(session, { tag }) }));
+        return reply(await handler(params.arguments ?? {}, progress, { session, rpc: conn.rpc, sampling, principal: conn.principal, hosted: conn.hosted, samplingEnv: (tag) => sampling.env(session, { tag }) }));
       } catch (e) {
         return reply(text(`error: ${e.message}`, true));
       }
