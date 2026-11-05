@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# e3d_case (stdio): tool listing, validation, a new case, a continuation with answers, ownership of case_id, closed status, a web run with
+# e3d_investigate (stdio): tool listing, validation, a new case, a continuation with answers, ownership of case_id, closed status, a web run with
 # investigate: true. A stub debate binary stands in for the engine and uses the real lib/debate/case.mjs; no model calls.
 set -euo pipefail
 
@@ -66,24 +66,24 @@ call() { # <id> <tool> <args-json> ; prints the whole response
   printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":$1,\"method\":\"tools/call\",\"params\":{\"name\":\"$2\",\"arguments\":$3}}" | E3D_MCP_DEBATE_BIN="$W/stub" "$SERVER" 2>/dev/null
 }
 
-# listing: e3d_case is added after the original four tools, annotated like e3d_debate, and tells the agent not to fabricate
+# listing: e3d_investigate is added after the original four tools, annotated like e3d_debate, and tells the agent not to fabricate
 tools="$(printf '%s\n' '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' | "$SERVER" 2>/dev/null)"
 [[ "$(jq -r '.result.tools[0:4]|map(.name)|join(",")' <<< "$tools")" == "e3d_debate,e3d_list_providers,e3d_provenance_trace,e3d_ideas_list" ]] || fail "original tool order changed"
-[[ "$(jq -r '.result.tools[] | select(.name=="e3d_case") | [.annotations.readOnlyHint, .annotations.destructiveHint, .annotations.openWorldHint] | map(tostring) | join(",")' <<< "$tools")" == "false,false,true" ]] || fail "e3d_case annotations"
-d="$(jq -r '.result.tools[] | select(.name=="e3d_case") | .description' <<< "$tools")"
+[[ "$(jq -r '.result.tools[] | select(.name=="e3d_investigate") | [.annotations.readOnlyHint, .annotations.destructiveHint, .annotations.openWorldHint] | map(tostring) | join(",")' <<< "$tools")" == "false,false,true" ]] || fail "e3d_investigate annotations"
+d="$(jq -r '.result.tools[] | select(.name=="e3d_investigate") | .description' <<< "$tools")"
 [[ "$d" == *'ONLY "checkable"'* && "$d" == *'`source`'* && "$d" == *'Never guess, never fabricate'* && "$d" == *'Pass every "user" question to the human'* ]] || fail "description lacks the agent rules"
-[[ "$(jq -r '.result.tools[] | select(.name=="e3d_case") | .outputSchema.required | index("questions") != null' <<< "$tools")" == true ]] || fail "outputSchema"
+[[ "$(jq -r '.result.tools[] | select(.name=="e3d_investigate") | .outputSchema.required | index("questions") != null' <<< "$tools")" == true ]] || fail "outputSchema"
 
 # validation
-r="$(call 3 e3d_case '{}')"; [[ "$(jq -r .result.isError <<< "$r")" == true ]] || fail "neither question nor case_id accepted"
-r="$(call 3 e3d_case '{"question":"q","case_id":"case_aaaaaaaaaaaaaaaaaaaaaaaa"}')"; [[ "$(jq -r .result.isError <<< "$r")" == true ]] || fail "both accepted"
-r="$(call 3 e3d_case '{"question":"q","answers":[]}')"; [[ "$(jq -r .result.isError <<< "$r")" == true ]] || fail "answers with question accepted"
-r="$(call 3 e3d_case '{"case_id":"case_aaaaaaaaaaaaaaaaaaaaaaaa","answers":[]}')"; [[ "$(jq -r .result.content[0].text <<< "$r")" == *"unknown case_id"* ]] || fail "unknown case_id"
-r="$(call 3 e3d_case '{"case_id":"../../etc","answers":[]}')"; [[ "$(jq -r .result.content[0].text <<< "$r")" == *"unknown case_id"* ]] || fail "malformed case_id"
-r="$(call 3 e3d_case '{"case_id":"case_aaaaaaaaaaaaaaaaaaaaaaaa","answers":[{"id":"q1","answer":5}]}')"; [[ "$(jq -r .result.isError <<< "$r")" == true ]] || fail "non-string answer accepted"
+r="$(call 3 e3d_investigate '{}')"; [[ "$(jq -r .result.isError <<< "$r")" == true ]] || fail "neither question nor case_id accepted"
+r="$(call 3 e3d_investigate '{"question":"q","case_id":"case_aaaaaaaaaaaaaaaaaaaaaaaa"}')"; [[ "$(jq -r .result.isError <<< "$r")" == true ]] || fail "both accepted"
+r="$(call 3 e3d_investigate '{"question":"q","answers":[]}')"; [[ "$(jq -r .result.isError <<< "$r")" == true ]] || fail "answers with question accepted"
+r="$(call 3 e3d_investigate '{"case_id":"case_aaaaaaaaaaaaaaaaaaaaaaaa","answers":[]}')"; [[ "$(jq -r .result.content[0].text <<< "$r")" == *"unknown case_id"* ]] || fail "unknown case_id"
+r="$(call 3 e3d_investigate '{"case_id":"../../etc","answers":[]}')"; [[ "$(jq -r .result.content[0].text <<< "$r")" == *"unknown case_id"* ]] || fail "malformed case_id"
+r="$(call 3 e3d_investigate '{"case_id":"case_aaaaaaaaaaaaaaaaaaaaaaaa","answers":[{"id":"q1","answer":5}]}')"; [[ "$(jq -r .result.isError <<< "$r")" == true ]] || fail "non-string answer accepted"
 
 # a new case
-r="$(call 4 e3d_case '{"question":"Should we ship the migration?"}')"
+r="$(call 4 e3d_investigate '{"question":"Should we ship the migration?"}')"
 s=".result.structuredContent"
 [[ "$(jq -r "$s.status" <<< "$r")" == open ]] || fail "status: $r"
 [[ "$(jq -r "$s.questions|length" <<< "$r")" == 2 ]] || fail "questions"
@@ -97,7 +97,7 @@ t="$(jq -r .result.content[0].text <<< "$r")"
 [[ "$t" == *"Case open"* && "$t" == *"[checkable]"* && "$t" == *"$CID"* && "$t" == *"Pass each \"user\" question to the human"* ]] || fail "text rendering"
 [[ "$(jq -r "$s.questions[1].kind" <<< "$r")" == intake && "$(jq -r "$s.questions[0] | has(\"kind\")" <<< "$r")" == false ]] || fail "kind must pass through when present and stay absent otherwise: $(jq -c "$s.questions" <<< "$r")"
 [[ "$t" == *"[user, intake]"* ]] || fail "kind not shown in the text: $t"
-[[ "$(jq -r '.result.tools[] | select(.name=="e3d_case") | .outputSchema.properties.questions.items | (.properties.kind.enum | join(",")), (.required | index("kind") == null)' <<< "$tools")" == $'discriminating,shared_assumption,intake\ntrue' ]] || fail "kind must be an optional enum in the output schema"
+[[ "$(jq -r '.result.tools[] | select(.name=="e3d_investigate") | .outputSchema.properties.questions.items | (.properties.kind.enum | join(",")), (.required | index("kind") == null)' <<< "$tools")" == $'discriminating,shared_assumption,intake\ntrue' ]] || fail "kind must be an optional enum in the output schema"
 grep -q 'follow=1 continue=$' "$STUB_LOG" || fail "engine not asked for --follow-up"
 
 # the plain e3d_debate is untouched
@@ -107,7 +107,7 @@ tail -1 "$STUB_LOG" | grep -qx 'follow=0 continue=' || fail "e3d_debate must not
 
 # the next round: answers reach the engine's question as data, the case closes
 ANS='[{"id":"q1","answer":"Yes, down.sql exists","source":"file:migrations/0042_down.sql","answered_by":"agent"}]'
-r="$(call 6 e3d_case "{\"case_id\":\"$CID\",\"answers\":$ANS}")"
+r="$(call 6 e3d_investigate "{\"case_id\":\"$CID\",\"answers\":$ANS}")"
 [[ "$(jq -r "$s.status" <<< "$r")" == closed ]] || fail "closed: $r"
 [[ "$(jq -r "$s.questions|length" <<< "$r")" == 0 ]] || fail "closed has no questions"
 [[ "$(jq -r "$s.round" <<< "$r")" == 2 ]] || fail "round"
@@ -130,7 +130,7 @@ const k = st.idFor('p', 'key-12345678'); if (k !== st.idFor('p', 'key-12345678')
 " || fail "case store ownership"
 
 # an answers-only partial round and a free-form "don't know" are accepted
-r="$(call 7 e3d_case "{\"case_id\":\"$CID\",\"answers\":[{\"id\":\"q2\",\"answer\":\"don't know\"}]}")"
+r="$(call 7 e3d_investigate "{\"case_id\":\"$CID\",\"answers\":[{\"id\":\"q2\",\"answer\":\"don't know\"}]}")"
 [[ "$(jq -r "$s.status" <<< "$r")" == closed ]] || fail "partial answers round: $r"
 grep -q "don't know" "$STUB_LOG.question" && grep -q 'ANSWER: (not answered)' "$STUB_LOG.question" || fail "unanswered question not passed on"
 # a hosted web run: investigate must be true when sent; it is a known field
@@ -143,41 +143,41 @@ if (!validateRunRequest({ ...base, investigate: false }).error) throw new Error(
 if (validateRunRequest({ ...base }).fields.investigate !== undefined) throw new Error('investigate appeared by itself');
 " || fail "run-server investigate field"
 # experts: ids (2 to 4) reach the engine as --specialist flags, pinned to the catalogue hash, built-in only; E3D_SPECIALISTS=1
-r="$(call 20 e3d_case '{"question":"Should we ship the migration?","experts":["skeptic","architect"],"providers":["claude","codex","gemini"]}')"
+r="$(call 20 e3d_investigate '{"question":"Should we ship the migration?","experts":["skeptic","architect"],"providers":["claude","codex","gemini"]}')"
 [[ "$(jq -r "$s.status" <<< "$r")" == open ]] || fail "case with experts: $r"
 a="$(cat "$STUB_LOG.args")"
 [[ "$a" == *"--specialist skeptic --specialist architect"* && "$a" == *"--builtin-only"* && "$a" == *"--fill-pool"* && "$a" == *"--expert-pin skeptic=sha256:"* && "$a" == *"--expert-pin architect=sha256:"* && "$a" == *"E3D_SPECIALISTS=1"* ]] || fail "experts not passed as --specialist: $a"
 [[ "$(jq -r "$s | has(\"suggested_experts\")" <<< "$r")" == false ]] || fail "no hint when experts were given"
 ECID="$(jq -r "$s.case_id" <<< "$r")"
 # a continuation reuses the stored experts, pinned to the stored hash
-call 21 e3d_case "{\"case_id\":\"$ECID\",\"answers\":[],\"providers\":[\"claude\",\"codex\",\"gemini\"]}" > /dev/null
+call 21 e3d_investigate "{\"case_id\":\"$ECID\",\"answers\":[],\"providers\":[\"claude\",\"codex\",\"gemini\"]}" > /dev/null
 a="$(cat "$STUB_LOG.args")"
 [[ "$a" == *"--specialist skeptic --specialist architect"* && "$a" == *"--continue"* ]] || fail "continuation did not reuse the experts: $a"
 # ... unless the caller passes new ones
-call 22 e3d_case "{\"case_id\":\"$ECID\",\"answers\":[],\"experts\":[\"premortem\",\"customer\"],\"providers\":[\"claude\",\"codex\",\"gemini\"]}" > /dev/null
+call 22 e3d_investigate "{\"case_id\":\"$ECID\",\"answers\":[],\"experts\":[\"premortem\",\"customer\"],\"providers\":[\"claude\",\"codex\",\"gemini\"]}" > /dev/null
 a="$(cat "$STUB_LOG.args")"
 [[ "$a" == *"--specialist premortem --specialist customer"* && "$a" != *"--specialist skeptic"* ]] || fail "new experts on a continuation: $a"
 # a case without experts stays without
-call 23 e3d_case '{"question":"Plain question"}' > /dev/null
+call 23 e3d_investigate '{"question":"Plain question"}' > /dev/null
 [[ "$(cat "$STUB_LOG.args")" != *"--specialist"* ]] || fail "specialist flags without experts"
 # refused before anything runs: unknown id, malformed, too few, too many, duplicates, more experts than providers
 : > "$W/n"; before="$(wc -l < "$STUB_LOG")"
 for bad in '["nope","skeptic"]' '["skeptic"]' '["skeptic","architect","customer","premortem","compliance"]' '["skeptic","skeptic"]' '["Skeptic","../x"]' '"skeptic"'; do
-  r="$(call 24 e3d_case "{\"question\":\"q\",\"experts\":$bad}")"
+  r="$(call 24 e3d_investigate "{\"question\":\"q\",\"experts\":$bad}")"
   [[ "$(jq -r .result.isError <<< "$r")" == true && "$(jq -r .result.content[0].text <<< "$r")" == *"invalid"* ]] || fail "experts $bad accepted: $r"
 done
-r="$(call 25 e3d_case '{"question":"q","experts":["skeptic","architect","customer"],"providers":["claude","codex"]}')"
+r="$(call 25 e3d_investigate '{"question":"q","experts":["skeptic","architect","customer"],"providers":["claude","codex"]}')"
 [[ "$(jq -r .result.isError <<< "$r")" == true && "$(jq -r .result.content[0].text <<< "$r")" == *experts_exceed_panel* ]] || fail "more experts than providers accepted: $r"
 [[ "$(wc -l < "$STUB_LOG")" == "$before" ]] || fail "the engine ran for a refused experts argument"
-[[ "$(jq -r '.result.tools[] | select(.name=="e3d_case") | .inputSchema.properties.experts | [.minItems, .maxItems] | join(",")' <<< "$tools")" == "2,4" ]] || fail "experts missing from the e3d_case schema"
+[[ "$(jq -r '.result.tools[] | select(.name=="e3d_investigate") | .inputSchema.properties.experts | [.minItems, .maxItems] | join(",")' <<< "$tools")" == "2,4" ]] || fail "experts missing from the e3d_investigate schema"
 # suggested_experts: present for a question about agents (rule agent-terms), never run; absent for any other
-r="$(call 26 e3d_case '{"question":"Why does our agent skip tool calls and ignore its skill?"}')"
+r="$(call 26 e3d_investigate '{"question":"Why does our agent skip tool calls and ignore its skill?"}')"
 [[ "$(jq -r "$s.suggested_experts.experts[0]" <<< "$r")" == agent-diagnosis && "$(jq -r "$s.suggested_experts.experts|length>=2" <<< "$r")" == true ]] || fail "suggested_experts missing for an agent question: $r"
 [[ "$(cat "$STUB_LOG.args")" != *"--specialist"* ]] || fail "a suggestion must not be run"
 [[ "$(jq -r .result.content[0].text <<< "$r")" == *"Suggested experts (not run)"* ]] || fail "suggestion not in the text"
-r="$(call 27 e3d_case '{"question":"Should we ship the migration next week?"}')"
+r="$(call 27 e3d_investigate '{"question":"Should we ship the migration next week?"}')"
 [[ "$(jq -r "$s | has(\"suggested_experts\")" <<< "$r")" == false ]] || fail "suggested_experts for a question that is not about agents"
-r="$(call 28 e3d_case '{"question":"Why does our agent skip tool calls?","experts":["skeptic","architect"],"providers":["claude","codex"]}')"
+r="$(call 28 e3d_investigate '{"question":"Why does our agent skip tool calls?","experts":["skeptic","architect"],"providers":["claude","codex"]}')"
 [[ "$(jq -r "$s | has(\"suggested_experts\")" <<< "$r")" == false ]] || fail "hint although experts were passed"
 # agent-diagnosis is a built-in expert: listed by the read-only experts tools (E3D_MCP_EXPERTS=1)
 ex="$(printf '%s\n' '{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"e3d_list_experts","arguments":{}}}' | E3D_MCP_EXPERTS=1 "$SERVER" 2>/dev/null)"

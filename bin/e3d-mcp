@@ -601,7 +601,7 @@ async function executeDebate(plan, handle, ctx, { progress, onStarted, signal } 
     }
     // An opted-in web run (jev: true): one unpriced Jev pre-screen call, record only (bin/e3d-debate --jev).
     if (plan.jev) cliArgs.push('--jev');
-    // Case mode (e3d_case, or a web run with investigate: true): the verdict also asks up to 3 questions (questions.json). A later round
+    // Case mode (e3d_investigate, or a web run with investigate: true): the verdict also asks up to 3 questions (questions.json). A later round
     // continues from the stored earlier round; the engine builds the same question the plan was priced on, so the question file is empty
     // (a question given with --continue would be read as an extra note).
     const cs = plan.case ?? null;
@@ -781,7 +781,7 @@ async function toolDebate(args, progress, ctx, caseOpts = null) {
   return { content: [{ type: 'text', text: caseOut ? `${body}\n${renderCase(result)}` : body }], structuredContent: result };
 }
 
-// e3d_case: a debate that asks follow-up questions, and the next round of one (lib/mcp/case.js). Everything else is e3d_debate's.
+// e3d_investigate: a debate that asks follow-up questions, and the next round of one (lib/mcp/case.js). Everything else is e3d_debate's.
 // agent-terms in lib/specialists/suggest.json matched: the ranked expert names (agent-diagnosis first, at least 2), else null
 function suggestExperts(question) {
   try {
@@ -804,7 +804,7 @@ async function toolCase(args, progress, ctx) {
   // experts: catalogue ids, pinned to the content hash they have now (a later round is pinned to the stored hash, so an edited expert is refused)
   const ec = checkExperts(expertsArg);
   if (ec.error) return text(`error: invalid: ${ec.error}`, true);
-  if (ec.ids && ctx?.hosted) return text('error: invalid: experts on e3d_case are not available on a hosted server', true);
+  if (ec.ids && ctx?.hosted) return text('error: invalid: experts on e3d_investigate are not available on a hosted server', true);
   let experts = null;
   if (ec.ids) {
     let loaded;
@@ -849,7 +849,7 @@ async function toolCase(args, progress, ctx) {
 // ---- async debates (hosted, external hook only; lib/mcp/runs.js): start, check on, and get the result later ----
 let runs = null; // the run store, once the external hook is running
 let runsConfig = null;
-// e3d_case: always on for a local (stdio) server; on a hosted server only with E3D_MCP_CASE=1, so a deployment never gains a new paid tool by upgrading.
+// e3d_investigate: always on for a local (stdio) server; on a hosted server only with E3D_MCP_CASE=1, so a deployment never gains a new paid tool by upgrading.
 const caseEnabled = (conn) => !conn.hosted || process.env.E3D_MCP_CASE === '1';
 const ASYNC_TOOLS = new Set(['e3d_debate_start', 'e3d_debate_status', 'e3d_debate_result']);
 // Exposed only when the service advertises both finalize (the result is stored with the charge) and fetch (it can be read
@@ -1161,7 +1161,7 @@ const TOOLS = [
     annotations: { title: 'List ideas', readOnlyHint: true, openWorldHint: false },
   },
 ];
-// e3d_case is listed after the original four tools, which keep their order
+// e3d_investigate is listed after the original four tools, which keep their order
 TOOLS.splice(TOOLS.findIndex((t) => t.name === 'e3d_ideas_list') + 1, 0, caseTool(TOOLS[0], SEARCH_NOTICE));
 
 // ---- pipeline-over-MCP (jobs, repo allowlist, gates); the four tools above are unchanged ----
@@ -1173,7 +1173,7 @@ const pipeline = createPipelineTools({ guard, jobs });
 // a server that advertises per_token_search_v1 caps web searches at 160 per principal per day unless E3D_MCP_DAILY_SEARCHES says otherwise
 // (the owner's setting: ten worst-case four-vendor debates)
 const usage = createUsage({ defaults: HTTP_MODE ? { calls: 100, tokens: 500000, ...(searchCapable(process.env, { mode: PRICING_CONFIG.mode }) ? { searches: 160 } : {}) } : { calls: 0, tokens: 0 } });
-// e3d_case rounds (lib/mcp/case.js): stored next to the usage state
+// e3d_investigate rounds (lib/mcp/case.js): stored next to the usage state
 const caseStore = createCaseStore({ dir: usage.dir });
 // Without E3D_MCP_AUTH_URL this is the local usage object unchanged; the hook is attached at hosted startup below.
 let metering = createMetering({ localUsage: usage, log });
@@ -1197,7 +1197,7 @@ async function refreshRoots(session = stdioConn.session) {
 
 const HANDLERS = {
   e3d_debate: toolDebate,
-  e3d_case: toolCase,
+  e3d_investigate: toolCase,
   e3d_quote: toolQuote,
   e3d_debate_start: toolDebateStart,
   e3d_debate_status: toolDebateStatus,
@@ -1216,11 +1216,11 @@ const HANDLERS = {
 // Phase 0 of debate threads (e3d-pilot-cloud docs/specs/debate-threads.md section 9): one log line per hosted debate call saying which client
 // and which session it came from, so the counts show whether calls from one chat share a session. The session is a one-way digest and the
 // client name is the self-reported clientInfo.name cut to safe characters; never a principal, a question or an answer. Nothing is grouped on it.
-const PROBED_TOOLS = new Set(['e3d_debate', 'e3d_case', 'e3d_debate_start', 'e3d_quote', 'e3d_gallery', 'e3d_list_experts', 'e3d_get_expert']);
+const PROBED_TOOLS = new Set(['e3d_debate', 'e3d_investigate', 'e3d_debate_start', 'e3d_quote', 'e3d_gallery', 'e3d_list_experts', 'e3d_get_expert']);
 const probeClient = (info) => String(info?.name ?? 'unknown').replace(/[^A-Za-z0-9._-]+/g, '_').slice(0, 40) || 'unknown';
 
 // e3d_gallery reads public pages and costs nothing, so while it is switched on every connection may use it, whatever its key's tool list says.
-const permits = (conn, name) => !conn.allowed || conn.allowed.has(name) || ((name === 'e3d_quote' || name === 'e3d_case') && conn.allowed.has('e3d_debate')) || (name === 'e3d_gallery' && Boolean(galleryRead)) || ((name === 'e3d_list_experts' || name === 'e3d_get_expert') && Boolean(expertsRead));
+const permits = (conn, name) => !conn.allowed || conn.allowed.has(name) || ((name === 'e3d_quote' || name === 'e3d_investigate') && conn.allowed.has('e3d_debate')) || (name === 'e3d_gallery' && Boolean(galleryRead)) || ((name === 'e3d_list_experts' || name === 'e3d_get_expert') && Boolean(expertsRead));
 
 async function handle(msg, conn = stdioConn) {
   const { id, method, params } = msg;
@@ -1255,15 +1255,15 @@ async function handle(msg, conn = stdioConn) {
     }
     case 'tools/list': {
       // the async debate tools exist only while the service advertises finalize and fetch
-      const gated = (asyncEnabled() ? TOOLS : TOOLS.filter((t) => !ASYNC_TOOLS.has(t.name))).filter((t) => t.name !== 'e3d_case' || caseEnabled(conn));
+      const gated = (asyncEnabled() ? TOOLS : TOOLS.filter((t) => !ASYNC_TOOLS.has(t.name))).filter((t) => t.name !== 'e3d_investigate' || caseEnabled(conn));
       // agent mode (hosted, per-token): e3d_debate takes quote_id and idempotency_key, and e3d_quote is offered (to whoever may debate)
-      const listed = AGENT_ON && conn.hosted ? gated.flatMap((t) => (t.name === 'e3d_debate' ? [extendDebateTool(t), ...(permits(conn, 'e3d_quote') ? [quoteTool(t)] : [])] : t.name === 'e3d_case' ? [extendDebateTool(t)] : [t])) : gated;
+      const listed = AGENT_ON && conn.hosted ? gated.flatMap((t) => (t.name === 'e3d_debate' ? [extendDebateTool(t), ...(permits(conn, 'e3d_quote') ? [quoteTool(t)] : [])] : t.name === 'e3d_investigate' ? [extendDebateTool(t)] : [t])) : gated;
       return reply({ tools: conn.allowed ? listed.filter((t) => permits(conn, t.name)) : listed });
     }
     case 'tools/call': {
       const handler = HANDLERS[params?.name];
       // A tool outside this connection's allowlist (or a gated one) is reported exactly like one that does not exist.
-      if (!handler || !permits(conn, params.name) || (params.name === 'e3d_quote' && !(AGENT_ON && conn.hosted)) || (ASYNC_TOOLS.has(params.name) && !asyncEnabled()) || (params.name === 'e3d_case' && !caseEnabled(conn))) return fail(-32602, `unknown tool: ${params?.name}`);
+      if (!handler || !permits(conn, params.name) || (params.name === 'e3d_quote' && !(AGENT_ON && conn.hosted)) || (ASYNC_TOOLS.has(params.name) && !asyncEnabled()) || (params.name === 'e3d_investigate' && !caseEnabled(conn))) return fail(-32602, `unknown tool: ${params?.name}`);
       const token = params?._meta?.progressToken;
       const progress = token === undefined || conn.hosted ? undefined : (n, message) =>
         conn.send({ jsonrpc: '2.0', method: 'notifications/progress', params: { progressToken: token, progress: n, message } });
