@@ -149,8 +149,6 @@ for style in v2 v3; do
   grep -q 'agent-diagnosis' "$p" && fail "$style: agent-diagnosis wording without the expert"
   [[ "$(wc -c < "$P/seen-claude-0.md")" -lt 6000 ]] || fail "$style: seat prompt grew too large"
 done
-# the round-2 search sentence is only for searching voices; stub voices never search, so it must not appear here
-grep -q 'similar incident' "$T/seats-v2/seen-claude-1.md" && fail "search sentence shown to a voice that cannot search"
 
 # kind is parsed, lower-cased, dropped when unknown, and everything else is unchanged
 printf 'FINAL ANSWER: ok\nCONSENSUS: full\nDISSENT: none\n\n## Questions for you\n\n1. x\n\n```json\n{"status":"open","questions":[{"id":"a","text":"Is it the brief?","why":"w","swing":"yes rules out a tool bug; no rules out the brief","answerable_by":"checkable","kind":"Shared_Assumption"},{"id":"b","text":"Did it happen before?","why":"w","swing":"s","answerable_by":"user","kind":"nonsense"},{"id":"c","text":"Which model?","why":"w","swing":"s","answerable_by":"user","kind":"intake"}]}\n```\n' > "$T/synth-reply"

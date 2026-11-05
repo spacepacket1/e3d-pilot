@@ -826,9 +826,6 @@ round_prompt() {
   if [[ -n "$LENS_DIR" && -f "$LENS_DIR/lens-$provider.txt" ]]; then cat "$LENS_DIR/lens-$provider.txt"; fi
   date_preamble "$web" "$([[ "$web" == 1 ]] && ws_cap_for "$provider")"
   (( round >= 2 )) && ws_peer_notice
-  if (( FOLLOW_UP == 1 && round >= 2 )) && [[ "$web" == 1 ]]; then
-    printf 'Use search to check claims, yours and the others'\'', not to find a similar incident to argue from.\n\n'
-  fi
   if [[ "$DEBATE_PROMPT_VERSION" != "v2" ]]; then
     if (( round == 1 )); then v3_round1_prompt "$provider"; else v3_round2_prompt "$provider"; fi
   elif (( round == 1 )); then
@@ -1034,7 +1031,6 @@ for ((round = 1; round <= DEBATE_ROUNDS; round++)); do
     out_file="$work_dir/round${round}-${provider}.out"
     status_file="$work_dir/round${round}-${provider}.status"
     son=0; search_on_for "$provider" && son=1
-    (( FOLLOW_UP == 1 && round == 1 )) && son=0   # case mode: round 1 is independent, search starts at the rebuttal round
     round_prompt "$provider" "$round" "$son" > "$prompt_file"
     (
       set +e
