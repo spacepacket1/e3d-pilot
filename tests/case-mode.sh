@@ -127,7 +127,7 @@ env -u TYPESAFE_API_KEY "$T/bin/e3d-debate" "q?" --providers alpha,beta --rounds
 env -u TYPESAFE_API_KEY "$T/bin/e3d-debate" "q?" --providers alpha,beta --rounds 2 --synthesizer synth --prompts v3c --follow-up > "$T/stdout" 2> "$T/stderr" || { cat "$T/stderr"; exit 1; }
 [[ -e "$T/seen-synth.md" ]] || fail "--follow-up should call the synthesizer even when everyone agreed"
 
-# 9. seat questions, synthesizer wording, kind field, agent-diagnosis (stub providers, real prompts)
+# 9. synthesizer wording, kind field, agent-diagnosis (seat questions and the shared-assumption rule were reverted after the benchmark) (stub providers, real prompts)
 source "$ROOT/tests/fixtures/specialists/harness.sh"
 for style in v2 v3; do
   P="$T/seats-$style"; mkdir -p "$P"
@@ -141,12 +141,10 @@ for style in v2 v3; do
   rm -f "$P"/seen-* "$P"/count-*
   run_debate "$P" "q?" --providers claude,codex --rounds 2 --synthesizer synth --follow-up "${flag[@]}"
   for f in "$P"/seen-claude-0.md "$P"/seen-codex-1.md; do
-    grep -q 'What I'"'"'d need to know' "$f" && grep -q 'at most 2 questions' "$f" || fail "$style: seat prompt lacks the questions request in $(basename "$f")"
+    grep -qE "What I'd need to know|CASE MODE" "$f" && fail "$style: seat prompt carries case wording (reverted: seats answer as usual) in $(basename "$f")"
   done
   p="$P/seen-synth.md"
-  grep -q 'What I'"'"'d need to know' "$p" || fail "$style: synthesizer is not told to read the seat lists"
-  grep -q 'Prefer a question only one analyst raised' "$p" || fail "$style: single-seat preference missing"
-  grep -q 'assumption every analyst made' "$p" && grep -q 'shared_assumption' "$p" || fail "$style: shared-assumption wording missing"
+  grep -qE "What I'd need to know|assumption every analyst made|shared_assumption" "$p" && fail "$style: reverted seat-list/shared-assumption wording still in the synthesizer prompt"
   grep -q 'swing: yes rules out X; no rules out Y' "$p" && grep -q 'rule nothing out' "$p" || fail "$style: swing wording missing"
   grep -q 'agent-diagnosis' "$p" && fail "$style: agent-diagnosis wording without the expert"
   [[ "$(wc -c < "$P/seen-claude-0.md")" -lt 6000 ]] || fail "$style: seat prompt grew too large"
