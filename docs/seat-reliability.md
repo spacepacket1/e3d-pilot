@@ -166,3 +166,24 @@ What must change:
 - **Tests:** cloud: quote vectors for anthropic-api with and without search (outCeil 1024 only with search), manifest bound = 1024 + 192, Quick+search under 25 credits, a settle with an output of 1024+142 clamped without alarm up to the allowance, `searchInTokensPerSearch` input bound. This repo: `tests/pertoken-search.sh` already asserts the per-provider limit reaches the adapter; add a case with `E3D_DEBATE_MAX_TOKENS` anthropic-api 1024 (no change expected) if the cloud adds the field.
 
 Spend for this follow-up: 39 real calls; about $1.34 at the documented $2/$10 per million tokens (about $2.0 at a conservative $3/$15). No production calls.
+
+## Turning thinking off differs per model (measured 2026-11-04)
+
+`thinking: between_tools` was the adapter's default for every `claude-*-5*` model, but only Claude Sonnet 5.5 accepts it. Every
+other Claude 5 model answered HTTP 400, so an Opus 5.5 seat failed in round 1 and its synthesis fell back to another vendor. A
+direct probe of each model (`max_tokens` 300, a one-word reply):
+
+| Model | `between_tools` | `disabled` | field omitted | omitted + `effort: low` |
+|---|---|---|---|---|
+| claude-sonnet-5-5 | ok | 400 | ok | ok |
+| claude-opus-5-5 | 400 | 400 | ok | ok |
+| claude-opus-5 | 400 | ok | ok | ok |
+| claude-sonnet-5 | 400 | ok | ok | ok |
+| claude-haiku-5-5 | 400 | ok | ok | ok |
+| claude-fable-5-1 | 400 | 400 | ok | ok |
+
+`lib/providers/anthropic-api` now picks the value per model: `between_tools` for Sonnet 5.5; `disabled` for Opus 5, Sonnet 5
+and Haiku 5.5; for models whose thinking cannot be turned off (Opus 5.5, Fable, Mythos) no thinking field and
+`output_config.effort: "low"`; nothing for any other model, because an omitted field was accepted everywhere.
+`ANTHROPIC_API_THINKING` and `ANTHROPIC_API_EFFORT` override the defaults, and an empty value sends nothing.
+`tests/web-search.sh` pins the request shape for each model, with search on and off.
