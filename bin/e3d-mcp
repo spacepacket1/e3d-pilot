@@ -50,7 +50,7 @@ import { validatePricingConfig, createPricingClient, limitsForPlan, pricedError,
 import { loadExperts } from '../lib/debate/specialists.mjs';
 import { lensBlock } from '../lib/debate/specialists-plan.mjs';
 import { galleryFrom, createGalleryRead, GALLERY_INSTRUCTION } from '../lib/mcp/gallery-read.js';
-import { expertsFrom, createExpertsRead, EXPERTS_INSTRUCTION } from '../lib/mcp/experts-read.js';
+import { expertsFrom, expertsAgentFrom, checkAgentExperts, loadCatalogue as loadExpertsCatalogue, createExpertsRead, EXPERTS_INSTRUCTION, EXPERTS_USE_INSTRUCTION } from '../lib/mcp/experts-read.js';
 import { agentModeFrom, agentFieldsOf, AGENT_INSTRUCTIONS, SCHEMA_VERSION as AGENT_SCHEMA_VERSION, IDEMPOTENCY_KEY_RE, QUOTE_ID_RE, agentError, errorResult, reasonError, extendDebateTool, quoteTool, quoteResult, validQuote } from '../lib/mcp/agent.js';
 import { validatePanelConfig, validateRequiredConfig, withRequired, requireAvailable, createPanelClient, checkFamilies, requireFamilies, degrade, explicitPanel, familiesOf } from '../lib/mcp/panel.js';
 
@@ -73,7 +73,12 @@ const GALLERY_CONFIG = galleryFrom(process.env);
 const galleryRead = GALLERY_CONFIG.on ? createGalleryRead({ base: GALLERY_CONFIG.base }) : null;
 // e3d_list_experts and e3d_get_expert (lib/mcp/experts-read.js): free, read-only description of the built-in experts, off unless E3D_MCP_EXPERTS=1.
 const EXPERTS_CONFIG = expertsFrom(process.env);
-const expertsRead = EXPERTS_CONFIG.on ? createExpertsRead({ builtinDir: fileURLToPath(new URL('../lib/specialists', import.meta.url)) }) : null;
+// E3D_MCP_EXPERTS_AGENT=1 (docs/specs/experts-phase2b2-mcp-listing-and-use-spec.md): e3d_quote and e3d_debate take `experts` (names from the listing), priced by
+// billing's agent routes (PILOT_AGENT_EXPERTS) and run with the same planner flags as a web run. Needs E3D_MCP_EXPERTS=1 and the agent contract.
+const EXPERTS_AGENT = expertsAgentFrom(process.env);
+const AGENT_EXPERTS_ON = EXPERTS_AGENT.on && AGENT_ON;
+const agentCatalogue = AGENT_EXPERTS_ON ? loadExpertsCatalogue(BUILTIN_EXPERTS_DIR) : null;
+const expertsRead = EXPERTS_CONFIG.on ? createExpertsRead({ builtinDir: fileURLToPath(new URL('../lib/specialists', import.meta.url)), use: AGENT_EXPERTS_ON }) : null;
 // The version comes from package.json, so a development build (0.2.0-dev.N) reports itself correctly.
 const PKG_VERSION = (() => { try { return JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).version; } catch { return '0.0.0-unknown'; } })();
 const SERVER_INFO = { name: 'e3d-pilot', version: PKG_VERSION };
@@ -220,7 +225,7 @@ function chooseSynthesizer(providers, samplingOn) {
 // clamp (customer async runs only): rounds and max_words are lowered to these maxima; a longer provider list is refused, never
 // truncated. web: the request came from the internal run listener (billing's stored panel, no principal yet).
 // With E3D_MCP_PANEL=1 a hosted tool call first asks billing for the account's panel (before anything is reserved).
-async function planDebate(args, ctx, { clamp = null, web = false } = {}) {
+async function planDebate(args, ctx, { clamp = null, web = false, agentExperts = false } = {}) {
   const question = typeof args.question === 'string' ? args.question.trim() : '';
   if (!question) return { error: 'error: `question` is required' };
   if (question.length > LIMITS.questionChars) return { error: `error: question exceeds ${LIMITS.questionChars} characters` };
@@ -318,9 +323,18 @@ async function planDebate(args, ctx, { clamp = null, web = false } = {}) {
     const f = requireFamilies(providers);
     if (f) return f;
   }
+  // `experts` (agent e3d_quote / e3d_debate with E3D_MCP_EXPERTS_AGENT=1): built-in names, 2 up to the providers actually run, distinct, in order. Anywhere
+  // else the argument is unknown. The pins (id, content hash) are what billing prices and the run checks; lens_bytes comes later, from billing's answer.
+  let expertsRequested = null;
+  if (args.experts !== undefined) {
+    if (!agentExperts) return { error: 'error: unknown argument: experts' };
+    const v = checkAgentExperts(args.experts, agentCatalogue, providers.length);
+    if (!v.ok) return { error: `error: invalid_experts: ${v.reason}`, agentError: agentError('invalid_experts', { message: `invalid experts (${v.reason}); nothing was held or charged`, extra: { reason: v.reason } }) };
+    expertsRequested = v.list;
+  }
   const synthesizer = chooseSynthesizer(providers, samplingOn);
   if (panel) panel = { ...panel, families: familiesOf(providers), synthesizer, ...(REQUIRED.length ? { required: [...REQUIRED] } : {}) };
-  return { question, mode, rounds, maxWords, providers, synthesizer, selection, selectionNote, ...(panel ? { panel } : {}), webSearch, ...searchPlan(providers, webSearch) };
+  return { question, mode, rounds, maxWords, providers, synthesizer, selection, selectionNote, ...(panel ? { panel } : {}), webSearch, ...searchPlan(providers, webSearch), ...(expertsRequested ? { expertsRequested } : {}) };
 }
 
 // Which voices may search in this debate (the same rules bin/e3d-debate applies): only the four API providers, only with the
@@ -446,6 +460,7 @@ const agentMode = (ctx) => Boolean(AGENT_ON && pricingClient && ctx?.principal);
 const stripError = (t) => String(t).replace(/^error:\s*/, '');
 // a plan error as a catalog error: provider problems are panel_unavailable, a billing read that failed is service_unavailable
 function agentPlanError(plan) {
+  if (plan.agentError) return plan.agentError;
   if (plan.code === 'unavailable') return agentError('service_unavailable', { message: 'the debate panel could not be read; nothing was charged' });
   const m = stripError(plan.error);
   return agentError(/provider_not_allowed|not available here|at least 2 available|at most \d+ providers|family|families|required provider/i.test(m) ? 'panel_unavailable' : 'invalid_request', { message: m });
@@ -475,8 +490,20 @@ function agentRunBody(plan, principal) {
   return { principal, providers: [...plan.providers], rounds: plan.rounds, max_words: plan.maxWords, question_bytes: Buffer.byteLength(plan.question, 'utf8'),
     question_sha256: createHash('sha256').update(plan.question, 'utf8').digest('hex'), prompt_version: 'v2', ...(searches ? { searches } : {}),
     // e3d_investigate: the verdict also writes the questions, so billing prices a longer synthesis (CASE_SYNTH_EXTRA) and begin checks the quote was one
-    ...(plan.case ? { case_mode: true } : {}) };
+    ...(plan.case ? { case_mode: true } : {}),
+    ...(plan.expertsRequested ? { experts: plan.expertsRequested.map((e) => ({ id: e.id, hash: e.hash })) } : {}) };
 }
+
+// The echo billing must give when experts were named (spec 5, "fail closed"): its quote or begin answer lists the same ordered ids and the lens size
+// it priced. A billing that does not know the field (older, or flag off and not refusing) ignores it, and then NOTHING is run: the lenses would be unpriced.
+function expertsPriced(plan, ex, lensBytes) {
+  const want = plan.expertsRequested.map((e) => e.id);
+  if (!(ex !== null && typeof ex === 'object' && Array.isArray(ex.ids) && JSON.stringify(ex.ids) === JSON.stringify(want))) return { error: 'billing did not price the experts' };
+  if (!Number.isSafeInteger(lensBytes) || lensBytes < 1 || lensBytes > 4096) return { error: 'billing sent no lens size for the experts' };
+  const x = expertsPlan({ list: plan.expertsRequested, lens_bytes: lensBytes }, plan.providers); // every id built in, pinned hash equal, every lens block within lens_bytes
+  return x.error ? { error: 'an expert does not fit the priced lens size or this server\'s catalogue' } : { experts: x.experts };
+}
+const expertsRefused = (why) => agentError('experts_unavailable', { message: `experts could not be run (${why}); nothing was held or charged` });
 const unexpected = () => agentError('internal_error', { message: 'billing answered with something unexpected' });
 // The limits a debate runs under, from an agent quote that carries them (max_tokens, answer_bytes and, with search, cite_bytes), else null.
 function limitsFromAgentQuote(q, plan) {
@@ -488,11 +515,14 @@ function limitsFromAgentQuote(q, plan) {
     ...(l.maxSearches ? { maxSearches: l.maxSearches, citeBytes: l.citeBytes } : {}) } };
 }
 
+// The experts a result reports: name and version from this server's catalogue (the run pinned the content hash; ids are all that billing stores).
+const expertsResult = (ids) => ids.map((id) => ({ name: id, version: agentCatalogue?.experts.find((e) => e.name === id)?.version ?? null }));
+
 // e3d_quote: free, read-only. The quote row is billing's; nothing is held.
 async function toolQuote(args, _progress, ctx) {
   if (!agentMode(ctx)) return text('error: unknown tool: e3d_quote', true);
   if (args.investigate !== undefined && typeof args.investigate !== 'boolean') return errorResult(agentError('invalid_request', { message: '`investigate` must be a boolean' }));
-  const plan = await planDebate(args, ctx);
+  const plan = await planDebate(args, ctx, { agentExperts: AGENT_EXPERTS_ON });
   if (plan.error) return errorResult(agentPlanError(plan));
   if (args.investigate === true && caseEnabled(ctx)) plan.case = { investigate: true };
   const bad = pricedError([...plan.providers, plan.synthesizer], { env: process.env });
@@ -502,6 +532,10 @@ async function toolQuote(args, _progress, ctx) {
   const r = await pricingClient.agentQuote(body);
   if (!r.ok) return errorResult(r.error);
   if (!validQuote(r.body)) return errorResult(unexpected());
+  if (plan.expertsRequested) {
+    const ok = expertsPriced(plan, r.body.quote.experts, r.body.quote.lens_bytes);
+    if (ok.error) { log(`agent: experts not priced by billing principal=${ctx.principal} (${ok.error})`); return errorResult(expertsRefused(ok.error)); }
+  }
   log(`agent: quote issued principal=${ctx.principal} quote_id=${r.body.quote.quote_id} max_credits=${r.body.quote.max_credits}`);
   return quoteResult(r.body, r.body.quote.search?.enabled === true);
 }
@@ -520,6 +554,7 @@ function agentReplay(b, plan, args) {
     positions: (Array.isArray(res.positions) ? res.positions : []).map((p) => ({ provider: p.provider, text: stripAnswerPrefix(String(p.position ?? '')) })),
     mode: args.mode ?? 'quick', providers: Array.isArray(d.providers) && d.providers.length ? d.providers : plan.providers, rounds_ran: Number.isSafeInteger(d.rounds) ? d.rounds : plan.rounds,
     warnings: [], replayed: true, ...(typeof b.debate_id === 'string' ? { debate_id: b.debate_id } : {}),
+    ...(AGENT_EXPERTS_ON && Array.isArray(b.experts?.ids) && b.experts.ids.length ? { experts: expertsResult(b.experts.ids.filter((x) => typeof x === 'string').slice(0, 16)) } : {}),
     ...(res.web_search && typeof res.web_search === 'object' ? { web_search: res.web_search } : {}),
     ...a,
   };
@@ -539,6 +574,10 @@ async function agentPrepare(args, plan, principal) {
     if (!r.ok) return { error: r.error };
     if (!validQuote(r.body)) return { error: unexpected() };
     aq = r.body.quote; quoteId = aq.quote_id;
+    if (plan.expertsRequested) {
+      const ok = expertsPriced(plan, aq.experts, aq.lens_bytes);
+      if (ok.error) { log(`agent: experts not priced by billing principal=${principal} (${ok.error})`); return { error: expertsRefused(ok.error) }; }
+    }
   }
   // a quote the caller brought is checked by billing at begin; its search flag is what this server would have asked for
   const searchEnabled = aq ? aq.search?.enabled === true : Boolean(body.searches);
@@ -550,10 +589,17 @@ async function agentPrepare(args, plan, principal) {
     if (!lim.ok) return { error: agentBeginError(lim) };
     if ((aq && (lim.quote.credits !== aq.max_credits || lim.quote.rateVersion !== aq.rate_version)) || Boolean(lim.quote.maxSearches) !== searchEnabled) return { error: agentError('quote_changed') };
   }
-  const br = await pricingClient.agentBegin({ principal, idempotency_key: args.idempotency_key, quote_id: quoteId, question_sha256: body.question_sha256, providers: body.providers, rounds: body.rounds, max_words: body.max_words, search_enabled: searchEnabled, ...(body.case_mode ? { case_mode: true } : {}) });
+  const br = await pricingClient.agentBegin({ principal, idempotency_key: args.idempotency_key, quote_id: quoteId, question_sha256: body.question_sha256, providers: body.providers, rounds: body.rounds, max_words: body.max_words, search_enabled: searchEnabled, ...(body.case_mode ? { case_mode: true } : {}), ...(body.experts ? { experts: body.experts } : {}) });
   if (!br.ok) return { error: br.error };
   if (br.body.status === 'replayed') { log(`agent: replayed principal=${principal} quote_id=${quoteId}`); return { replay: agentReplay(br.body, plan, args) }; }
   if (br.body.status !== 'new' || br.body.request_id !== quoteId) return { error: unexpected() };
+  // With experts, begin's answer is the authority (it validated them against the quote row, whichever way the quote came): same echo check, and the plan
+  // now carries the run's experts exactly as a web run does (executeDebate adds --specialist --builtin-only --fill-pool --lens-bytes-max --expert-pin).
+  if (plan.expertsRequested) {
+    const ok = expertsPriced(plan, br.body.experts, br.body.lens_bytes);
+    if (ok.error) { log(`agent: begin without priced experts principal=${principal} quote_id=${quoteId} (${ok.error})`); return { error: expertsRefused(ok.error) }; }
+    plan.experts = ok.experts;
+  }
   log(`agent: begin new principal=${principal} quote_id=${quoteId}`);
   return { meta: { request_id: quoteId, quote: async () => lim } };
 }
@@ -715,14 +761,16 @@ async function toolDebate(args, progress, ctx, caseOpts = null) {
   const agentOn = agentMode(ctx);
   const agent = agentOn && (args.idempotency_key !== undefined || args.quote_id !== undefined);
   if (agent) { const e = agentArgsError(args); if (e) return errorResult(e); }
-  const plan = await planDebate(caseOpts ? { ...args, question: caseOpts.question } : args, ctx);
-  if (plan.error) return agent ? errorResult(agentPlanError(plan)) : text(plan.error, true);
+  const plan = await planDebate(caseOpts ? { ...args, question: caseOpts.question } : args, ctx, { agentExperts: AGENT_EXPERTS_ON });
+  if (plan.error) return agent ? errorResult(agentPlanError(plan)) : plan.agentError ? errorResult(plan.agentError) : text(plan.error, true);
   if (caseOpts) plan.case = caseOpts.run;
   if (caseOpts?.experts) {
     const x = expertsPlan({ list: caseOpts.experts, lens_bytes: EXPERTS_LIMITS.lensBytes[1] }, plan.providers);
     if (x.error) return text(x.error, true);
     plan.experts = x.experts;
   }
+  // experts are priced only on the agent path (quote, key and begin): without a key the legacy path would run them unpriced, so it refuses
+  if (plan.expertsRequested && !(agent && args.idempotency_key !== undefined)) return errorResult(agentError('invalid_request', { message: 'experts need an idempotency_key, and the quote_id from e3d_quote with the same experts' }));
   const { question, mode, rounds, maxWords, providers, synthesizer, selection, selectionNote, panel } = plan;
 
   // Refuse BEFORE spending if the worst case for this request would break today's cap.
@@ -771,6 +819,7 @@ async function toolDebate(args, progress, ctx, caseOpts = null) {
     ...(seats ? { seats_requested: seats.seats_requested, seats_answered: seats.seats_answered, seats_unavailable: seats.seats_unavailable, flags: seats.flags,
       ...(seats.synthesizer_fallback ? { synthesizer_fallback: seats.synthesizer_fallback } : {}), ...(seats.consensus_note ? { consensus_note: seats.consensus_note } : {}) } : {}),
     ...(panel ? { panel } : {}),
+    ...(plan.experts ? { experts: expertsResult(plan.experts.list.map((e) => e.id)) } : {}),
     usage: { model_calls: spent.calls, est_input_tokens: spent.inTokens, est_output_tokens: spent.outTokens, searches: webSearch.searches_used, estimate: billing?.pricing?.usage.source !== 'vendor' },
     web_search: webSearch,
     budget,
@@ -1242,7 +1291,7 @@ async function handle(msg, conn = stdioConn) {
         protocolVersion: SUPPORTED_PROTOCOLS.includes(want) ? want : SUPPORTED_PROTOCOLS[0],
         capabilities: { tools: { listChanged: false }, prompts: { listChanged: false } },
         serverInfo: SERVER_INFO,
-        instructions: conn.hosted && AGENT_ON ? [AGENT_INSTRUCTIONS, ...(galleryRead ? [GALLERY_INSTRUCTION] : []), ...(expertsRead ? [EXPERTS_INSTRUCTION] : [])].join('\n\n')
+        instructions: conn.hosted && AGENT_ON ? [AGENT_INSTRUCTIONS, ...(galleryRead ? [GALLERY_INSTRUCTION] : []), ...(expertsRead ? [AGENT_EXPERTS_ON ? EXPERTS_USE_INSTRUCTION : EXPERTS_INSTRUCTION] : [])].join('\n\n')
           : conn.hosted
           ? 'Use e3d_debate for contestable decisions where independent model perspectives and recorded dissent add value; always report its dissent, and never present a split verdict as settled. It uses a shared usage budget (see e3d_usage); do not use it for simple lookups.'
           : 'Use e3d_debate for contestable decisions where independent model perspectives and recorded dissent add value; always report its dissent. It costs credits; do not use it for simple lookups. The e3d_pilot_* tools run a human-gated pipeline: propose an idea, a human approves it (e3d_pilot_approve tells you how; never approve on your own), e3d_pilot_implement drafts and negotiates a spec and pauses, e3d_pilot_code_plan shows the plan, and only after the user agrees does e3d_pilot_execute write code and open a draft PR. Tools marked FREE spend nothing; tools marked SPENDS MODEL CREDITS do. Merging is never available here.',
@@ -1261,7 +1310,7 @@ async function handle(msg, conn = stdioConn) {
       // the async debate tools exist only while the service advertises finalize and fetch
       const gated = (asyncEnabled() ? TOOLS : TOOLS.filter((t) => !ASYNC_TOOLS.has(t.name))).filter((t) => t.name !== 'e3d_investigate' || caseEnabled(conn));
       // agent mode (hosted, per-token): e3d_debate takes quote_id and idempotency_key, and e3d_quote is offered (to whoever may debate)
-      const listed = AGENT_ON && conn.hosted ? gated.flatMap((t) => (t.name === 'e3d_debate' ? [extendDebateTool(t), ...(permits(conn, 'e3d_quote') ? [quoteTool(t)] : [])] : t.name === 'e3d_investigate' ? [extendDebateTool(t)] : [t])) : gated;
+      const listed = AGENT_ON && conn.hosted ? gated.flatMap((t) => (t.name === 'e3d_debate' ? [extendDebateTool(t, { experts: AGENT_EXPERTS_ON }), ...(permits(conn, 'e3d_quote') ? [quoteTool(t, { experts: AGENT_EXPERTS_ON })] : [])] : t.name === 'e3d_investigate' ? [extendDebateTool(t)] : [t])) : gated;
       return reply({ tools: conn.allowed ? listed.filter((t) => permits(conn, t.name)) : listed });
     }
     case 'tools/call': {
@@ -1331,6 +1380,10 @@ if (!EXPERTS_CONFIG.ok) {
 }
 if (!AGENT_CONFIG.ok) {
   process.stderr.write(`[e3d-mcp] refusing to start: ${AGENT_CONFIG.errors.join('; ')}\n`);
+  process.exit(2);
+}
+if (!EXPERTS_AGENT.ok || (EXPERTS_AGENT.on && !AGENT_ON)) {
+  process.stderr.write(`[e3d-mcp] refusing to start: ${EXPERTS_AGENT.ok ? 'E3D_MCP_EXPERTS_AGENT=1 needs the agent contract (hosted --http mode with E3D_MCP_AUTH_URL and E3D_MCP_PRICING=per_token, E3D_MCP_AGENT not 0)' : EXPERTS_AGENT.errors.join('; ')}\n`);
   process.exit(2);
 }
 if (!PRICING_CONFIG.ok) {

@@ -72,7 +72,7 @@ experts than providers is refused, seats are never added), and writes one line a
 `**Experts (perspectives, not measured):** skeptic on claude, customer on gemini; plain seat: codex.` (the synthesis prompt never carries it).
 `e3d-mcp`'s internal run listener accepts the run fields `experts` (`[{id, hash}]`, 2 to 16 distinct ids) and `lens_bytes` (1 to 4096) only with
 `E3D_MCP_EXPERTS_RUN=1` (which needs `E3D_MCP_PRICING=per_token`; any other value refuses to start) and then advertises the capability `experts_v1`;
-without it both fields are refused `400 invalid`. The `e3d_debate` MCP tool does not take experts. Stored result positions hold the answer only (no web-search source list or notices), and each position's `model` comes from the seat's usage line ([web-search-interface.md](web-search-interface.md) section 6).
+without it both fields are refused `400 invalid`. The `e3d_debate` MCP tool takes `experts` only with `E3D_MCP_EXPERTS_AGENT=1` (hosted agent mode; it needs `E3D_MCP_EXPERTS=1`, an `idempotency_key`, and a billing service that prices and echoes them: [the Phase 2b.2 spec](specs/experts-phase2b2-mcp-listing-and-use-spec.md)); otherwise it does not. Stored result positions hold the answer only (no web-search source list or notices), and each position's `model` comes from the seat's usage line ([web-search-interface.md](web-search-interface.md) section 6).
 
 ## Safety
 
