@@ -1,6 +1,6 @@
 # Experts, Phase 2b.2: listing and using experts through the hosted MCP (specification, docs only)
 
-**Status:** draft 1, 2026-11-06. No code, no flag, no deploy, no model call. Owner request of 2026-11-06: let people use the hosted experts (skills) from their own AI through the MCP, not only from the web page, and do not do it by pasting skill text into the question.
+**Status:** draft 1, 2026-11-06; **owner accepted D19 to D25 as recommended on 2026-11-06** (section 10). No code, no flag, no deploy, no model call. Owner request of 2026-11-06: let people use the hosted experts (skills) from their own AI through the MCP, not only from the web page, and do not do it by pasting skill text into the question.
 **Parents:** [Phase 2b.1](experts-phase2b1-hosted-lenses-spec.md) (the web path, live), [Phase 2a](experts-phase2a-seats-and-suggest-spec.md), [Phase 1](experts-phase1-private-experts-spec.md) (section 1b: the free listing tools), [Phase 0](experts-phase0-overlap-map-and-eval-plan.md) (D5, D6, D11). Cloud contract: `e3d-pilot-cloud` `docs/agent-contract-spec.md`.
 **Evidence tags:** **[E: path]** read today (engine paths are this repo at 3636ad2; `cloud:` paths are `e3d-pilot-cloud` origin/main at ac57a58, read-only). **[G]** guess. **[N]** not verified.
 
