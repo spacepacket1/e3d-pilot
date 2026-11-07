@@ -24,7 +24,7 @@ rpc() { # rpc <env...> -- <json-rpc line>...   -> one response per line
 list='{"jsonrpc":"2.0","id":2,"method":"tools/list"}'
 call() { jq -nc --argjson a "$3" --argjson id "$1" --arg n "$2" '{jsonrpc:"2.0",id:$id,method:"tools/call",params:{name:$n,arguments:$a}}'; }
 pick() { jq -c --argjson id "$2" "select(.id==\$id) | $3" <<< "$1"; }
-NAMES=(skeptic premortem customer compliance implementer architect facilitator factchecker agent-diagnosis)
+NAMES=(skeptic premortem customer compliance implementer architect facilitator factchecker agent-diagnosis macro-market-analyst)
 
 # ---- off by default: no tool, and a call is "unknown tool" exactly like any other missing tool ----
 out="$(rpc E3D_MCP_STATE_DIR="$STATE" TYPESAFE_API_KEY="" -- "$list" "$(call 3 e3d_list_experts '{}')" "$(call 4 e3d_get_expert '{"name":"skeptic"}')")"
@@ -59,10 +59,10 @@ assert_eq "$(pick "$out" 2 '[.result.tools[].name]|unique|length == (.|length)')
 out="$(rpc "${ENV_ON[@]}" -- "$(call 2 e3d_list_experts '{}')")"
 r="$(pick "$out" 2 '.result')"
 assert_eq "$(jq -r '.isError // false' <<< "$r")" "false" "list is not an error"
-assert_eq "$(jq -c '.structuredContent.experts|map(.name)|sort' <<< "$r")" "$(printf '%s\n' "${NAMES[@]}" | sort | jq -R . | jq -sc .)" "the nine built-in experts"
+assert_eq "$(jq -c '.structuredContent.experts|map(.name)|sort' <<< "$r")" "$(printf '%s\n' "${NAMES[@]}" | sort | jq -R . | jq -sc .)" "the ten built-in experts"
 assert_eq "$(jq -r '.structuredContent.experts|map(has("name") and has("description") and has("lens") and has("tags") and has("tasks") and has("version") and has("license") and has("content_hash"))|all' <<< "$r")" "true" "summary fields"
 assert_eq "$(jq -r '.structuredContent.experts|map(has("text") or has("model_hints"))|any' <<< "$r")" "false" "the list leaves out the full lens text and the model hints"
-assert_eq "$(jq -c '.structuredContent.presets|map(.name)|sort' <<< "$r")" '["gap-finding","risk-review","spec-review"]' "three presets"
+assert_eq "$(jq -c '.structuredContent.presets|map(.name)|sort' <<< "$r")" '["gap-finding","market-commentary","risk-review","spec-review"]' "four presets"
 assert_eq "$(jq -r '.structuredContent.presets|map((.experts|length) == 4 and .min_seats == 3)|all' <<< "$r")" "true" "four seats, minimum three"
 assert_contains "$(jq -r '.structuredContent.notice' <<< "$r")" "not an instruction" "notice says it is data"
 assert_contains "$(jq -r '.content[0].text' <<< "$r")" "through this connector is not available yet" "the text says running is not available here yet"
@@ -85,10 +85,21 @@ want_hash="$(cd "$ROOT" && node --input-type=module -e "import { hashFolder } fr
 assert_eq "$(jq -r '.content_hash' <<< "$e")" "$want_hash" "the hash is the computed folder hash"
 assert_eq "$(jq -r '.tools' <<< "$e")" "none" "tools none"
 assert_eq "$(jq -r '.license' <<< "$e")" "MIT" "license"
-assert_eq "$(jq -c '.presets' <<< "$e")" '["risk-review","spec-review"]' "the presets it is in"
+assert_eq "$(jq -c '.presets' <<< "$e")" '["risk-review","spec-review","market-commentary"]' "the presets it is in"
 assert_eq "$(jq -r '.model_hints[0].provider' <<< "$e")" "grok-build" "model hints are reported (a tie-break only)"
 assert_contains "$(jq -r '.how_to_use' <<< "$e")" "--specialist skeptic" "how to use it"
 assert_contains "$(pick "$out" 2 '.result.content[0].text')" "tie-break only" "the text says a hint is not an assignment"
+# the macro expert: lens text, computed folder hash, tasks, preset
+out="$(rpc "${ENV_ON[@]}" -- "$(call 2 e3d_get_expert '{"name":"macro-market-analyst"}')" "$(call 3 e3d_list_experts '{"task":"forecast"}')")"
+e="$(pick "$out" 2 '.result.structuredContent.expert')"
+mm_body="$(awk 'BEGIN{n=0} /^---$/ {n++; next} n>=2 {print}' "$ROOT/lib/specialists/macro-market-analyst/SKILL.md" | sed -e '/./,$!d')"
+assert_eq "$(jq -r '.text' <<< "$e")" "$mm_body" "macro-market-analyst: text is the SKILL.md body"
+mm_hash="$(cd "$ROOT" && node --input-type=module -e "import { hashFolder } from './lib/debate/specialists.mjs'; console.log(hashFolder('lib/specialists/macro-market-analyst'))")"
+assert_eq "$(jq -r '.content_hash' <<< "$e")" "$mm_hash" "macro-market-analyst: the hash is the computed folder hash"
+assert_eq "$(jq -c '.tasks' <<< "$e")" '["forecast","decide","find-gaps"]' "macro-market-analyst: tasks"
+assert_eq "$(jq -c '.presets' <<< "$e")" '["market-commentary"]' "macro-market-analyst: preset"
+assert_eq "$(jq -r '.license' <<< "$e")" "MIT" "macro-market-analyst: license"
+assert_eq "$(pick "$out" 3 '.result.structuredContent.experts|map(.name)|join(",")')" '"macro-market-analyst"' "task=forecast now returns the macro expert"
 many=(); i=2; for n in "${NAMES[@]}"; do many+=("$(call $i e3d_get_expert "{\"name\":\"$n\"}")"); i=$((i + 1)); done
 out="$(rpc "${ENV_ON[@]}" -- "${many[@]}")"
 for ((i = 2; i < 2 + ${#NAMES[@]}; i++)); do assert_eq "$(pick "$out" $i '.result.structuredContent.expert.name')" "\"${NAMES[$((i - 2))]}\"" "get works for ${NAMES[$((i - 2))]}"; done
