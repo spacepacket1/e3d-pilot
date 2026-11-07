@@ -846,6 +846,14 @@ function suggestExperts(question) {
   } catch { return null; }
 }
 
+// e3d_investigate as listed to a hosted client: experts exist only with E3D_MCP_EXPERTS_AGENT=1 and are named again every round.
+function hostedInvestigateTool(t) {
+  const props = { ...t.inputSchema.properties };
+  if (!AGENT_EXPERTS_ON) delete props.experts;
+  else props.experts = { ...props.experts, description: props.experts.description + ' Name them again on every round (a hosted server keeps no case record); pass the same experts to e3d_quote with investigate: true for round 1. Needs an idempotency_key.' };
+  return { ...t, inputSchema: { ...t.inputSchema, properties: props } };
+}
+
 async function toolCase(args, progress, ctx) {
   const { question, case_id: caseId, answers, experts: expertsArg, ...rest } = args;
   const principal = ctx?.principal ?? 'local';
@@ -857,9 +865,13 @@ async function toolCase(args, progress, ctx) {
   // experts: catalogue ids, pinned to the content hash they have now (a later round is pinned to the stored hash, so an edited expert is refused)
   const ec = checkExperts(expertsArg);
   if (ec.error) return text(`error: invalid: ${ec.error}`, true);
-  if (ec.ids && ctx?.hosted) return text('error: invalid: experts on e3d_investigate are not available on a hosted server', true);
+  // Hosted (E3D_MCP_EXPERTS_AGENT=1): the experts go to the agent path like e3d_debate's (priced by billing, echo-checked, key required), every round:
+  // a hosted server keeps no case record, so nothing carries over and each round names its experts again.
+  if (ec.ids && ctx?.hosted && !AGENT_EXPERTS_ON) return text('error: invalid: experts on e3d_investigate are not available on a hosted server', true);
+  const hostedExperts = Boolean(ec.ids && ctx?.hosted);
+  if (hostedExperts) rest.experts = ec.ids;
   let experts = null;
-  if (ec.ids) {
+  if (ec.ids && !hostedExperts) {
     let loaded;
     try { loaded = loadExperts({ tiers: [{ name: 'built-in', dir: BUILTIN_EXPERTS_DIR }] }).experts; } catch { return text('error: invalid: the built-in experts could not be read', true); }
     const byName = new Map(loaded.map((e) => [e.name, e]));
@@ -876,7 +888,7 @@ async function toolCase(args, progress, ctx) {
     const answerList = normalizeAnswers(checked.answers);
     q = buildQuestion({ prev, answers: answerList }).question;
     run = { id, continueDir: dir, answers: answerList };
-    if (!experts) experts = await caseStore.experts(dir);
+    if (!experts && !ctx?.hosted) experts = await caseStore.experts(dir);
   } else if (typeof question !== 'string') return text('error: `question` must be a string', true);
   if (experts) run.experts = experts;
   const res = await toolDebate(rest, progress, ctx, { question: q, run, experts });
@@ -1310,7 +1322,7 @@ async function handle(msg, conn = stdioConn) {
       // the async debate tools exist only while the service advertises finalize and fetch
       const gated = (asyncEnabled() ? TOOLS : TOOLS.filter((t) => !ASYNC_TOOLS.has(t.name))).filter((t) => t.name !== 'e3d_investigate' || caseEnabled(conn));
       // agent mode (hosted, per-token): e3d_debate takes quote_id and idempotency_key, and e3d_quote is offered (to whoever may debate)
-      const listed = AGENT_ON && conn.hosted ? gated.flatMap((t) => (t.name === 'e3d_debate' ? [extendDebateTool(t, { experts: AGENT_EXPERTS_ON }), ...(permits(conn, 'e3d_quote') ? [quoteTool(t, { experts: AGENT_EXPERTS_ON })] : [])] : t.name === 'e3d_investigate' ? [extendDebateTool(t)] : [t])) : gated;
+      const listed = AGENT_ON && conn.hosted ? gated.flatMap((t) => (t.name === 'e3d_debate' ? [extendDebateTool(t, { experts: AGENT_EXPERTS_ON }), ...(permits(conn, 'e3d_quote') ? [quoteTool(t, { experts: AGENT_EXPERTS_ON })] : [])] : t.name === 'e3d_investigate' ? [hostedInvestigateTool(extendDebateTool(t, { experts: AGENT_EXPERTS_ON }))] : [t])) : gated;
       return reply({ tools: conn.allowed ? listed.filter((t) => permits(conn, t.name)) : listed });
     }
     case 'tools/call': {

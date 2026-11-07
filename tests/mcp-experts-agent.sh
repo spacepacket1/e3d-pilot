@@ -218,6 +218,39 @@ for variant in 'reordered:["customer","skeptic"]' 'none:null'; do
 done
 echo "ok - begin: other order or no experts against a quote with experts is quote_mismatch [experts], nothing ran"
 
+# ---------------------------------------------------------------- e3d_investigate with experts (hosted, E3D_MCP_CASE=1): priced as a case run WITH lenses
+start_server inv $EXA E3D_MCP_CASE=1
+SIDI="$(sid_of inv)"
+tl="$(list inv "$SIDI")"
+assert_eq "$(jq -c '[.result.tools[] | select(.name=="e3d_investigate") | .inputSchema.properties.experts | [.type, .minItems]]' <<< "$tl")" '[["array",2]]' "e3d_investigate lists experts when the use flag is on"
+assert_contains "$(jq -r '.result.tools[] | select(.name=="e3d_investigate") | .inputSchema.properties.experts.description' <<< "$tl")" "on every round"
+res="$(tool inv "$SIDI" e3d_quote "$(jq -nc --arg q "$Q inv" --argjson p "$PR" --argjson e "$EX" '{question:$q,providers:$p,rounds:2,experts:$e,investigate:true}')")"
+assert_eq "$(jq -r '.result.structuredContent.experts.names | join(",")' <<< "$res")" "skeptic,customer" "quote of round 1 with experts and investigate: $(jq -c . <<< "$res" | head -c 300)"
+QID_I="$(jq -r .result.structuredContent.quote_id <<< "$res")"
+n0="$(n_debates)"
+res="$(tool inv "$SIDI" e3d_investigate "$(jq -nc --arg q "$Q inv" --argjson p "$PR" --argjson e "$EX" '{question:$q,providers:$p,rounds:2,experts:$e}')")"
+assert_eq "$(jq -r '.result.structuredContent.error.code' <<< "$res")" "invalid_request" "e3d_investigate with experts and no idempotency_key: refused"
+assert_eq "$(n_debates)" "$n0" "nothing ran without the key"
+b0="$(n_agent begin)"
+res="$(tool inv "$SIDI" e3d_investigate "$(jq -nc --arg q "$Q inv" --argjson p "$PR" --argjson e "$EX" --arg k "key-inv-$(openssl rand -hex 6)" --arg id "$QID_I" '{question:$q,providers:$p,rounds:2,experts:$e,idempotency_key:$k,quote_id:$id}')")"
+assert_eq "$(jq -r '.result.isError // false' <<< "$res")" "false" "e3d_investigate with experts ran: $(jq -c . <<< "$res" | head -c 400)"
+assert_eq "$(jq -r '.result.structuredContent.experts | map(.name) | join(",")' <<< "$res")" "skeptic,customer" "the result names the experts"
+assert_eq "$(( $(n_debates) - n0 ))" "1" "one debate ran, with the lenses"
+assert_eq "$(( $(n_agent begin) - b0 ))" "1" "begin was called once"
+# round 2 without experts on a hosted server: no stored case, priced and run without lenses
+n1="$(n_debates)"
+res="$(tool inv "$SIDI" e3d_investigate "$(jq -nc --arg q "$Q inv" --argjson p "$PR" --arg k "key-inv2-$(openssl rand -hex 6)" '{question:$q,providers:$p,rounds:2,idempotency_key:$k}')")"
+assert_eq "$(jq -r '.result.structuredContent.experts // "none"' <<< "$res")" "none" "a case round without experts carries none"
+echo "ok - hosted e3d_investigate takes experts: listed, quoted with investigate, key required, runs with the lenses, none unless named"
+
+# the use flag OFF: e3d_investigate does not list experts and refuses them
+start_server invoff E3D_MCP_EXPERTS=1 E3D_MCP_CASE=1
+SIDF="$(sid_of invoff)"
+assert_eq "$(jq -c '[.result.tools[] | select(.name=="e3d_investigate") | .inputSchema.properties | has("experts")]' <<< "$(list invoff "$SIDF")")" "[false]" "no experts argument on e3d_investigate with the use flag off"
+res="$(tool invoff "$SIDF" e3d_investigate "$(jq -nc --arg q "$Q" --argjson p "$PR" --argjson e "$EX" --arg k "key-f-$(openssl rand -hex 6)" '{question:$q,providers:$p,rounds:2,experts:$e,idempotency_key:$k}')")"
+assert_eq "$(jq -r '.result.isError' <<< "$res")" "true" "experts refused with the use flag off"
+echo "ok - use flag off: e3d_investigate neither lists nor accepts experts"
+
 # ---------------------------------------------------------------- an OLDER billing ignores the field: the lenses are never run unpriced
 start_stub old STUB_AGENT_QUOTE_LIMITS=1
 start_server old $EXA
