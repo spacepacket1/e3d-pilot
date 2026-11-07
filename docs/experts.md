@@ -14,7 +14,7 @@ E3D_SPECIALISTS=1 e3d-debate --show-specialist skeptic
 ## Presets
 
 `--panel` takes a preset from `lib/specialists/panels.json`: `risk-review` (skeptic, premortem, compliance, implementer), `spec-review`
-(implementer, architect, skeptic, customer) and `gap-finding` (facilitator, customer, architect, factchecker). A preset has four seats and
+(implementer, architect, skeptic, customer) `gap-finding` (facilitator, customer, architect, factchecker) and `market-commentary` (macro-market-analyst, factchecker, skeptic, customer). A preset has four seats and
 a minimum of three. A preset is no longer shrunk for lack of providers; a panel holds at most 6 seats, and an explicit `--specialist` list
 longer than that refuses (a preset longer than that drops its lowest-priority experts, listed in the receipt).
 
