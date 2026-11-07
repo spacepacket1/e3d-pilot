@@ -14,7 +14,7 @@ E3D_SPECIALISTS=1 e3d-debate --show-specialist skeptic
 ## Presets
 
 `--panel` takes a preset from `lib/specialists/panels.json`: `risk-review` (skeptic, premortem, compliance, implementer), `spec-review`
-(implementer, architect, skeptic, customer) and `gap-finding` (facilitator, customer, architect, factchecker). A preset has four seats and
+(implementer, architect, skeptic, customer) `gap-finding` (facilitator, customer, architect, factchecker) and `market-commentary` (macro-market-analyst, factchecker, skeptic, customer). A preset has four seats and
 a minimum of three. A preset is no longer shrunk for lack of providers; a panel holds at most 6 seats, and an explicit `--specialist` list
 longer than that refuses (a preset longer than that drops its lowest-priority experts, listed in the receipt).
 
@@ -92,6 +92,6 @@ Design and decisions: `docs/specs/experts-phase1-private-experts-spec.md`.
 
 ## Status and methodology
 
-**Available today:** the command-line flags above, `--suggest-panel` and `--show-suggest-rules` (a free rule-based suggestion: it matches trigger words, runs nothing, and is not a measurement), the eight built-in experts and three presets, the receipt, and the free read-only MCP tools `e3d_list_experts` and `e3d_get_expert` (off unless `E3D_MCP_EXPERTS=1`). Hosted web debates on pilot.e3d.ai can use skills (see Hosted runs). Several experts on one provider are supported (seats `claude`, `claude.2`). **Not built:** passing skills through the `e3d_debate` MCP tool, more skills than vendors on a hosted panel, automatic (model-chosen) skill selection, users' own skills on the hosted server, any marketplace, a preview of the panel and its cost before running (`--show-panel`, see [the Phase 2a spec](specs/experts-phase2a-seats-and-suggest-spec.md)).
+**Available today:** the command-line flags above, `--suggest-panel` and `--show-suggest-rules` (a free rule-based suggestion: it matches trigger words, runs nothing, and is not a measurement), the nine built-in experts (plus agent-diagnosis) and four presets (adding market-commentary), the receipt, and the free read-only MCP tools `e3d_list_experts` and `e3d_get_expert` (off unless `E3D_MCP_EXPERTS=1`). Hosted web debates on pilot.e3d.ai can use skills (see Hosted runs). Several experts on one provider are supported (seats `claude`, `claude.2`). **Not built:** passing skills through the `e3d_debate` MCP tool, more skills than vendors on a hosted panel, automatic (model-chosen) skill selection, users' own skills on the hosted server, any marketplace, a preview of the panel and its cost before running (`--show-panel`, see [the Phase 2a spec](specs/experts-phase2a-seats-and-suggest-spec.md)).
 
 **Not measured:** whether experts change answer quality, and by how much. The one test so far (planted errors, 2026-11-02, #63) was inconclusive: +2.8 points, 95% interval -4.6 to +10.2, cost 1.09x, false alarms not measured; four other comparisons are not run. The cost model, the coverage model, the measurement plan and the rule that decides whether a result is claimed are in the [methodology draft](methodology/expert-councils.md); its results table is marked pending until something has been measured.

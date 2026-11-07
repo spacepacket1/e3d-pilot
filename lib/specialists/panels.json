@@ -15,6 +15,11 @@
       "description": "Surface the perspectives and questions nobody has covered yet.",
       "min_seats": 3,
       "experts": ["facilitator", "customer", "architect", "factchecker"]
+    },
+    "market-commentary": {
+      "description": "Read a day's market and macro headlines for what they mean, what to trust and what a retail investor needs to hear.",
+      "min_seats": 3,
+      "experts": ["macro-market-analyst", "factchecker", "skeptic", "customer"]
     }
   }
 }

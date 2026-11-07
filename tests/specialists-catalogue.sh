@@ -7,7 +7,7 @@ source "$ROOT/tests/fixtures/specialists/harness.sh"
 TMPS=()
 trap 'for d in "${TMPS[@]}"; do rm -rf "$d"; done' EXIT
 fail() { echo "FAIL: $*" >&2; exit 1; }
-NAMES=(skeptic premortem customer compliance implementer architect facilitator factchecker)
+NAMES=(skeptic premortem customer compliance implementer architect facilitator factchecker macro-market-analyst)
 CLI="$ROOT/lib/debate/specialists-cli.mjs"
 H="$(mktemp -d)"; TMPS+=("$H")
 
@@ -55,7 +55,7 @@ import { join } from 'node:path';
 const [, , root, ...names] = process.argv;
 const panels = JSON.parse(readFileSync(join(root, 'lib/specialists/panels.json'), 'utf8'));
 assert.equal(panels.schema, 'panels/v1');
-assert.deepEqual(Object.keys(panels.presets).sort(), ['gap-finding', 'risk-review', 'spec-review']);
+assert.deepEqual(Object.keys(panels.presets).sort(), ['gap-finding', 'market-commentary', 'risk-review', 'spec-review']);
 const used = new Map(names.map((n) => [n, []]));
 for (const [id, p] of Object.entries(panels.presets)) {
   assert.equal(p.experts.length, 4, `${id}: four seats, matching Pilot's four-vendor council`);
@@ -74,10 +74,10 @@ console.log('presets: ok');
 NODE
 
 # ---- every preset runs in a stub debate and each seat receives its own lens, once ----
-declare -a MARKS=("skeptic:find the strongest reason this should NOT be done" "premortem:Assume this shipped and failed" "customer:You are the person who would use or pay" "compliance:Review as a compliance and security officer" "implementer:You will implement this tomorrow" "architect:Review the design for coupling" "facilitator:list the 3 questions a careful person" "factchecker:say TRUE, FALSE or UNVERIFIABLE")
+declare -a MARKS=("skeptic:find the strongest reason this should NOT be done" "premortem:Assume this shipped and failed" "customer:You are the person who would use or pay" "compliance:Review as a compliance and security officer" "implementer:You will implement this tomorrow" "architect:Review the design for coupling" "facilitator:list the 3 questions a careful person" "factchecker:say TRUE, FALSE or UNVERIFIABLE" "macro-market-analyst:Plain English for retail investors")
 mark_of() { local m; for m in "${MARKS[@]}"; do [[ "${m%%:*}" == "$1" ]] && { printf '%s' "${m#*:}"; return; }; done; }
 PROVS=(claude codex gemini grok-build)
-for preset in risk-review spec-review gap-finding; do
+for preset in risk-review spec-review gap-finding market-commentary; do
   T="$(mktemp -d)"; TMPS+=("$T")
   build_root "$T" "$ROOT/bin/e3d-debate" v2 "${PROVS[@]}"
   cp -R "$ROOT/lib/specialists/." "$T/lib/specialists/"

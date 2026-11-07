@@ -1,18 +1,19 @@
 # Built-in experts
 
-Eight starter experts (plus `agent-diagnosis`, below), each a standard skill folder (`SKILL.md`) with an optional `e3d/expert.json`. They come from the October design
+Nine starter experts (plus `agent-diagnosis`, below), each a standard skill folder (`SKILL.md`) with an optional `e3d/expert.json`. They come from the October design
 (`docs/prompt-review-2026-10.md`, Part 3). Use them with `E3D_SPECIALISTS=1`; see [`docs/experts.md`](../../docs/experts.md).
 
 | Expert | Lens | Presets |
 | --- | --- | --- |
-| `skeptic` | assume it fails; find the cheapest way to prove it | risk-review, spec-review |
+| `skeptic` | assume it fails; find the cheapest way to prove it | market-commentary, risk-review, spec-review |
 | `premortem` | it is a year later and this failed; write the obituary | risk-review |
 | `compliance` | regulator, security and privacy reviewer | risk-review |
 | `implementer` | the engineer who has to build it | risk-review, spec-review |
 | `architect` | systems and long-term maintenance | spec-review, gap-finding |
-| `customer` | the end user's view, ignoring implementation | spec-review, gap-finding |
+| `customer` | the end user's view, ignoring implementation | gap-finding, market-commentary, spec-review |
 | `facilitator` | keep the panel on the question; find the missing perspective | gap-finding |
-| `factchecker` | verify claims, and say when they cannot be verified | gap-finding |
+| `factchecker` | verify claims, and say when they cannot be verified | gap-finding, market-commentary |
+| `macro-market-analyst` | direction, channel and size of each data point's effect on financial stress | market-commentary |
 
 Not shipped yet: `judge` (needs the synthesis rewrite), `editor` and `writer` (need a script mode), `futurist` (needs a resolution log).
 

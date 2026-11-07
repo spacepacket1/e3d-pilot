@@ -1,0 +1,9 @@
+{
+  "schema": "expert/v1",
+  "tasks": [
+    "forecast",
+    "decide",
+    "find-gaps"
+  ],
+  "tools": "none"
+}
