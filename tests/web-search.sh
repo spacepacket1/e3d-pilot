@@ -143,6 +143,14 @@ done
 for k in "$AKEY" "$OKEY" "$XKEY" "$GKEY"; do grep -F -- "$k" "$T/api.log" | jq -r .body | grep -qF -- "$k" && fail "a key was sent in a request body"; done
 ok "no queries, page text, keys or system text in any file or output"
 
+# ---- case mode (--follow-up): searches exactly like a normal debate (round-1-off was tried and reverted after the benchmark) ----
+debate "$T/d1c" --providers "$ALL4" --follow-up
+for p in anthropic-api openai-api gemini-api xai-api; do
+  grep -qF "You have a web search tool for this answer (at most 3 searches)" "$WORK/round1-$p.prompt.md" || fail "case mode $p round 1 must search"
+  grep -qF "similar incident" "$WORK"/round*-$p.prompt.md && fail "case mode $p: reverted search sentence still present"
+done
+ok "case mode: search as in a normal debate"
+
 # ================= 2. fail closed =================
 check_fallback() { # <provider> <expected reason> <out>
   local p="$1" why="$2" out="$3"

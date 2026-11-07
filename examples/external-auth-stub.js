@@ -454,7 +454,7 @@ async function agentRoute(req, res, raw, route) {
     const search = effective ? { enabled: true, max_searches: effective, cite_bytes: int(env.STUB_SEARCH_CITE_BYTES, 1000), search_credits_max: credits - creditsOff, credits_off: creditsOff } : { enabled: false, max_searches: {}, cite_bytes: 0, search_credits_max: 0, credits_off: credits };
     const expires = Date.now() + int(env.STUB_AGENT_QUOTE_TTL_MS, 600000);
     const answer = { ok: true, credits, rate_version: 'stub.1', max_credits: QUOTE_MAX_CREDITS };
-    quotes.set(id, { key: id, answer, search: effective, asked: null, version: '2', basis: { providers: [...b.providers], rounds: b.rounds, max_words: b.max_words, question_sha256: b.question_sha256 }, calls: b.providers.length * b.rounds + 1, reservation_id: null,
+    quotes.set(id, { key: id, answer, search: effective, asked: null, version: '2', basis: { providers: [...b.providers], rounds: b.rounds, max_words: b.max_words, question_sha256: b.question_sha256, ...(b.case_mode === true ? { case_mode: true } : {}) }, calls: b.providers.length * b.rounds + 1, reservation_id: null,
       agent: { principal: b.principal, expires, key: null, searchOn: !!effective } });
     order.push(['quote', id]);
     return send(res, 200, { ok: true, quote: { quote_id: id, max_credits: credits, expires_at: new Date(expires).toISOString(), ttl_seconds: 600, schema_version: 1, question_sha256: b.question_sha256, panel: b.providers, rounds: b.rounds, max_words: b.max_words, search, rate_version: 'stub.1',
@@ -549,7 +549,7 @@ const server = http.createServer(async (req, res) => {
         debates: [...debates.values()].map((d) => ({ debate_id: d.debate_id, reservation_id: d.reservation_id, principal: d.principal, status: d.status, outcome: d.outcome, credits_charged: d.credits_charged, truncated: d.truncated, has_result: d.result != null, transcript_bytes: d.transcript == null ? null : Buffer.byteLength(d.transcript) })),
         finalize_requests: finalizeRequests, effects, received,
         ...(AGENT ? { agent: { runs: [...agentRuns.values()].map((x) => ({ quote_id: x.quoteId, state: x.state, outcome: x.outcome ?? null })), quotes: [...quotes.values()].filter((x) => x.agent).length } } : {}),
-        ...(PRICING ? { pricing: { quotes: [...quotes.entries()].map(([id, x]) => ({ request_id: id, calls: x.calls, reservation_id: x.reservation_id, providers: x.basis.providers, rounds: x.basis.rounds, max_words: x.basis.max_words, version: x.version, asked: x.asked, search: x.search, agent: x.agent ? true : null })),
+        ...(PRICING ? { pricing: { quotes: [...quotes.entries()].map(([id, x]) => ({ request_id: id, calls: x.calls, reservation_id: x.reservation_id, providers: x.basis.providers, rounds: x.basis.rounds, max_words: x.basis.max_words, version: x.version, asked: x.asked, search: x.search, agent: x.agent ? true : null, ...(x.basis.case_mode ? { case_mode: true } : {}) })),
           reports: Object.fromEntries([...usageReports.entries()].map(([id, x]) => [id, { rows: x.rows, replays: x.replays }])), order } } : {}),
       });
     }

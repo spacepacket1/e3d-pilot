@@ -348,8 +348,25 @@ assert_eq "$(curl -fsS -H "authorization: Bearer $SVC" "$URL2/_stub/state" | jq 
 assert_eq "$(jq -r '.result.structuredContent.cost.charged_credits' <<< "$res")" "4"
 echo "ok - when the agent quote carries max_tokens and answer_bytes they are used, with no connector quote"
 
+# e3d_investigate on a hosted server (E3D_MCP_CASE=1): the quote and begin tell billing it is a case run (case_mode), so the longer verdict is priced
+start_server agc "${PT[@]}" E3D_MCP_CASE=1
+SIDC="$(sid_of agc)"
+cq() { ledger | jq -c '[.pricing.quotes[] | select(.agent != null) | .case_mode // false]'; }
+before_q="$(cq)"
+res="$(tool agc "$SIDC" e3d_quote "$(jq -nc --arg q "$Q case" --argjson p "$PR" '{question:$q,providers:$p,rounds:2,investigate:true}')")"
+assert_eq "$(jq -r '.result.isError // false' <<< "$res")" "false" "$(jq -c . <<< "$res")"
+assert_eq "$(cq | jq -c '.[-1]')" "true" "e3d_quote investigate:true sends case_mode"
+res="$(tool agc "$SIDC" e3d_quote "$(jq -nc --arg q "$Q plain" --argjson p "$PR" '{question:$q,providers:$p,rounds:2}')")"
+assert_eq "$(cq | jq -c '.[-1]')" "false" "a plain e3d_quote sends no case_mode"
+res="$(tool agc "$SIDC" e3d_quote "$(jq -nc --arg q "$Q bad" --argjson p "$PR" '{question:$q,providers:$p,rounds:2,investigate:"yes"}')")"
+assert_eq "$(jq -r '.result.isError' <<< "$res")" "true" "investigate must be a boolean"
+n_before="$(cq | jq length)"
+res="$(tool agc "$SIDC" e3d_investigate "$(jq -nc --arg q "$Q inv" --argjson p "$PR" --arg k "key-inv-$(openssl rand -hex 6)" '{question:$q,providers:$p,rounds:2,idempotency_key:$k}')")"
+assert_eq "$(cq | jq -c --argjson n "$n_before" '.[$n:] | (length > 0) and all')" "true" "e3d_investigate quotes with case_mode: $(jq -c . <<< "$res" | head -c 300)"
+echo "ok - hosted e3d_investigate and e3d_quote investigate:true are quoted as case runs (case_mode); plain quotes are not"
+
 # ---------------------------------------------------------------- privacy: no content or token in any log or error
-for f in "$TMP/off.log" "$TMP/ag.log" "$TMP/lim.log" "$TMP/stub.log" "$TMP/stub2.log"; do
+for f in "$TMP/off.log" "$TMP/ag.log" "$TMP/agc.log" "$TMP/lim.log" "$TMP/stub.log" "$TMP/stub2.log"; do
   if grep -q "QCONTENT" "$f"; then fail "debate content leaked into $f"; fi
   for secret in "$SVC" "$TOK_A"; do if grep -qF -- "$secret" "$f"; then fail "a token leaked into $f"; fi; done
 done

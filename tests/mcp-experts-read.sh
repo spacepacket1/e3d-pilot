@@ -24,7 +24,7 @@ rpc() { # rpc <env...> -- <json-rpc line>...   -> one response per line
 list='{"jsonrpc":"2.0","id":2,"method":"tools/list"}'
 call() { jq -nc --argjson a "$3" --argjson id "$1" --arg n "$2" '{jsonrpc:"2.0",id:$id,method:"tools/call",params:{name:$n,arguments:$a}}'; }
 pick() { jq -c --argjson id "$2" "select(.id==\$id) | $3" <<< "$1"; }
-NAMES=(skeptic premortem customer compliance implementer architect facilitator factchecker)
+NAMES=(skeptic premortem customer compliance implementer architect facilitator factchecker agent-diagnosis)
 
 # ---- off by default: no tool, and a call is "unknown tool" exactly like any other missing tool ----
 out="$(rpc E3D_MCP_STATE_DIR="$STATE" TYPESAFE_API_KEY="" -- "$list" "$(call 3 e3d_list_experts '{}')" "$(call 4 e3d_get_expert '{"name":"skeptic"}')")"
@@ -59,7 +59,7 @@ assert_eq "$(pick "$out" 2 '[.result.tools[].name]|unique|length == (.|length)')
 out="$(rpc "${ENV_ON[@]}" -- "$(call 2 e3d_list_experts '{}')")"
 r="$(pick "$out" 2 '.result')"
 assert_eq "$(jq -r '.isError // false' <<< "$r")" "false" "list is not an error"
-assert_eq "$(jq -c '.structuredContent.experts|map(.name)|sort' <<< "$r")" "$(printf '%s\n' "${NAMES[@]}" | sort | jq -R . | jq -sc .)" "the eight built-in experts"
+assert_eq "$(jq -c '.structuredContent.experts|map(.name)|sort' <<< "$r")" "$(printf '%s\n' "${NAMES[@]}" | sort | jq -R . | jq -sc .)" "the nine built-in experts"
 assert_eq "$(jq -r '.structuredContent.experts|map(has("name") and has("description") and has("lens") and has("tags") and has("tasks") and has("version") and has("license") and has("content_hash"))|all' <<< "$r")" "true" "summary fields"
 assert_eq "$(jq -r '.structuredContent.experts|map(has("text") or has("model_hints"))|any' <<< "$r")" "false" "the list leaves out the full lens text and the model hints"
 assert_eq "$(jq -c '.structuredContent.presets|map(.name)|sort' <<< "$r")" '["gap-finding","risk-review","spec-review"]' "three presets"

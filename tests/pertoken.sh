@@ -106,6 +106,31 @@ assert_eq "$(jq -c '[.[] | select(.provider == "anthropic-api") | [.input_tokens
 assert_eq "$(jq -c '[.[] | select(.provider == "openai-api") | [.input_tokens, .output_tokens, .source]] | unique' "$TMP/o1/usage.json")" '[[13,17,"vendor"]]'
 echo "ok - e3d-debate sends each provider's output limit, makes exactly the planned calls, cuts inserted answers to the byte limit and reports one vendor row per call"
 
+# case mode (--follow-up): only the SYNTHESIS call's output limit is raised, by lib/debate/case.mjs CASE_SYNTH_EXTRA_TOKENS (the hosted bound prices the same number);
+# seat calls and a normal debate are unchanged
+assert_eq "$(node "$ROOT/lib/debate/case.mjs" synth-extra)" "2000" "the extra output limit of the case synthesis"
+synth_limit() { jq -c 'select(.body.messages[0].content | test("Below is the full transcript")) | (.body.max_tokens // .body.max_completion_tokens)' "$VREQ" | tr '\n' ' '; }
+seat_limits() { jq -c 'select(.body.messages[0].content | test("Below is the full transcript") | not) | [.url, (.body.max_tokens // .body.max_completion_tokens)]' "$VREQ" | sort -u | tr '\n' ' '; }
+: > "$VREQ"
+dbt "$TMP/o_plain" E3D_DEBATE_MAX_TOKENS="$MAXT" E3D_DEBATE_ANSWER_BYTES_MAX="$ANSB" -- --rounds 2 "Which?"
+assert_eq "$(synth_limit)" "321 " "a normal debate: the synthesis keeps the quoted limit"
+plain_seats="$(seat_limits)"
+: > "$VREQ"
+dbt "$TMP/o_case" E3D_DEBATE_MAX_TOKENS="$MAXT" E3D_DEBATE_ANSWER_BYTES_MAX="$ANSB" -- --rounds 2 --follow-up "Which?"
+assert_eq "$(synth_limit)" "2321 " "case mode: the Anthropic synthesis gets 321 + 2000"
+assert_eq "$(seat_limits)" "$plain_seats" "case mode: seat calls keep the quoted limits"
+: > "$VREQ"
+dbt "$TMP/o_case2" E3D_DEBATE_MAX_TOKENS="$MAXT" E3D_DEBATE_ANSWER_BYTES_MAX="$ANSB" -- --rounds 2 --follow-up --synthesizer openai-api "Which?"
+assert_eq "$(synth_limit)" "2456 " "case mode: an OpenAI synthesis gets 456 + 2000"
+assert_eq "$(jq -c '[.[] | select(.key == "synth") | .provider]' "$TMP/o_case2/usage.json")" '["openai-api"]'
+# the prompt side of the same allowance: the case instructions plus the agent-diagnosis sentence stay inside CASE_SYNTH_EXTRA_BYTES (the hosted bound adds 1500 bytes)
+ov_plain="$(E3D_DEBATE_PROMPT_OVERHEAD=1 "$ROOT/bin/e3d-debate" --providers "$PROVS" --rounds 10 | jq -r .promptOverheadBytes.synthesis)"
+ov_case="$(E3D_DEBATE_PROMPT_OVERHEAD=1 "$ROOT/bin/e3d-debate" --providers "$PROVS" --rounds 10 --follow-up | jq -r .promptOverheadBytes.synthesis)"
+lens_sentence="$(grep -o 'One analyst is an agent-diagnosis expert[^\\]*' "$ROOT/bin/e3d-debate" | wc -c | tr -d ' ')"
+(( ov_case - ov_plain + lens_sentence <= 1500 )) || fail "the case synthesis prompt grew by $(( ov_case - ov_plain )) + $lens_sentence bytes, more than the 1500 the hosted bound allows"
+node --input-type=module -e "import { CASE_SYNTH_EXTRA_BYTES } from '$ROOT/lib/debate/case.mjs'; if (CASE_SYNTH_EXTRA_BYTES !== 1500) process.exit(1)" || fail "CASE_SYNTH_EXTRA_BYTES is the cloud's 1500"
+echo "ok - case mode raises only the synthesis output limit by 2000 tokens; the prompt growth ($(( ov_case - ov_plain )) + $lens_sentence bytes) is inside the 1500-byte allowance"
+
 # without the variables nothing changes: no usage.json, whole answers in prompts, no output limit sent
 : > "$VREQ"
 dbt "$TMP/o2" -- --rounds 2 "Which?"
