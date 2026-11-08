@@ -1,16 +1,53 @@
 # e3d-pilot
 
-**Multi-model AI problem solving: independent answers → critique → convergence → human decision → execution → review → provenance.**
+**Before an AI agent (or you) commits to a decision that is hard to undo, ask several AI models. Get one answer, how strongly they agree, and the strongest case against it.**
 
 ![e3d-debate: independent AI models answer a question, critique each other across rounds, converge on a synthesis with consensus and named dissent, then hand off to a human decision, execution, and provenance](https://raw.githubusercontent.com/spacepacket1/e3d-pilot/main/docs/images/debate-convergence.svg)
 
-e3d-pilot is an open-source system for getting multiple AI models to work on the same problem instead of trusting a single model's answer — from a one-off question to a fully executed, human-gated software change.
+Open source (MIT). Published on npm as [`e3d-pilot`](https://www.npmjs.com/package/e3d-pilot) and listed in the official MCP registry as `io.github.spacepacket1/e3d-pilot`.
 
-It starts simply. Ask several configured models (Claude, Codex, Grok, Devin, or others you wire in) the same question. Let them answer independently, see and critique each other's positions, revise, expose real dissent, and converge on the strongest answer. That's `bin/e3d-debate` — a standalone tool, no repo or pipeline required. It's also available inside your editor as an MCP server: [use it from GitHub Copilot, Claude Code, or Cursor](#use-e3d-pilot-from-github-copilot-claude-code-and-cursor-mcp) with one `npx` line.
+## Try it in 30 seconds
 
-Then e3d-pilot takes the same instinct further, into real software work: `discover → ideate → approve → draft → negotiate → execute → review → publish → outcome`. Every step is preserved in an append-only ledger, so the system (or a human, or a fresh AI session) can later reconstruct where an idea came from, which models or people influenced it, what it produced, and what happened afterward.
+In Claude Code:
+
+```bash
+claude mcp add e3d-pilot -- npx -y --no-update-notifier -p e3d-pilot e3d-mcp
+```
+
+Then ask your assistant: *"Before you pick a storage layer, run e3d_debate on SQLite vs flat JSON for this CLI."*
+
+You need Node 18+, `jq`, bash 4+ and at least two model CLIs you are already logged in to (for example `claude` and `codex`). `npx -y -p e3d-pilot e3d-mcp --doctor` checks all of it and says what is missing. Using Cursor, VS Code or another client? See [Install](#install). No model CLIs on your machine, or want it for a team? The hosted service at [pilot.e3d.ai](https://pilot.e3d.ai) runs the models for you: you sign up, buy credits and set spending caps, and every run is quoted before it is charged.
+
+## What you get back
+
+A real result in `quick` mode (11 seconds, two models), from asking whether a small CLI should default to a flat JSON file or SQLite:
+
+```text
+FINAL ANSWER: Default to a flat JSON file for a small CLI. It has no dependencies, is
+human-readable and diffable, and is easy to hand-edit and debug. Write it atomically
+(temp file, then rename). Move to SQLite once you need indexed queries, concurrent
+writers, or data beyond a few MB.
+CONSENSUS: split
+DISSENT: Codex prefers SQLite as the default for any persistent mutable state because
+it gives transactions, concurrency safety, and schema evolution at low cost.
+```
+
+The disagreement is the point: you get the answer and the strongest case against it, instead of one model's confident guess.
+
+## Why not just ask one model twice?
+
+- **Independent first round.** The models answer without seeing each other, so one confident answer cannot anchor the rest.
+- **Disagreement is kept, not averaged away.** You get a consensus level (`full`, `majority` or `split`) and the named dissent.
+- **You can read the whole transcript,** not only the verdict.
+- **It is advice, not approval.** Nothing runs because the models agreed; the decision stays with you.
+
+## Beyond a single question
+
+The same approach can take a debate's answer all the way to a shipped change: `discover → ideate → approve → draft → negotiate → execute → review → publish → outcome`, with every step recorded in an append-only ledger so you can later reconstruct where an idea came from, which models or people influenced it, and what happened afterward. That part is described in [Pipeline](#pipeline) below; you do not need it to use `e3d-debate` or the MCP server.
 
 ## Try e3d-debate in 60 seconds
+
+`bin/e3d-debate` is the standalone tool underneath the MCP server: no repo or pipeline required, just a clone and two model CLIs.
 
 ```bash
 git clone https://github.com/spacepacket1/e3d-pilot.git
@@ -83,20 +120,6 @@ You don't need the rest of e3d-pilot to use `e3d-debate` on its own — see [e3d
 | `e3d_ideas_list` | Read-only: lists the ideas e3d-pilot tracks in a repo, to find an id for the trace. |
 | `e3d_gallery` | Opt-in (`E3D_MCP_GALLERY=1`; on at pilot.e3d.ai). Free and read-only: searches and reads the public Pilot Gallery, the debates people chose to publish, and returns the question, answer, consensus and any dissent with a link. Nothing is spent or written. |
 | `e3d_list_experts`, `e3d_get_expert` | Opt-in (`E3D_MCP_EXPERTS=1`). Free and read-only: describe the built-in [experts](docs/experts.md) and presets, and show the exact lens text a seat receives. They only describe: passing skills through the `e3d_debate` tool is not built. |
-
-A real result in `quick` mode (11 seconds, two models), from asking whether a small CLI should default to a flat JSON file or SQLite:
-
-```text
-FINAL ANSWER: Default to a flat JSON file for a small CLI. It has no dependencies, is
-human-readable and diffable, and is easy to hand-edit and debug. Write it atomically
-(temp file, then rename). Move to SQLite once you need indexed queries, concurrent
-writers, or data beyond a few MB.
-CONSENSUS: split
-DISSENT: Codex prefers SQLite as the default for any persistent mutable state because
-it gives transactions, concurrency safety, and schema evolution at low cost.
-```
-
-The disagreement is the point: you get the answer and the strongest case against it, instead of one model's confident guess.
 
 ### Install
 
