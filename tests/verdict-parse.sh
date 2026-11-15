@@ -45,6 +45,12 @@ assert.deepEqual(parseClaims('no bullets here'), []); ok('no bullet lines, no cl
 v = parseVerdict('FINAL ANSWER: Do X.\nCONSENSUS: full\nDISSENT: none\n\n## Key claims\nnothing parseable');
 assert.equal('claims' in v, false); assert.equal(v.dissent.summary, 'none'); ok('an empty ledger section adds no field');
 
+// contested: an optional fifth field flags a disputed claim without changing its tier; "no"/"none" is ignored
+c = parseClaims('- IRGC hit a US radar | tier: documented | source: reputable | by: IRGC | contested: US Central Command denied it\n- Plain | tier: inferred | source: none | by: a | contested: none\n- Also plain | tier: inferred | source: none | by: a');
+assert.equal(c[0].tier, 'documented'); assert.equal(c[0].contested, 'US Central Command denied it'); assert.equal('contested' in c[1], false); assert.equal('contested' in c[2], false); ok('contested flag parsed, tier kept, none ignored');
+v = sanitizeVerdict({ final_answer: 'a', consensus: 'full', dissent: { present: false, summary: 'none' }, claims: [{ claim: 'c', tier: 'documented', source: 'primary', by: 'x', contested: 'y' }] }, (t) => `[${t}]`);
+assert.equal(v.claims[0].contested, '[y]'); ok('sanitizeVerdict covers contested');
+
 // sanitizeVerdict: every model-written field goes through clean(), including would_change and claims
 const mark = (t) => `[${t}]`;
 v = sanitizeVerdict({ final_answer: 'a', consensus: 'full', dissent: { present: true, summary: 'd' }, would_change: ['w1', 'w2'], claims: [{ claim: 'c', tier: 'documented', source: 'primary', by: 'x' }] }, mark);
