@@ -1148,6 +1148,7 @@ if (( ${#SEAT_UNAVAILABLE[@]} > 0 )); then
   seat_list=""
   for u in "${SEAT_UNAVAILABLE[@]}"; do IFS='|' read -r su_p su_r su_why <<< "$u"; seat_list+="${seat_list:+, }$su_p (round $su_r: $su_why)"; done
   SEAT_NOTE="Note: only $SEATS_ANSWERED of $SEATS_REQUESTED participants answered; unavailable: $seat_list. Judge CONSENSUS only among the participants who answered, and do not infer anything about the missing ones."
+  if (( SEATS_ANSWERED == 1 )); then SEAT_NOTE+=" With only one participant answering there is nothing to compare, so write CONSENSUS: unknown."; fi
   rounds_ran_note="$rounds_ran_note; $SEATS_ANSWERED of $SEATS_REQUESTED participants answered"
 fi
 synth_prompt="$work_dir/synthesis.prompt.md"

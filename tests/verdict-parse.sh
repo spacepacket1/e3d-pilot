@@ -9,7 +9,7 @@ node --input-type=module - "$ROOT" <<'EOF2'
 import assert from 'node:assert/strict';
 import { pathToFileURL } from 'node:url';
 import { join } from 'node:path';
-const { parseVerdict } = await import(pathToFileURL(join(process.argv[2], 'lib/mcp/verdict.js')).href);
+const { parseVerdict, sanitizeVerdict, applySeatLabel } = await import(pathToFileURL(join(process.argv[2], 'lib/mcp/verdict.js')).href);
 const ok = (m) => console.log(`ok - ${m}`);
 
 // complete replies are parsed exactly as before
@@ -31,6 +31,20 @@ v = parseVerdict('FINAL ANSWER: Do X.\nCONSENSUS: full\nDISSENT: none\n\n## What
 assert.deepEqual(v.would_change, ['New data on Friday']); assert.equal(v.dissent.summary, 'none'); ok('would_change before case-mode questions');
 v = parseVerdict('FINAL ANSWER: Do X.\nCONSENSUS: full\nDISSENT: none\n');
 assert.equal('would_change' in v, false); ok('no section, no would_change field');
+
+// sanitizeVerdict: every model-written field goes through clean(), including would_change and claims
+const mark = (t) => `[${t}]`;
+v = sanitizeVerdict({ final_answer: 'a', consensus: 'full', dissent: { present: true, summary: 'd' }, would_change: ['w1', 'w2'], claims: [{ claim: 'c', tier: 'documented', source: 'primary', by: 'x' }] }, mark);
+assert.equal(v.final_answer, '[a]'); assert.equal(v.dissent.summary, '[d]'); assert.deepEqual(v.would_change, ['[w1]', '[w2]']);
+assert.deepEqual(v.claims, [{ claim: '[c]', tier: 'documented', source: 'primary', by: '[x]' }]); ok('sanitizeVerdict covers would_change and claims');
+assert.equal(sanitizeVerdict(null, mark), null); assert.equal('would_change' in sanitizeVerdict({ final_answer: 'a', consensus: 'full', dissent: { present: false, summary: 'none' } }, mark), false); ok('sanitizeVerdict: null and no optional fields');
+
+// applySeatLabel: one answering seat after a loss has nothing to compare
+const lost1 = { seats_requested: 4, seats_answered: 1, flags: { seats_lost: true } };
+assert.equal(applySeatLabel({ final_answer: 'a', consensus: 'majority', dissent: { present: true, summary: 'd' } }, lost1).consensus, 'unknown');
+assert.equal(applySeatLabel({ final_answer: 'a', consensus: 'majority', dissent: { present: true, summary: 'd' } }, { seats_requested: 4, seats_answered: 2, flags: { seats_lost: true } }).consensus, 'majority');
+assert.equal(applySeatLabel({ final_answer: 'a', consensus: 'full', dissent: { present: false, summary: 'none' } }, { seats_requested: 1, seats_answered: 1, flags: { seats_lost: false } }).consensus, 'full');
+assert.equal(applySeatLabel(null, lost1), null); assert.equal(applySeatLabel({ consensus: 'full' }, null).consensus, 'full'); ok('applySeatLabel: unknown only for one answering seat after a loss');
 
 // cut after CONSENSUS: the consensus survives and the CONSENSUS line is not part of the answer
 v = parseVerdict('FINAL ANSWER: Use a shared schema with row-level security. Revisit if several customers need physical isolation.\n\nCONSENSUS: majority');

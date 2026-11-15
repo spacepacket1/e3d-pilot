@@ -219,4 +219,23 @@ assert_contains "$(jq -r '.result.content[0].text' <<< "$r")" "**WARNING:** The 
 assert_contains "$(jq -r '.result.content[0].text' <<< "$r")" "warnings: Only 2 of 3 models answered"
 echo "ok - e3d-mcp reports seats_requested/seats_answered/seats_unavailable/synthesizer_fallback/flags, a warning line for each, and the text says so"
 
+# ---- 13. e3d-mcp: one answering seat after a loss reports consensus "unknown" even when the judge wrote "majority"
+STUB1="$TMP/stub-debate-one"
+cat > "$STUB1" <<'EOS'
+#!/usr/bin/env bash
+out=""; while [[ $# -gt 0 ]]; do case "$1" in --out-dir) out="$2"; shift 2 ;; *) shift ;; esac; done
+mkdir -p "$out"
+printf '# Debate\n\n## Round 1 -- anthropic-api\n\nJSON.\n\n## Synthesis\n\nx\n' > "$out/transcript.md"
+printf '%s' '{"schema":1,"seats_requested":2,"seats_answered":1,"seats_unavailable":[{"provider":"openai-api","round":1,"reason":"error"}],"synthesizer":"anthropic-api","synthesizer_fallback":null,"synthesis_ok":true,"flags":{"synthesizer_fallback":false,"seats_lost":true,"fewer_than_3_seats":true},"consensus_note":"Consensus is computed from the 1 of 2 seats that answered, not from all 2. With a single answering seat there was no cross-check."}' > "$out/seats.json"
+printf 'FINAL ANSWER: use JSON.\nCONSENSUS: majority\nDISSENT: none\n\n## What would change this\n- A benchmark above 500 writes per second\n'
+EOS
+chmod +x "$STUB1"
+resp="$(printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}' '{"jsonrpc":"2.0","method":"notifications/initialized"}' "$call" \
+  | env E3D_MCP_STATE_DIR="$TMP/state1" E3D_MCP_DEBATE_BIN="$STUB1" E3D_MCP_PROVIDERS=anthropic-api,openai-api ANTHROPIC_API_KEY=k OPENAI_API_KEY=k "$ROOT/bin/e3d-mcp" 2>"$TMP/mcp1.log")"
+r="$(jq -c 'select(.id==2)' <<< "$resp")"
+assert_eq "$(jq -r '.result.structuredContent.consensus' <<< "$r")" "unknown" "t13 consensus"
+assert_eq "$(jq -c '.result.structuredContent.would_change' <<< "$r")" '["A benchmark above 500 writes per second"]' "t13 would_change"
+assert_contains "$(jq -r '.result.structuredContent.consensus_note' <<< "$r")" "1 of 2 seats that answered" "t13 note"
+echo "ok - e3d-mcp: one answering seat reports consensus unknown and keeps would_change"
+
 echo "seat-reliability: all passed"
