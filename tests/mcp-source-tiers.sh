@@ -13,7 +13,7 @@ out=""; while [[ $# -gt 0 ]]; do case "$1" in --out-dir) out="$2"; shift 2 ;; *)
 mkdir -p "$out"
 printf '# Debate\n\n## Round 1 -- anthropic-api\n\nJSON.\n\n## Synthesis\n\nx\n' > "$out/transcript.md"
 printf '%s' '{"enabled":true,"models_with_search":1,"models_total":1,"searches_used":{"anthropic-api":1},"citations":[{"title":"FAA","domain":"www.faa.gov","url":"https://www.faa.gov/newsroom/x","excerpt":"e","provider":"anthropic-api"},{"title":"AP","domain":"apnews.com","url":"https://apnews.com/article/y","excerpt":"e","provider":"anthropic-api"},{"title":"post","domain":"x.com","url":"https://x.com/a/status/1","excerpt":"e","provider":"anthropic-api"},{"title":"blog","domain":"example.org","url":"https://example.org/p","excerpt":"e","provider":"anthropic-api"}],"flags":{}}' > "$out/web-search.json"
-printf 'FINAL ANSWER: use JSON.\nCONSENSUS: full\nDISSENT: none\n\n## What would change this\n- A benchmark\n\n## Key claims\n- The outage began on Nov 13 | tier: documented | source: reputable | by: anthropic-api\n- Officials say no cyberattack ![x](http://evil.example/p.png) | tier: inferred | source: primary | by: official statement\n'
+printf 'FINAL ANSWER: use JSON.\nCONSENSUS: full\nDISSENT: none\n\n## What would change this\n- A benchmark\n\n## Key claims\n- The outage began on Nov 13 | tier: documented | source: reputable | by: anthropic-api\n- Officials say no cyberattack ![x](http://evil.example/p.png) | tier: inferred | source: primary | by: official statement\nEND\n'
 EOS
 chmod +x "$STUB"
 call='{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"e3d_debate","arguments":{"question":"JSON or SQLite?","providers":["anthropic-api","openai-api"],"web_search":true}}}'

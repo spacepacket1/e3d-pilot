@@ -840,7 +840,7 @@ case "\$mode" in
   partial) exec sleep 8 ;;
   hang) touch "$FSTARTED"; exec sleep 8 ;;
 esac
-printf 'FINAL ANSWER: ACONTENT-$MARK use a JSON file.\nCONSENSUS: split\nDISSENT: Codex prefers SQLite.\n\n## What would change this\n- WCONTENT-$MARK a benchmark above 500 writes per second\n\n## Key claims\n- KCONTENT-$MARK the file is small | tier: documented | source: reputable | by: claude | contested: codex disputes it\n'
+printf 'FINAL ANSWER: ACONTENT-$MARK use a JSON file.\nCONSENSUS: split\nDISSENT: Codex prefers SQLite.\n\n## What would change this\n- WCONTENT-$MARK a benchmark above 500 writes per second\n\n## Key claims\n- KCONTENT-$MARK the file is small | tier: documented | source: reputable | by: claude | contested: codex disputes it\nEND\n'
 STUBEOF
 chmod +x "$FDEBATE"
 fserver() { start_server "$1" E3D_MCP_AUTH_URL="$FIN_URL" E3D_MCP_DEBATE_BIN="$FDEBATE"; }

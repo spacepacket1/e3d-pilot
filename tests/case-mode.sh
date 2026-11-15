@@ -126,6 +126,7 @@ env -u TYPESAFE_API_KEY E3D_DEBATE_FAST_SYNTHESIS=1 "$T/bin/e3d-debate" "q?" --p
 [[ ! -e "$T/seen-synth.md" ]] || fail "the opt-in fast path should skip the synthesizer without --follow-up"
 env -u TYPESAFE_API_KEY E3D_DEBATE_FAST_SYNTHESIS=1 "$T/bin/e3d-debate" "q?" --providers alpha,beta --rounds 2 --synthesizer synth --prompts v3c --follow-up > "$T/stdout" 2> "$T/stderr" || { cat "$T/stderr"; exit 1; }
 [[ -e "$T/seen-synth.md" ]] || fail "--follow-up should call the synthesizer even when everyone agreed"
+! grep -q "Last line of your reply: END" "$T/seen-synth.md" || fail "case mode must not ask for the END line (its reply ends with the questions block)"
 
 # 9. synthesizer wording, kind field, agent-diagnosis (seat questions and the shared-assumption rule were reverted after the benchmark) (stub providers, real prompts)
 source "$ROOT/tests/fixtures/specialists/harness.sh"

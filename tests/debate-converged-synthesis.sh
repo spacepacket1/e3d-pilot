@@ -39,6 +39,7 @@ grep -q "Converged after round 2" "$T/stderr" || fail "the early stop should sti
 [[ -e "$T/seen-synth.md" ]] || fail "a unanimous debate must still call the synthesizer"
 grep -q "converged after round 2 of a max 3" "$T/seen-synth.md" || fail "the synthesis prompt should say how the debate ended"
 grep -q "## What would change this" "$T/seen-synth.md" || fail "the synthesis prompt should ask for the sections"
+grep -q "^Last line of your reply: END" "$T/seen-synth.md" || fail "the synthesis prompt should ask for the END line"
 grep -q "^## What would change this" "$T/stdout" || fail "the verdict should carry the section the synthesizer wrote"
 ! grep -q "fast path" "$T/stderr" || fail "no fast path by default"
 [[ "$(jq -r '[.fast_synthesis, .stop_reason, .converged_at_round] | @csv' "$T/out/decision-log.json")" == 'false,"converged",2' ]] || fail "decision log: $(jq -c '[.fast_synthesis, .stop_reason, .converged_at_round]' "$T/out/decision-log.json")"
