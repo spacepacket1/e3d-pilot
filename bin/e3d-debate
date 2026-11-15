@@ -885,12 +885,24 @@ synthesis_prompt() {
     printf 'DISSENT: <one line, at most 40 words, on any remaining disagreement worth flagging, or "none">\n'
   fi
   analysis_synthesis_instructions
+  ledger_synthesis_instructions
   if (( FOLLOW_UP == 1 )); then case_synthesis_instructions; fi
   printf '%s\n' "$SYNTH_CURRENT_DATA_TEXT"
 }
 
 # Every debate: after the verdict lines, a short section naming the evidence that would change the answer, and a rule for probabilities.
 # lib/mcp/verdict.js strips the section (like "## Questions for you") and returns it as would_change, so it never lands inside DISSENT.
+# The claim ledger: after "What would change this", up to 6 lines naming the factual claims the answer rests on, tagged by how well they are
+# supported and by what kind of source. lib/mcp/verdict.js parses them into claims[]; a claim cannot stay "documented" with no source named.
+ledger_synthesis_instructions() {
+  cat <<'EOP'
+
+Then add a section headed exactly "## Key claims" with at most 6 lines, one per factual claim that your FINAL ANSWER or your reasoning relies on, each in exactly this form:
+- <the claim, one sentence> | tier: <documented|inferred|speculative> | source: <primary|reputable|low|none> | by: <who asserted it: an analyst's name, or "official statement">
+tier: documented = a source that the transcript names states it; inferred = it follows from documented facts by reasoning; speculative = neither. source: primary = a government, court, regulator, company filing or the party concerned; reputable = an established news organisation or research body; low = a social post, blog, forum, aggregator or anonymous source; none = a participant's own knowledge with no source named. A statement by an interested party (an agency about its own incident, a company about its own outage) is a claim, not a verdict: write by: official statement. Never write "documented" unless a source is named in the transcript.
+EOP
+}
+
 analysis_synthesis_instructions() {
   cat <<'EOP'
 

@@ -23,6 +23,7 @@ import { createInterface } from 'node:readline';
 import { ROOT, log, text, run, configuredProviders, providerLine, NAME_RE } from '../lib/mcp/util.js';
 import { redact } from '../lib/mcp/redact.js';
 import { parseVerdict, sanitizeVerdict, applySeatLabel } from '../lib/mcp/verdict.js';
+import { tierOfDomain, tierCounts } from '../lib/mcp/sourcetier.js';
 import { createCaseStore, checkAnswers, checkExperts, caseTool, renderCase } from '../lib/mcp/case.js';
 import { suggest as suggestPanel } from '../lib/specialists/suggest.mjs';
 import { readCase, buildQuestion, normalizeAnswers, normalizeQuestions } from '../lib/debate/case.mjs';
@@ -371,12 +372,12 @@ function readWebSearch(raw, requested, setup = null) {
     const url = cleanUrl(c?.url);
     if (!url) return null;
     const domain = /^[a-z0-9.-]{1,253}$/.test(String(c?.domain ?? '')) ? c.domain : hostOf(url);
-    return { title: line(c?.title, 120) || domain, domain, url, excerpt: line(c?.excerpt, 300), provider: name(c?.provider) };
+    return { title: line(c?.title, 120) || domain, domain, url, excerpt: line(c?.excerpt, 300), provider: name(c?.provider), tier: tierOfDomain(domain) };
   }).filter(Boolean);
   const flags = w.flags ?? {};
   return {
     enabled: w.enabled === true, requested, models_with_search: int(w.models_with_search), models_total: int(w.models_total),
-    searches_used: Object.values(byProvider).reduce((a, b) => a + b, 0), searches_by_provider: byProvider, citations,
+    searches_used: Object.values(byProvider).reduce((a, b) => a + b, 0), searches_by_provider: byProvider, citations, source_tiers: tierCounts(citations),
     flags: {
       instructions_ignored: flags.instructions_ignored === true,
       cap_exceeded: (Array.isArray(flags.cap_exceeded) ? flags.cap_exceeded : []).slice(0, 32).map((a) => ({ provider: name(a?.provider), round: int(a?.round), searches: int(a?.searches), cap: int(a?.cap) })),
