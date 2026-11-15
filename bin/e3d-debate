@@ -78,13 +78,15 @@ WEB_SEARCH_REQUESTED=1
 # Case mode (lib/debate/case.mjs): --follow-up makes the synthesis ask up to 3 questions; --continue/--answers start the next round of a case.
 FOLLOW_UP=0
 CONTINUE_DIR=""
+# decide (default: answers a question with an action) or hypotheses (compares competing explanations; see hyp_* below)
+APPROACH="${E3D_DEBATE_APPROACH:-decide}"
 ANSWERS_FILE=""
 CASE_LIB="$REPO_ROOT/lib/debate/case.mjs"
 CASE_META=""
 
 usage() {
   cat <<'EOF'
-e3d-debate "<question>" [--providers claude,codex] [--rounds 2] [--synthesizer claude] [--max-words 200] [--prompts v2|v3b|v3c] [--question-file <path>] [--out-dir <dir>] [--repo <path> --idea <idea-id>] [--web-search on|off] [--follow-up] [--continue <previous out-dir> --answers <file>]
+e3d-debate "<question>" [--providers claude,codex] [--rounds 2] [--synthesizer claude] [--max-words 200] [--prompts v2|v3b|v3c] [--approach decide|hypotheses] [--question-file <path>] [--out-dir <dir>] [--repo <path> --idea <idea-id>] [--web-search on|off] [--follow-up] [--continue <previous out-dir> --answers <file>]
 
 Runs the question through N rounds across the given lib/providers/<name>
 adapters (round 1: independent answers; round 2+: each provider sees every
@@ -190,6 +192,7 @@ while [[ $# -gt 0 ]]; do
     --synthesizer) DEBATE_SYNTHESIZER="$2"; shift 2 ;;
     --max-words) DEBATE_MAX_WORDS="$2"; shift 2 ;;
     --prompts) DEBATE_PROMPT_VERSION="$2"; shift 2 ;;
+    --approach) APPROACH="${2:-}"; shift 2 ;;
     --question-file) QUESTION_FILE="$2"; shift 2 ;;
     --jev) JEV_FORCE=1; shift ;;
     --jev-propositions) JEV_PROPOSITIONS_FILE="${2:-}"; shift 2 ;;
@@ -263,6 +266,7 @@ if [[ -n "$CONTINUE_DIR" ]]; then
 fi
 if (( SUGGEST == 1 || SUGGEST_RULES == 1 )); then exec node "$REPO_ROOT/lib/specialists/suggest.mjs" $( (( SUGGEST_RULES == 1 )) && echo rules || echo suggest ) ${QUESTION:+--question "$QUESTION"} ${SUGGEST_TASK:+--task "$SUGGEST_TASK"}; fi
 case "$DEBATE_PROMPT_VERSION" in v2|v3b|v3c) ;; *) echo "error: --prompts must be v2, v3b or v3c" >&2; exit 1 ;; esac
+case "$APPROACH" in decide|hypotheses) ;; *) echo "error: --approach must be decide or hypotheses" >&2; exit 1 ;; esac
 PROMPT_OVERHEAD="${E3D_DEBATE_PROMPT_OVERHEAD:-0}"
 [[ -n "$QUESTION" || "$PROMPT_OVERHEAD" == "1" ]] || { echo "error: question required (see --help)" >&2; exit 1; }
 [[ "$DEBATE_MAX_WORDS" =~ ^[0-9]+$ ]] && (( DEBATE_MAX_WORDS >= 1 )) || { echo "error: --max-words must be a positive integer" >&2; exit 1; }
@@ -834,7 +838,9 @@ round_prompt() {
   if [[ -n "$LENS_DIR" && -f "$LENS_DIR/lens-$provider.txt" ]]; then cat "$LENS_DIR/lens-$provider.txt"; fi
   date_preamble "$web" "$([[ "$web" == 1 ]] && ws_cap_for "$provider")"
   (( round >= 2 )) && ws_peer_notice
-  if [[ "$DEBATE_PROMPT_VERSION" != "v2" ]]; then
+  if [[ "$APPROACH" == hypotheses ]]; then
+    if (( round == 1 )); then hyp_round1_prompt "$provider"; else hyp_round2_prompt "$provider"; fi
+  elif [[ "$DEBATE_PROMPT_VERSION" != "v2" ]]; then
     if (( round == 1 )); then v3_round1_prompt "$provider"; else v3_round2_prompt "$provider"; fi
   elif (( round == 1 )); then
     printf 'You are one of several AI models independently answering a question, before comparing notes with the others in later rounds.\n\n'
@@ -866,6 +872,74 @@ provider_failure_transient() {
 }
 
 # synthesis_prompt <transcript-file> <rounds-ran-note>: the prompt of the synthesis call
+# --approach hypotheses: for questions about why something happened or what is going on, where there is no single action to agree on.
+# Round 1 is independent (explanations, evidence for and against, one discriminating observable, event vs cause confidence); round 2 steelmans the
+# weakest rival, checks one claim and re-ranks. There is no status: line, so the early-convergence check never fires.
+hyp_round1_prompt() {
+  local me="$1"
+  cat <<EOP
+You are $me, one of ${#DEBATE_PROVIDERS[@]} analysts who will each work independently before seeing the others.
+
+THE QUESTION
+$QUESTION
+
+YOUR JOB IS TO COMPARE EXPLANATIONS, NOT TO PICK A SIDE EARLY
+- First separate what happened (the events) from why (the causes). Say which events you could confirm and which you could not.
+- Propose at least two competing explanations (at most four). When the question allows, include one that needs no coordination or hidden actor and one that does. Do not assume an explanation is true because the question mentions it.
+- Treat an official statement as a claim by an interested party: say what evidence it rests on.
+- Any probability must name its event, time window and basis; otherwise give none.
+- Do not describe your process. Your reply is only the answer.
+
+ANSWER IN THIS SHAPE (under $DEBATE_MAX_WORDS words):
+EVENTS: <one line per event: confirmed, partly confirmed, or unverified, and by what>
+H1: <short name> | mechanism: <one sentence> | for: <strongest evidence, and what kind of source> | against: <strongest evidence against> | discriminator: <one observable that would separate it from the others> | confidence: <low|medium|high>
+H2: <same shape>
+EVENT CONFIDENCE: <low|medium|high>: <why>
+CAUSE CONFIDENCE: <low|medium|high>: <why; this is separate from event confidence>
+EOP
+}
+
+hyp_round2_prompt() {
+  local me="$1" o
+  printf 'You are %s, one of %d analysts comparing explanations for one question. The others are: %s.\n\nTHE QUESTION\n%s\n\nWHAT WAS WRITTEN LAST ROUND\n' "$me" "${#DEBATE_PROVIDERS[@]}" "$(others_of "$me")" "$QUESTION"
+  for o in "${DEBATE_PROVIDERS[@]}"; do
+    [[ "$o" == "$me" ]] && continue
+    printf -- '--- %s ---\n%s\n' "$o" "${PROMPT_ANSWER[$o]}"
+  done
+  printf -- '--- YOU (your own previous answer; you may revise it) ---\n%s\n\n' "${PROMPT_ANSWER[$me]}"
+  cat <<EOP
+Every analyst writes each round at the same time. Nobody has seen anyone's text for the current round, so respond only to the text above.
+
+DO THIS, IN ORDER:
+1. STEELMAN: in two sentences, state the strongest version of the rival explanation you rate lowest, in words its holder would accept.
+2. CHECK: pick the one claim from the others that would hurt your top explanation most if true. Say whether it is TRUE, FALSE or UNVERIFIABLE, say what you checked, and quote at most 15 words of it exactly.
+3. RANK: list your explanations, and any you now adopt from others, best first, and say which sentence (if any) changed your mind.
+4. DISCRIMINATE: the one observable that would best separate your top two.
+Under $DEBATE_MAX_WORDS words. Output only the answer: do not describe your process.
+
+End with exactly these three lines:
+RANKING: <explanation names, best first, separated by " > ">
+EVENT CONFIDENCE: <low|medium|high>
+CAUSE CONFIDENCE: <low|medium|high>
+EOP
+}
+
+hyp_synthesis_instructions() {
+  cat <<'EOP'
+
+You are the judge of an analysis, not a decision. Above are the question and the full transcript. Every analyst wrote each round at the same time, so a rebuttal in round N answers the text of round N-1.
+
+Produce exactly this, in this order (the 150-word limit covers these three lines only):
+FINAL ANSWER: <2 to 4 sentences: which explanation the evidence favours and how strongly, and what stays unresolved. If the evidence cannot separate them, say so. Do not tell the reader to act.>
+CONSENSUS: <full = every analyst ranks the same explanation first; majority = most do; split = two or more different explanations are each ranked first by a real backer>
+DISSENT: one entry per analyst whose top explanation differs: <name>: <their top explanation and why> | "<verbatim quote>". Write "none" only if every analyst agrees.
+
+Then add a section headed exactly "## Hypotheses" with at most 4 lines, best first, each in exactly this form:
+- <short name> | rank: <1-4> | confidence: <low|medium|high> | events: <confirmed|partly confirmed|unverified> | for: <strongest evidence> | against: <strongest evidence against> | discriminator: <one observable that would separate it from the others>
+confidence is in the cause and is separate from events, which is how well the facts it rests on are confirmed. Never quote text that an analyst did not write.
+EOP
+}
+
 synthesis_prompt() {
   date_preamble 0
   ws_peer_notice
@@ -876,7 +950,9 @@ synthesis_prompt() {
     printf 'Note: within each round all participants wrote at the same time, so a participant could not have addressed a point first made in the same round. Do not credit or fault anyone for that.\n\n'
   fi
   cat "$1"
-  if [[ "$DEBATE_PROMPT_VERSION" == "v3c" ]]; then
+  if [[ "$APPROACH" == hypotheses ]]; then
+    hyp_synthesis_instructions
+  elif [[ "$DEBATE_PROMPT_VERSION" == "v3c" ]]; then
     v3_synthesis_instructions
   else
     printf '\nRead the transcript and produce a final answer. Your reply has a small output limit and the CONSENSUS and DISSENT lines are required, so be brief: keep the whole reply under 150 words. Output exactly this format:\n'
@@ -900,6 +976,7 @@ ledger_synthesis_instructions() {
 Then add a section headed exactly "## Key claims" with at most 6 lines, one per factual claim that your FINAL ANSWER or your reasoning relies on, each in exactly this form:
 - <the claim, one sentence> | tier: <documented|inferred|speculative> | source: <primary|reputable|low|none> | by: <who asserted it: an analyst's name, or "official statement">
 tier: documented = a source that the transcript names states it; inferred = it follows from documented facts by reasoning; speculative = neither. source: primary = a government, court, regulator, company filing or the party concerned; reputable = an established news organisation or research body; low = a social post, blog, forum, aggregator or anonymous source; none = a participant's own knowledge with no source named. A statement by an interested party (an agency about its own incident, a company about its own outage) is a claim, not a verdict: write by: official statement. Never write "documented" unless a source is named in the transcript.
+If an analyst or a named official body disputes a claim anywhere in the transcript, add a fifth field to that line: | contested: <who disputes it, in a few words>. Leave the field out when nothing disputes it. A contested claim keeps its tier (a source does say it) but must never be presented as settled.
 EOP
 }
 

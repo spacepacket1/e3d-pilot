@@ -9,7 +9,7 @@ node --input-type=module - "$ROOT" <<'EOF2'
 import assert from 'node:assert/strict';
 import { pathToFileURL } from 'node:url';
 import { join } from 'node:path';
-const { parseVerdict, parseClaims, sanitizeVerdict, applySeatLabel } = await import(pathToFileURL(join(process.argv[2], 'lib/mcp/verdict.js')).href);
+const { parseVerdict, parseClaims, parseHypotheses, sanitizeVerdict, applySeatLabel } = await import(pathToFileURL(join(process.argv[2], 'lib/mcp/verdict.js')).href);
 const ok = (m) => console.log(`ok - ${m}`);
 
 // complete replies are parsed exactly as before
@@ -44,6 +44,22 @@ assert.equal(c[0].tier, 'inferred'); assert.match(c[0].adjusted, /no source/); a
 assert.deepEqual(parseClaims('no bullets here'), []); ok('no bullet lines, no claims');
 v = parseVerdict('FINAL ANSWER: Do X.\nCONSENSUS: full\nDISSENT: none\n\n## Key claims\nnothing parseable');
 assert.equal('claims' in v, false); assert.equal(v.dissent.summary, 'none'); ok('an empty ledger section adds no field');
+
+// contested: an optional fifth field flags a disputed claim without changing its tier; "no"/"none" is ignored
+c = parseClaims('- IRGC hit a US radar | tier: documented | source: reputable | by: IRGC | contested: US Central Command denied it\n- Plain | tier: inferred | source: none | by: a | contested: none\n- Also plain | tier: inferred | source: none | by: a');
+assert.equal(c[0].tier, 'documented'); assert.equal(c[0].contested, 'US Central Command denied it'); assert.equal('contested' in c[1], false); assert.equal('contested' in c[2], false); ok('contested flag parsed, tier kept, none ignored');
+v = sanitizeVerdict({ final_answer: 'a', consensus: 'full', dissent: { present: false, summary: 'none' }, claims: [{ claim: 'c', tier: 'documented', source: 'primary', by: 'x', contested: 'y' }] }, (t) => `[${t}]`);
+assert.equal(v.claims[0].contested, '[y]'); ok('sanitizeVerdict covers contested');
+
+// hypotheses (--approach hypotheses): ranked list parsed, in any order with the other sections, kept out of the dissent
+v = parseVerdict('FINAL ANSWER: Shared fragility fits best, but the evidence cannot rule out a campaign.\nCONSENSUS: majority\nDISSENT: xai: a coordinated campaign | "q"\n\n## Hypotheses\n- Shared fragility | rank: 1 | confidence: medium | events: confirmed | for: reported router fault | against: timing | discriminator: the root-cause report\n- Coordinated campaign | rank: 2 | confidence: low | events: partly confirmed | for: attribution of one incident | against: no shared signature | discriminator: matching malware\n\n## What would change this\n- A root-cause report naming a third party');
+assert.equal(v.hypotheses.length, 2); assert.deepEqual(v.hypotheses[0], { name: 'Shared fragility', rank: 1, confidence: 'medium', events: 'confirmed', for: 'reported router fault', against: 'timing', discriminator: 'the root-cause report' });
+assert.equal(v.hypotheses[1].confidence, 'low'); assert.deepEqual(v.would_change, ['A root-cause report naming a third party']); assert.match(v.dissent.summary, /^xai: a coordinated campaign/); assert.ok(!/Hypotheses|Shared fragility/.test(v.dissent.summary)); ok('hypotheses parsed with would_change; dissent untouched');
+let h = parseHypotheses('- A | rank: 9 | confidence: certain\n- B\n- C | rank: 2 | confidence: HIGH\n- D\n- E\n- F');
+assert.equal(h.length, 4); assert.equal(h[0].rank, 1); assert.equal(h[0].confidence, 'untagged'); assert.equal(h[1].name, 'B'); assert.equal(h[2].rank, 2); assert.equal(h[2].confidence, 'high'); ok('bad rank falls back to position, bad confidence is untagged, capped at 4');
+assert.deepEqual(parseHypotheses('no bullets'), []);
+v = sanitizeVerdict({ final_answer: 'a', consensus: 'full', dissent: { present: false, summary: 'none' }, hypotheses: [{ name: 'n', rank: 1, confidence: 'low', events: 'e', for: 'f', against: 'g', discriminator: 'd' }] }, (t) => `[${t}]`);
+assert.deepEqual(v.hypotheses[0], { name: '[n]', rank: 1, confidence: 'low', events: '[e]', for: '[f]', against: '[g]', discriminator: '[d]' }); ok('sanitizeVerdict covers hypotheses');
 
 // sanitizeVerdict: every model-written field goes through clean(), including would_change and claims
 const mark = (t) => `[${t}]`;
