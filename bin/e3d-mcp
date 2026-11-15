@@ -726,6 +726,12 @@ async function executeDebate(plan, handle, ctx, { progress, onStarted, signal } 
       }),
       web_search: webSearch,
       ...(caseOut ? { case: { status: caseOut.status, questions: caseOut.questions } } : {}),
+      // The engine's analysis fields (docs/web-analysis-fields-and-approach-spec.md Part A in e3d-pilot-cloud): additive, absent when the verdict
+      // has none, already bounded and sanitised above. `adjusted` stays in the engine (the cloud does not store or show it).
+      ...(verdict.would_change ? { would_change: verdict.would_change } : {}),
+      ...(verdict.claims ? { claims: verdict.claims.map(({ adjusted, ...c }) => c) } : {}),
+      ...(verdict.hypotheses ? { hypotheses: verdict.hypotheses } : {}),
+      ...(seats?.consensus_note ? { consensus_note: seats.consensus_note } : {}),
     } : null;
     // With finalize, the service stores the result with the charge.
     const finalizeMeta = handle.finalize ? { transcript: transcript || null, finished_at: Date.now(), result: stored } : {};
