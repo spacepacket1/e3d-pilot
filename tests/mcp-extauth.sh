@@ -840,7 +840,7 @@ case "\$mode" in
   partial) exec sleep 8 ;;
   hang) touch "$FSTARTED"; exec sleep 8 ;;
 esac
-printf 'FINAL ANSWER: ACONTENT-$MARK use a JSON file.\nCONSENSUS: split\nDISSENT: Codex prefers SQLite.\n'
+printf 'FINAL ANSWER: ACONTENT-$MARK use a JSON file.\nCONSENSUS: split\nDISSENT: Codex prefers SQLite.\n\n## What would change this\n- WCONTENT-$MARK a benchmark above 500 writes per second\n\n## Key claims\n- KCONTENT-$MARK the file is small | tier: documented | source: reputable | by: claude | contested: codex disputes it\n'
 STUBEOF
 chmod +x "$FDEBATE"
 fserver() { start_server "$1" E3D_MCP_AUTH_URL="$FIN_URL" E3D_MCP_DEBATE_BIN="$FDEBATE"; }
@@ -861,6 +861,11 @@ assert_eq "$(fledger | jq '[.settlements[] | select(.call != "finalize")] | leng
 fr="$(ffetch "$FDID" acct_ok)"; assert_contains "$(jq -r .debate.result.final_answer <<< "$fr")" "ACONTENT-$MARK"; assert_eq "$(jq -r .debate.question <<< "$fr")" "$FQ"
 assert_contains "$(jq -r .debate.transcript <<< "$fr")" "TCONTENT-$MARK"
 assert_eq "$(jq -r '.debate.result.positions | map(.provider) | join(",")' <<< "$fr")" "claude,codex"
+# the analysis fields travel in the finalize body and are stored with the result (cloud Part A); `adjusted` never leaves the engine
+assert_contains "$(jq -r '.debate.result.would_change[0]' <<< "$fr")" "WCONTENT-$MARK"
+assert_eq "$(jq -r '.debate.result.claims[0] | [.tier, .source, .by, .contested] | join("|")' <<< "$fr")" "documented|reputable|claude|codex disputes it"
+assert_eq "$(jq -r '.debate.result.claims[0] | has("adjusted")' <<< "$fr")" "false"
+assert_eq "$(jq -r '.debate.result | has("consensus_note")' <<< "$fr")" "false" "no seat was lost, so no note"
 assert_eq "$(ffetch "$FDID" acct_broke)" "$(ffetch "dbt_$(openssl rand -hex 12)" acct_ok)" "a foreign debate is not_found like an unknown one"
 [[ -z "$(ls -A "$TMP/state-F1/metering-intents")" ]] || fail "the intent is removed once finalized"
 echo "ok - finalize advertised: a synchronous debate is finalized once (stored, charged $charged), never settled"
