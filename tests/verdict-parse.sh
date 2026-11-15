@@ -24,7 +24,7 @@ assert.equal(v.consensus, 'full'); ok('text before FINAL ANSWER is ignored');
 assert.equal(parseVerdict('no verdict here'), null); assert.equal(parseVerdict(''), null); assert.equal(parseVerdict(undefined), null); ok('no FINAL ANSWER gives null');
 
 // "## What would change this": returned as would_change, never part of the dissent; absent when the section is absent
-v = parseVerdict('FINAL ANSWER: Use SQLite.\nCONSENSUS: majority\nDISSENT: Gemini would keep JSON.\n\n## What would change this\n- A benchmark showing writes above 500 per second\n2) A second writer process\n* Dropping the offline requirement\n- a fourth line that is cut');
+v = parseVerdict('FINAL ANSWER: Use SQLite.\nCONSENSUS: majority\nDISSENT: Gemini would keep JSON.\n\n## What would change this\n- A benchmark showing writes above 500 per second\n2) A second writer process\n* Dropping the offline requirement\n- a fourth line that is cut\nEND');
 assert.deepEqual(v.would_change, ['A benchmark showing writes above 500 per second', 'A second writer process', 'Dropping the offline requirement']);
 assert.equal(v.dissent.summary, 'Gemini would keep JSON.'); assert.equal(v.consensus, 'majority'); ok('would_change parsed (3 max), dissent untouched');
 v = parseVerdict('FINAL ANSWER: Do X.\nCONSENSUS: full\nDISSENT: none\n\n## What would change this\n- New data on Friday\n\n## Questions for you\n\n1. q');
@@ -33,16 +33,16 @@ v = parseVerdict('FINAL ANSWER: Do X.\nCONSENSUS: full\nDISSENT: none\n');
 assert.equal('would_change' in v, false); ok('no section, no would_change field');
 
 // claim ledger: "## Key claims" is parsed into claims[], in either order with "What would change this", and kept out of the dissent
-v = parseVerdict('FINAL ANSWER: Do X.\nCONSENSUS: majority\nDISSENT: B disagrees.\n\n## What would change this\n- New data\n\n## Key claims\n- The outage began on Nov 13 | tier: documented | source: reputable | by: openai-api\n- Officials say no cyberattack | tier: inferred | source: primary | by: official statement\n- A second actor is involved | tier: speculative | source: none | by: xai-api');
+v = parseVerdict('FINAL ANSWER: Do X.\nCONSENSUS: majority\nDISSENT: B disagrees.\n\n## What would change this\n- New data\n\n## Key claims\n- The outage began on Nov 13 | tier: documented | source: reputable | by: openai-api\n- Officials say no cyberattack | tier: inferred | source: primary | by: official statement\n- A second actor is involved | tier: speculative | source: none | by: xai-api\nEND');
 assert.equal(v.claims.length, 3); assert.deepEqual(v.claims[0], { claim: 'The outage began on Nov 13', tier: 'documented', source: 'reputable', by: 'openai-api' });
 assert.equal(v.claims[1].by, 'official statement'); assert.equal(v.claims[2].tier, 'speculative'); assert.deepEqual(v.would_change, ['New data']); assert.equal(v.dissent.summary, 'B disagrees.'); ok('claims parsed after would_change; dissent untouched');
-v = parseVerdict('FINAL ANSWER: Do X.\nCONSENSUS: full\nDISSENT: none\n\n## Key claims\n- Claim one | tier: inferred | source: none | by: a\n\n## What would change this\n- Evidence E');
+v = parseVerdict('FINAL ANSWER: Do X.\nCONSENSUS: full\nDISSENT: none\n\n## Key claims\n- Claim one | tier: inferred | source: none | by: a\n\n## What would change this\n- Evidence E\nEND');
 assert.equal(v.claims.length, 1); assert.deepEqual(v.would_change, ['Evidence E']); assert.equal(v.dissent.summary, 'none'); ok('claims before would_change');
 // a claim cannot be "documented" without a named source; malformed tags are untagged, never guessed; 6 max
 let c = parseClaims('- Sky is blue | tier: documented | source: none | by: a\n- Odd | tier: certain | source: gold | by: b\n- Bare claim\n- 4 | tier: inferred | source: low | by: x\n- 5\n- 6\n- 7\n- 8');
 assert.equal(c[0].tier, 'inferred'); assert.match(c[0].adjusted, /no source/); assert.equal(c[1].tier, 'untagged'); assert.equal(c[1].source, 'untagged'); assert.equal(c[2].claim, 'Bare claim'); assert.equal(c[2].tier, 'untagged'); assert.equal(c.length, 6); ok('documented needs a source; bad tags are untagged; capped at 6');
 assert.deepEqual(parseClaims('no bullets here'), []); ok('no bullet lines, no claims');
-v = parseVerdict('FINAL ANSWER: Do X.\nCONSENSUS: full\nDISSENT: none\n\n## Key claims\nnothing parseable');
+v = parseVerdict('FINAL ANSWER: Do X.\nCONSENSUS: full\nDISSENT: none\n\n## Key claims\nnothing parseable\nEND');
 assert.equal('claims' in v, false); assert.equal(v.dissent.summary, 'none'); ok('an empty ledger section adds no field');
 
 // contested: an optional fifth field flags a disputed claim without changing its tier; "no"/"none" is ignored
@@ -52,7 +52,7 @@ v = sanitizeVerdict({ final_answer: 'a', consensus: 'full', dissent: { present: 
 assert.equal(v.claims[0].contested, '[y]'); ok('sanitizeVerdict covers contested');
 
 // hypotheses (--approach hypotheses): ranked list parsed, in any order with the other sections, kept out of the dissent
-v = parseVerdict('FINAL ANSWER: Shared fragility fits best, but the evidence cannot rule out a campaign.\nCONSENSUS: majority\nDISSENT: xai: a coordinated campaign | "q"\n\n## Hypotheses\n- Shared fragility | rank: 1 | confidence: medium | events: confirmed | for: reported router fault | against: timing | discriminator: the root-cause report\n- Coordinated campaign | rank: 2 | confidence: low | events: partly confirmed | for: attribution of one incident | against: no shared signature | discriminator: matching malware\n\n## What would change this\n- A root-cause report naming a third party');
+v = parseVerdict('FINAL ANSWER: Shared fragility fits best, but the evidence cannot rule out a campaign.\nCONSENSUS: majority\nDISSENT: xai: a coordinated campaign | "q"\n\n## Hypotheses\n- Shared fragility | rank: 1 | confidence: medium | events: confirmed | for: reported router fault | against: timing | discriminator: the root-cause report\n- Coordinated campaign | rank: 2 | confidence: low | events: partly confirmed | for: attribution of one incident | against: no shared signature | discriminator: matching malware\n\n## What would change this\n- A root-cause report naming a third party\nEND');
 assert.equal(v.hypotheses.length, 2); assert.deepEqual(v.hypotheses[0], { name: 'Shared fragility', rank: 1, confidence: 'medium', events: 'confirmed', for: 'reported router fault', against: 'timing', discriminator: 'the root-cause report' });
 assert.equal(v.hypotheses[1].confidence, 'low'); assert.deepEqual(v.would_change, ['A root-cause report naming a third party']); assert.match(v.dissent.summary, /^xai: a coordinated campaign/); assert.ok(!/Hypotheses|Shared fragility/.test(v.dissent.summary)); ok('hypotheses parsed with would_change; dissent untouched');
 let h = parseHypotheses('- A | rank: 9 | confidence: certain\n- B\n- C | rank: 2 | confidence: HIGH\n- D\n- E\n- F');
@@ -60,6 +60,30 @@ assert.equal(h.length, 4); assert.equal(h[0].rank, 1); assert.equal(h[0].confide
 assert.deepEqual(parseHypotheses('no bullets'), []);
 v = sanitizeVerdict({ final_answer: 'a', consensus: 'full', dissent: { present: false, summary: 'none' }, hypotheses: [{ name: 'n', rank: 1, confidence: 'low', events: 'e', for: 'f', against: 'g', discriminator: 'd' }] }, (t) => `[${t}]`);
 assert.deepEqual(v.hypotheses[0], { name: '[n]', rank: 1, confidence: 'low', events: '[e]', for: '[f]', against: '[g]', discriminator: '[d]' }); ok('sanitizeVerdict covers hypotheses');
+
+// a finished reply ends with END; a reply that ran out of output budget has none, and its last item may be cut, so it is dropped
+const HEAD = 'FINAL ANSWER: Rotate now.\nCONSENSUS: full\nDISSENT: none\n\n';
+const fiveClaims = (lastBy) => '## Key claims\n' + [1, 2, 3, 4].map((i) => `- claim ${i} | tier: inferred | source: none | by: anthropic-api`).join('\n') + `\n- Logs should be preserved first | tier: inferred | source: none | by: ${lastBy}`;
+v = parseVerdict(HEAD + fiveClaims('anthropic-'));
+assert.equal(v.claims.length, 4); assert.ok(!v.claims.some((c) => /preserved/.test(c.claim) || /anthropic-$/.test(c.by))); ok('no END: the cut final claim is dropped, the four complete ones kept (the production incident)');
+v = parseVerdict(HEAD + fiveClaims('anthropic-api') + '\nEND');
+assert.equal(v.claims.length, 5); assert.equal(v.claims[4].by, 'anthropic-api'); ok('with END all five claims are kept');
+v = parseVerdict(HEAD + fiveClaims('anthropic-api') + '\nEND  \n\n');
+assert.equal(v.claims.length, 5); ok('END tolerates trailing whitespace and newlines');
+v = parseVerdict('FINAL ANSWER: a.\nCONSENSUS: full\nDISSENT: none\n\n## What would change this\n- first\n- second\n- thir');
+assert.deepEqual(v.would_change, ['first', 'second']); ok('no END and no claims: the cut last would_change item is dropped');
+v = parseVerdict(HEAD + '## What would change this\n- only item\n\n## Key claims\n- one claim | tier: inferred | source: none | by: x');
+assert.deepEqual(v.would_change, ['only item']); assert.equal('claims' in v, false); ok('no END and a single claim: nothing left, so no claims field (the earlier section is kept)');
+v = parseVerdict(HEAD + '## What would change this\n- kept\n\n## Key claims\n- a | tier: inferred | source: none | by: x\n\n## Questions for you\n\n1. a question');
+assert.deepEqual(v.would_change, ['kept']); assert.equal(v.claims.length, 1); ok('case mode (Questions for you follows, no END): nothing is dropped');
+v = parseVerdict('FINAL ANSWER: a.\nCONSENSUS: full\nDISSENT: none\nEND');
+assert.equal(v.dissent.summary, 'none'); assert.equal(v.dissent.present, false); ok('END with no sections is not part of the dissent');
+v = parseVerdict('FINAL ANSWER: a.\nCONSENSUS: majority\nDISSENT: B disagrees about the cost.\nEND');
+assert.equal(v.dissent.summary, 'B disagrees about the cost.'); ok('END is stripped from a dissent text');
+v = parseVerdict('FINAL ANSWER: Use SQLite.\nCONSENSUS: majority\nDISSENT: Gemini would keep JSON.');
+assert.equal(v.dissent.summary, 'Gemini would keep JSON.'); assert.equal('claims' in v, false); ok('a legacy reply with no sections and no END is unchanged');
+v = parseVerdict(HEAD + '## Hypotheses\n- A | rank: 1 | confidence: low | events: confirmed | for: f | against: g | discriminator: d\n- B | rank: 2 | confidence: medium | events: partly confirmed | for: f | against: g | discr');
+assert.equal(v.hypotheses.length, 1); assert.equal(v.hypotheses[0].name, 'A'); ok('no END: a cut last hypothesis is dropped');
 
 // sanitizeVerdict: every model-written field goes through clean(), including would_change and claims
 const mark = (t) => `[${t}]`;

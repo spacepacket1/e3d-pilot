@@ -227,7 +227,7 @@ out=""; while [[ $# -gt 0 ]]; do case "$1" in --out-dir) out="$2"; shift 2 ;; *)
 mkdir -p "$out"
 printf '# Debate\n\n## Round 1 -- anthropic-api\n\nJSON.\n\n## Synthesis\n\nx\n' > "$out/transcript.md"
 printf '%s' '{"schema":1,"seats_requested":2,"seats_answered":1,"seats_unavailable":[{"provider":"openai-api","round":1,"reason":"error"}],"synthesizer":"anthropic-api","synthesizer_fallback":null,"synthesis_ok":true,"flags":{"synthesizer_fallback":false,"seats_lost":true,"fewer_than_3_seats":true},"consensus_note":"Consensus is computed from the 1 of 2 seats that answered, not from all 2. With a single answering seat there was no cross-check."}' > "$out/seats.json"
-printf 'FINAL ANSWER: use JSON.\nCONSENSUS: majority\nDISSENT: none\n\n## What would change this\n- A benchmark above 500 writes per second\n'
+printf 'FINAL ANSWER: use JSON.\nCONSENSUS: majority\nDISSENT: none\n\n## What would change this\n- A benchmark above 500 writes per second\nEND\n'
 EOS
 chmod +x "$STUB1"
 resp="$(printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}' '{"jsonrpc":"2.0","method":"notifications/initialized"}' "$call" \
