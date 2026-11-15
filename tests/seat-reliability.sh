@@ -63,6 +63,13 @@ assert_contains "$(cat "$TMP/last.out")" "SEATS: 2 of 3 participants answered; u
 assert_eq "$(jq -c '.providers' "$TMP/t2/decision-log.json")" '["anthropic-api","openai-api","gemini-api"]' "the decision log names every requested seat"
 echo "ok - no text twice: dropped with reason no_text, debate succeeds on the 2 seats that answered, consensus note present"
 
+# ---- 2b. four seats, one lost, three still answer: the consensus note is written anyway (it used to need fewer than 3 answering)
+rc=0; PROVS_OVERRIDE=anthropic-api,openai-api,gemini-api,xai-api dbt "$TMP/t2b" claude-ok gpt-ntall gem-ok -- --rounds 2 "Which?" || rc=$?
+assert_eq "$rc" 0 "t2b exit"
+assert_eq "$(jq -c '[.seats_requested, .seats_answered, .flags.seats_lost, .flags.fewer_than_3_seats]' "$TMP/t2b/seats.json")" '[4,3,true,false]' "t2b seats"
+assert_contains "$(jq -r .consensus_note "$TMP/t2b/seats.json")" "3 of 4 seats that answered" "t2b: the note names the basis"
+echo "ok - 3 of 4 seats answered: the consensus note says so"
+
 # ---- 3. synthesis no text, then the fallback synthesizer succeeds: marked everywhere, charged normally (the call count is the transcript's)
 rc=0; dbt "$TMP/t3" claude-ntsynth gpt-ok gem-ok -- --rounds 1 "Which?" || rc=$?
 assert_eq "$rc" 0 "t3 exit"

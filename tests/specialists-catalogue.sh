@@ -34,7 +34,7 @@ for (const n of names) {
   const e = r.expert;
   assert.equal(e.license, 'MIT', `${n}: license`);
   assert.equal(e.metadata['e3d.expert.schema'], 'expert/v1', `${n}: schema`);
-  assert.equal(e.metadata['e3d.expert.version'], '1', `${n}: version`);
+  assert.equal(e.metadata['e3d.expert.version'], n === 'factchecker' ? '2' : '1', `${n}: version`); // factchecker v2: may use web search when the debate has it
   assert.ok(e.metadata['e3d.expert.lens'], `${n}: lens summary`);
   assert.equal(e.sidecarPresent, true, `${n}: sidecar`);
   assert.equal(e.sidecar.tools, 'none', `${n}: tools`);

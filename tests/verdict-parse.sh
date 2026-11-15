@@ -23,6 +23,15 @@ v = parseVerdict('noise\nFINAL ANSWER: Do X.\nCONSENSUS: full\nDISSENT: none\nPO
 assert.equal(v.consensus, 'full'); ok('text before FINAL ANSWER is ignored');
 assert.equal(parseVerdict('no verdict here'), null); assert.equal(parseVerdict(''), null); assert.equal(parseVerdict(undefined), null); ok('no FINAL ANSWER gives null');
 
+// "## What would change this": returned as would_change, never part of the dissent; absent when the section is absent
+v = parseVerdict('FINAL ANSWER: Use SQLite.\nCONSENSUS: majority\nDISSENT: Gemini would keep JSON.\n\n## What would change this\n- A benchmark showing writes above 500 per second\n2) A second writer process\n* Dropping the offline requirement\n- a fourth line that is cut');
+assert.deepEqual(v.would_change, ['A benchmark showing writes above 500 per second', 'A second writer process', 'Dropping the offline requirement']);
+assert.equal(v.dissent.summary, 'Gemini would keep JSON.'); assert.equal(v.consensus, 'majority'); ok('would_change parsed (3 max), dissent untouched');
+v = parseVerdict('FINAL ANSWER: Do X.\nCONSENSUS: full\nDISSENT: none\n\n## What would change this\n- New data on Friday\n\n## Questions for you\n\n1. q');
+assert.deepEqual(v.would_change, ['New data on Friday']); assert.equal(v.dissent.summary, 'none'); ok('would_change before case-mode questions');
+v = parseVerdict('FINAL ANSWER: Do X.\nCONSENSUS: full\nDISSENT: none\n');
+assert.equal('would_change' in v, false); ok('no section, no would_change field');
+
 // cut after CONSENSUS: the consensus survives and the CONSENSUS line is not part of the answer
 v = parseVerdict('FINAL ANSWER: Use a shared schema with row-level security. Revisit if several customers need physical isolation.\n\nCONSENSUS: majority');
 assert.equal(v.consensus, 'majority');
