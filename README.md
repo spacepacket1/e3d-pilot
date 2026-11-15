@@ -966,6 +966,15 @@ bin/e3d-debate "Should we ship it?" --providers claude,codex --repo /path/to/rep
 
 This links the evidence, it does not create the idea — propose that separately (e.g. via `ideas ingest`) first. The transcript itself still needs to be committed for the evidence link to stay durable, the same way the existing `docs/debates/` transcripts are.
 
+### Hypotheses approach: compare explanations instead of picking an action
+
+`e3d-debate "<question>" --approach hypotheses` (or `E3D_DEBATE_APPROACH=hypotheses`) is for questions about why something happened or what is going on, where there is no single action for the models to agree on. The default (`decide`) is unchanged.
+
+- **Round 1 (independent):** each model separates the events from the causes, proposes two to four competing explanations (including, when the question allows, one that needs no coordination and one that does), gives the strongest evidence for and against each, one observable that would tell it apart from the others, and its confidence in the events separately from its confidence in the cause. Official statements are treated as claims by an interested party.
+- **Round 2:** each model steelmans the rival it rates lowest, checks the one claim that would hurt its top explanation most, and re-ranks. There is no `status:` line, so the early-convergence shortcut never ends a hypotheses debate.
+- **Summary:** `FINAL ANSWER` says which explanation the evidence favours and how strongly (or that it cannot separate them), `CONSENSUS` means agreement on the top-ranked explanation, and a `## Hypotheses` section ranks up to four (`name | rank | confidence | events | for | against | discriminator`). `What would change this` and `Key claims` still apply. e3d-mcp returns the ranked list as `hypotheses[]` when present.
+- **Not exposed through the MCP tools yet:** adding an argument would change the pinned `e3d_debate` input definition that the directory listings depend on, so that is a separate decision.
+
 ### Experts (opt-in): choose the skills, not the models
 
 An expert is a reusable lens for one seat in a debate ("assume it fails", "you are the customer", "check the facts"), written as a standard [Agent Skill](https://agentskills.io/specification) folder. You choose the experts; the engine assigns each one a provider, spread across vendors, and records what it did in the receipt. It is off unless `E3D_SPECIALISTS=1`, and with no expert flag a debate is exactly what it was before.
