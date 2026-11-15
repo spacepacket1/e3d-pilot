@@ -113,7 +113,7 @@ run "$T/out6" --continue "$T/out1" || { cat "$T/stderr"; fail "continue without 
 if env -u TYPESAFE_API_KEY "$T/bin/e3d-debate" "q?" --answers "$T/answers.txt" --providers alpha,beta --synthesizer synth >/dev/null 2>&1; then fail "--answers without --continue accepted"; fi
 if env -u TYPESAFE_API_KEY "$T/bin/e3d-debate" --continue "$T/out0" --providers alpha,beta --synthesizer synth >/dev/null 2>&1; then fail "--continue of a run with no case record accepted"; fi
 
-# 8. all-agreed fast path: unchanged without --follow-up, skipped with it
+# 8. all-agreed fast path: now opt-in (E3D_DEBATE_FAST_SYNTHESIS=1); with it unchanged without --follow-up, and --follow-up always synthesizes. Default behaviour: tests/debate-converged-synthesis.sh
 for n in alpha beta; do
   other=beta; [[ $n == beta ]] && other=alpha
   cat > "$T/lib/providers/$n" <<STUB
@@ -122,9 +122,9 @@ printf 'VERDICT: x\nACTION: do the thing\nAGREES_WITH: $other\nCONFIDENCE: high\
 STUB
 done
 rm -f "$T/seen-synth.md"
-env -u TYPESAFE_API_KEY "$T/bin/e3d-debate" "q?" --providers alpha,beta --rounds 2 --synthesizer synth --prompts v3c > "$T/stdout" 2> "$T/stderr" || { cat "$T/stderr"; exit 1; }
-[[ ! -e "$T/seen-synth.md" ]] || fail "fast path should skip the synthesizer without --follow-up"
-env -u TYPESAFE_API_KEY "$T/bin/e3d-debate" "q?" --providers alpha,beta --rounds 2 --synthesizer synth --prompts v3c --follow-up > "$T/stdout" 2> "$T/stderr" || { cat "$T/stderr"; exit 1; }
+env -u TYPESAFE_API_KEY E3D_DEBATE_FAST_SYNTHESIS=1 "$T/bin/e3d-debate" "q?" --providers alpha,beta --rounds 2 --synthesizer synth --prompts v3c > "$T/stdout" 2> "$T/stderr" || { cat "$T/stderr"; exit 1; }
+[[ ! -e "$T/seen-synth.md" ]] || fail "the opt-in fast path should skip the synthesizer without --follow-up"
+env -u TYPESAFE_API_KEY E3D_DEBATE_FAST_SYNTHESIS=1 "$T/bin/e3d-debate" "q?" --providers alpha,beta --rounds 2 --synthesizer synth --prompts v3c --follow-up > "$T/stdout" 2> "$T/stderr" || { cat "$T/stderr"; exit 1; }
 [[ -e "$T/seen-synth.md" ]] || fail "--follow-up should call the synthesizer even when everyone agreed"
 
 # 9. synthesizer wording, kind field, agent-diagnosis (seat questions and the shared-assumption rule were reverted after the benchmark) (stub providers, real prompts)
