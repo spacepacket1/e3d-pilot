@@ -80,6 +80,9 @@ FOLLOW_UP=0
 CONTINUE_DIR=""
 # decide (default: answers a question with an action) or hypotheses (compares competing explanations; see hyp_* below)
 APPROACH="${E3D_DEBATE_APPROACH:-decide}"
+# E3D_DEBATE_FAST_SYNTHESIS=1 restores the old shortcut: when every participant converged, skip the synthesizer and emit the first POSITION. Off by default: the summary sections
+# (what would change this, key claims, the seat note) are written only by the synthesizer, so a unanimous debate would have none of them.
+FAST_SYNTHESIS="${E3D_DEBATE_FAST_SYNTHESIS:-0}"
 ANSWERS_FILE=""
 CASE_LIB="$REPO_ROOT/lib/debate/case.mjs"
 CASE_META=""
@@ -91,11 +94,11 @@ e3d-debate "<question>" [--providers claude,codex] [--rounds 2] [--synthesizer c
 Runs the question through N rounds across the given lib/providers/<name>
 adapters (round 1: independent answers; round 2+: each provider sees every
 other provider's prior-round answer and is asked to rebut or concede), then
-asks --synthesizer to read the full transcript and produce one final answer --
-unless every participant's round-2+ status already converged on "approved",
-in which case the synthesizer call is skipped and the first participant's
-POSITION line is emitted directly (full agreement means everyone would act
-the same, so there is nothing left for a synthesizer to add).
+asks --synthesizer to read the full transcript and produce one final answer.
+Once every participant's round-2+ status has converged on "approved" no further
+rounds run, but the synthesizer still writes the summary (its sections, such as
+"What would change this", exist only there). E3D_DEBATE_FAST_SYNTHESIS=1 skips
+that call and emits the first participant's POSITION line directly (cheaper).
 Prints the transcript and final answer to stdout; also writes transcript.md
 under --out-dir (default: a mktemp dir, path printed at the end).
 
@@ -1245,13 +1248,13 @@ synthesis_prompt "$prompt_transcript_md" "$rounds_ran_note" > "$synth_prompt"
 
 synth_out="$work_dir/synthesis.out"
 
-# When every participant converged on "approved" in the final round, the
-# synthesizer call adds no information -- everyone already agreed they'd act
-# the same as everyone else. Skip it and emit the first participant's
-# POSITION line directly (order = --providers order, deterministic).
+# The old shortcut (opt-in now, E3D_DEBATE_FAST_SYNTHESIS=1): when every participant converged on "approved" in the final round, skip the
+# synthesizer call and emit the first participant's POSITION line directly (order = --providers order, deterministic). Off by default since
+# 2026-11-15: the synthesizer is the only writer of "What would change this", "Key claims" and the seat note, and a unanimous panel is exactly
+# when "what would change this" is most worth reading. The early stop itself (no further rounds once everyone agrees) is unchanged.
 fast_synthesis=0
 # case mode never takes the fast path: a unanimous council can still have a question that would change its verdict
-if (( converged == 1 && FOLLOW_UP == 0 )); then
+if (( converged == 1 && FOLLOW_UP == 0 && FAST_SYNTHESIS == 1 )); then
   first_provider="${DEBATE_PROVIDERS[0]}"
   fast_position="$(grep -m1 -E '^POSITION: ' <<< "${LAST_ANSWER[$first_provider]}" | sed -E 's/^POSITION: //')"
   if [[ -n "$fast_position" ]]; then
