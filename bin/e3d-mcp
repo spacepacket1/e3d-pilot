@@ -22,7 +22,7 @@ import { fileURLToPath } from 'node:url';
 import { createInterface } from 'node:readline';
 import { ROOT, log, text, run, configuredProviders, providerLine, NAME_RE } from '../lib/mcp/util.js';
 import { redact } from '../lib/mcp/redact.js';
-import { parseVerdict } from '../lib/mcp/verdict.js';
+import { parseVerdict, sanitizeVerdict, applySeatLabel } from '../lib/mcp/verdict.js';
 import { createCaseStore, checkAnswers, checkExperts, caseTool, renderCase } from '../lib/mcp/case.js';
 import { suggest as suggestPanel } from '../lib/specialists/suggest.mjs';
 import { readCase, buildQuestion, normalizeAnswers, normalizeQuestions } from '../lib/debate/case.mjs';
@@ -690,7 +690,7 @@ async function executeDebate(plan, handle, ctx, { progress, onStarted, signal } 
     // The synthesis call counts when the transcript shows it ran ("## Synthesis" heading), or when the debate was not stopped by the timeout (a failed debate is charged conservatively).
     const spent = usageFromTranscript(transcript, question, { synthesized: /\n## Synthesis/.test(transcript) || !(r.timedOut || r.cancelled) });
     const parsed = parseVerdict(r.out);
-    const verdict = parsed && webSearch.enabled ? { ...parsed, final_answer: clean(parsed.final_answer), dissent: { ...parsed.dissent, summary: clean(parsed.dissent.summary) } } : parsed;
+    const verdict = applySeatLabel(parsed && webSearch.enabled ? sanitizeVerdict(parsed, clean) : parsed, seats);
     // Every outcome settles what actually ran (no transcript = zero calls = release).
     const outcome = r.cancelled ? 'error' : r.timedOut ? 'timeout' : (r.code !== 0 || !verdict ? 'error' : 'ok');
     const { roundsRan, positions: rawPositions } = parsePositions(transcript);

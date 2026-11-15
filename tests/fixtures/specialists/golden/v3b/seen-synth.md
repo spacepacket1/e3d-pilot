@@ -54,4 +54,6 @@ Read the transcript and produce a final answer. Your reply has a small output li
 FINAL ANSWER: <2-3 decisive sentences, at most 60 words in all>
 CONSENSUS: <full | majority | split>
 DISSENT: <one line, at most 40 words, on any remaining disagreement worth flagging, or "none">
+
+The 150-word limit above covers the lines above only. After them, add a section headed exactly "## What would change this" with at most 3 lines. Each line names one concrete, observable thing (a document, a measurement, a date or an event) that would change your FINAL ANSWER or its CONSENSUS, and says which way. Do not invent evidence. If you state any probability anywhere, name the event, the time window and what the number rests on; if you cannot, state no number.
 If the question depends on recent events or current data that the participants did not have, say so plainly in FINAL ANSWER instead of presenting the answer as current.

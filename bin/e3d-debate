@@ -884,8 +884,18 @@ synthesis_prompt() {
     printf 'CONSENSUS: <full | majority | split>\n'
     printf 'DISSENT: <one line, at most 40 words, on any remaining disagreement worth flagging, or "none">\n'
   fi
+  analysis_synthesis_instructions
   if (( FOLLOW_UP == 1 )); then case_synthesis_instructions; fi
   printf '%s\n' "$SYNTH_CURRENT_DATA_TEXT"
+}
+
+# Every debate: after the verdict lines, a short section naming the evidence that would change the answer, and a rule for probabilities.
+# lib/mcp/verdict.js strips the section (like "## Questions for you") and returns it as would_change, so it never lands inside DISSENT.
+analysis_synthesis_instructions() {
+  cat <<'EOP'
+
+The 150-word limit above covers the lines above only. After them, add a section headed exactly "## What would change this" with at most 3 lines. Each line names one concrete, observable thing (a document, a measurement, a date or an event) that would change your FINAL ANSWER or its CONSENSUS, and says which way. Do not invent evidence. If you state any probability anywhere, name the event, the time window and what the number rests on; if you cannot, state no number.
+EOP
 }
 
 # --follow-up: what the synthesizer adds after DISSENT (and after the other lines of a v3c verdict). The word limit above does not cover it.
@@ -1138,6 +1148,7 @@ if (( ${#SEAT_UNAVAILABLE[@]} > 0 )); then
   seat_list=""
   for u in "${SEAT_UNAVAILABLE[@]}"; do IFS='|' read -r su_p su_r su_why <<< "$u"; seat_list+="${seat_list:+, }$su_p (round $su_r: $su_why)"; done
   SEAT_NOTE="Note: only $SEATS_ANSWERED of $SEATS_REQUESTED participants answered; unavailable: $seat_list. Judge CONSENSUS only among the participants who answered, and do not infer anything about the missing ones."
+  if (( SEATS_ANSWERED == 1 )); then SEAT_NOTE+=" With only one participant answering there is nothing to compare, so write CONSENSUS: unknown."; fi
   rounds_ran_note="$rounds_ran_note; $SEATS_ANSWERED of $SEATS_REQUESTED participants answered"
 fi
 synth_prompt="$work_dir/synthesis.prompt.md"
@@ -1322,7 +1333,7 @@ write_seats() {
   fb="null"
   [[ -z "$SYNTH_FALLBACK_TO" ]] || fb="$(jq -nc --arg f "$DEBATE_SYNTHESIZER" --arg t "$SYNTH_FALLBACK_TO" --arg r "$SYNTH_FALLBACK_REASON" '{from:$f, to:$t, reason:$r}')"
   (( ${#SEAT_UNAVAILABLE[@]} > 0 )) && lost=true
-  if (( SEATS_ANSWERED < 3 )); then
+  if (( SEATS_ANSWERED < 3 )) || [[ "$lost" == true ]]; then
     if [[ "$lost" == true ]]; then note="Consensus is computed from the $SEATS_ANSWERED of $SEATS_REQUESTED seats that answered, not from all $SEATS_REQUESTED."
     else note="Consensus is computed from the $SEATS_ANSWERED seats that were asked."; fi
     (( SEATS_ANSWERED == 1 )) && note="$note With a single answering seat there was no cross-check."

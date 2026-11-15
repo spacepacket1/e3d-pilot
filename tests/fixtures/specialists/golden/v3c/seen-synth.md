@@ -60,4 +60,6 @@ POSITIONS: one line per analyst: <name>: <their final ACTION in your words> | "<
 CLAIMS CHECKED: any factual claim where analysts contradicted each other, and what the transcript shows (round and analyst). Say "not resolvable" when it is.
 OPEN QUESTIONS: up to 3.
 Rules: every quote must be copied verbatim from that analyst's text. If you cannot find a quote, omit the claim. Never attribute a statement to someone who did not write it.
+
+The 150-word limit above covers the lines above only. After them, add a section headed exactly "## What would change this" with at most 3 lines. Each line names one concrete, observable thing (a document, a measurement, a date or an event) that would change your FINAL ANSWER or its CONSENSUS, and says which way. Do not invent evidence. If you state any probability anywhere, name the event, the time window and what the number rests on; if you cannot, state no number.
 If the question depends on recent events or current data that the participants did not have, say so plainly in FINAL ANSWER instead of presenting the answer as current.
