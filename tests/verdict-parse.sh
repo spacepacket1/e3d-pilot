@@ -9,7 +9,7 @@ node --input-type=module - "$ROOT" <<'EOF2'
 import assert from 'node:assert/strict';
 import { pathToFileURL } from 'node:url';
 import { join } from 'node:path';
-const { parseVerdict, sanitizeVerdict, applySeatLabel } = await import(pathToFileURL(join(process.argv[2], 'lib/mcp/verdict.js')).href);
+const { parseVerdict, parseClaims, sanitizeVerdict, applySeatLabel } = await import(pathToFileURL(join(process.argv[2], 'lib/mcp/verdict.js')).href);
 const ok = (m) => console.log(`ok - ${m}`);
 
 // complete replies are parsed exactly as before
@@ -31,6 +31,19 @@ v = parseVerdict('FINAL ANSWER: Do X.\nCONSENSUS: full\nDISSENT: none\n\n## What
 assert.deepEqual(v.would_change, ['New data on Friday']); assert.equal(v.dissent.summary, 'none'); ok('would_change before case-mode questions');
 v = parseVerdict('FINAL ANSWER: Do X.\nCONSENSUS: full\nDISSENT: none\n');
 assert.equal('would_change' in v, false); ok('no section, no would_change field');
+
+// claim ledger: "## Key claims" is parsed into claims[], in either order with "What would change this", and kept out of the dissent
+v = parseVerdict('FINAL ANSWER: Do X.\nCONSENSUS: majority\nDISSENT: B disagrees.\n\n## What would change this\n- New data\n\n## Key claims\n- The outage began on Nov 13 | tier: documented | source: reputable | by: openai-api\n- Officials say no cyberattack | tier: inferred | source: primary | by: official statement\n- A second actor is involved | tier: speculative | source: none | by: xai-api');
+assert.equal(v.claims.length, 3); assert.deepEqual(v.claims[0], { claim: 'The outage began on Nov 13', tier: 'documented', source: 'reputable', by: 'openai-api' });
+assert.equal(v.claims[1].by, 'official statement'); assert.equal(v.claims[2].tier, 'speculative'); assert.deepEqual(v.would_change, ['New data']); assert.equal(v.dissent.summary, 'B disagrees.'); ok('claims parsed after would_change; dissent untouched');
+v = parseVerdict('FINAL ANSWER: Do X.\nCONSENSUS: full\nDISSENT: none\n\n## Key claims\n- Claim one | tier: inferred | source: none | by: a\n\n## What would change this\n- Evidence E');
+assert.equal(v.claims.length, 1); assert.deepEqual(v.would_change, ['Evidence E']); assert.equal(v.dissent.summary, 'none'); ok('claims before would_change');
+// a claim cannot be "documented" without a named source; malformed tags are untagged, never guessed; 6 max
+let c = parseClaims('- Sky is blue | tier: documented | source: none | by: a\n- Odd | tier: certain | source: gold | by: b\n- Bare claim\n- 4 | tier: inferred | source: low | by: x\n- 5\n- 6\n- 7\n- 8');
+assert.equal(c[0].tier, 'inferred'); assert.match(c[0].adjusted, /no source/); assert.equal(c[1].tier, 'untagged'); assert.equal(c[1].source, 'untagged'); assert.equal(c[2].claim, 'Bare claim'); assert.equal(c[2].tier, 'untagged'); assert.equal(c.length, 6); ok('documented needs a source; bad tags are untagged; capped at 6');
+assert.deepEqual(parseClaims('no bullets here'), []); ok('no bullet lines, no claims');
+v = parseVerdict('FINAL ANSWER: Do X.\nCONSENSUS: full\nDISSENT: none\n\n## Key claims\nnothing parseable');
+assert.equal('claims' in v, false); assert.equal(v.dissent.summary, 'none'); ok('an empty ledger section adds no field');
 
 // sanitizeVerdict: every model-written field goes through clean(), including would_change and claims
 const mark = (t) => `[${t}]`;
