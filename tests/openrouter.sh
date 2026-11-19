@@ -42,6 +42,7 @@ ok((c) => { c.models[0].input_price = 0; }, 'input_price must be a positive numb
 ok((c) => { delete c.models[0].output_price; }, 'missing output_price');
 ok((c) => { c.models[1].voice_id = 'or-deepseek'; }, 'duplicate voice_id');
 ok((c) => { c.models[0].pricing_checked_at = 'yesterday'; }, 'pricing_checked_at');
+ok((c) => { c.models[0].reasoning = 'max'; }, 'reasoning must be');
 ok((c) => { c.models[0].enabled = false; c.models[0].auto_eligible = true; }, 'cannot be auto_eligible');
 if (loadRegistry('/nonexistent/file.json').length !== 0) { console.error('a missing registry must load as empty'); process.exit(1); }
 " || fail "registry"
@@ -125,8 +126,8 @@ out="$(RV or-unknown E3D_PILOT_CHECK=1 "$OR" 2>&1)" && fail "an unknown voice mu
 [[ "$(jq -s 'map(select(.auth != null)) | length' "$TMP/api.log")" == "0" ]] || fail "the availability probe must never send the key"
 
 # ---------------- a normal call, per voice ----------------
-for pair in "or-deepseek:deepseek/deepseek-v4.1-flash" "or-glm:z-ai/glm-5.3-flash" "or-minimax:minimax/minimax-m3.1-flash" "or-mistral:mistralai/mistral-small-2603"; do
-  v="${pair%%:*}"; model="${pair#*:}"
+for pair in "or-deepseek:deepseek/deepseek-v4.1-flash:{\"enabled\":false}" "or-glm:z-ai/glm-5.3-flash:{\"effort\":\"minimal\"}" "or-minimax:minimax/minimax-m3.1-flash:{\"effort\":\"minimal\"}" "or-mistral:mistralai/mistral-small-2603:{\"enabled\":false}"; do
+  v="${pair%%:*}"; rest="${pair#*:}"; model="${rest%%:*}"; rsn="${rest#*:}"
   : > "$TMP/api.log"
   stdout="$(R OPENROUTER_API_KEY="$KEY" "$ROOT/lib/providers/$v" "$TMP/prompt.md" 2> "$TMP/o.err")"
   assert_eq "$stdout" "Four." "$v answer"
@@ -138,6 +139,7 @@ for pair in "or-deepseek:deepseek/deepseek-v4.1-flash" "or-glm:z-ai/glm-5.3-flas
   assert_eq "$(jq -c '.body | fromjson | .provider' <<< "$req")" '{"data_collection":"deny","require_parameters":true}' "privacy first by default"
   assert_eq "$(jq -r '.body | fromjson | .usage.include' <<< "$req")" "true" "usage requested"
   assert_eq "$(jq -r '.body | fromjson | has("max_tokens")' <<< "$req")" "false" "no limit unless asked"
+  assert_eq "$(jq -c '.body | fromjson | .reasoning' <<< "$req")" "$rsn" "$v runs with the reasoning setting measured for it"
   assert_not_contains "$stdout$(cat "$TMP/o.err")" "$KEY" "the key is never printed"
   usage="$(sed -n 's/^e3d_provider_usage=//p' "$TMP/o.err")"
   assert_eq "$(jq -r .provider <<< "$usage")" "$v" "the usage line names the voice"
@@ -159,6 +161,12 @@ assert_eq "$(lastreq | jq -c '.body | fromjson | .provider')" '{"data_collection
 out="$(R OPENROUTER_API_KEY="$KEY" OPENROUTER_MODEL=m OPENROUTER_DATA_COLLECTION=maybe "$OR" "$TMP/prompt.md" 2>&1)" && fail "bad data collection value"; assert_contains "$out" "must be deny or allow"
 out="$(R OPENROUTER_API_KEY="$KEY" OPENROUTER_MODEL=m OPENROUTER_MAX_TOKENS=lots "$OR" "$TMP/prompt.md" 2>&1)" && fail "bad max tokens"; assert_contains "$out" "must be a number"
 out="$(R OPENROUTER_API_KEY="$KEY" OPENROUTER_MODEL=m OPENROUTER_REASONING_EFFORT=extreme "$OR" "$TMP/prompt.md" 2>&1)" && fail "bad effort"; assert_contains "$out" "low, medium or high"
+
+# the environment overrides a voice's registry setting
+R OPENROUTER_API_KEY="$KEY" "$ROOT/lib/providers/or-glm" "$TMP/prompt.md" >/dev/null 2>&1; assert_eq "$(lastreq | jq -c '.body | fromjson | .reasoning')" '{"effort":"minimal"}'
+R OPENROUTER_API_KEY="$KEY" OPENROUTER_REASONING_EFFORT=high "$ROOT/lib/providers/or-glm" "$TMP/prompt.md" >/dev/null 2>&1; assert_eq "$(lastreq | jq -c '.body | fromjson | .reasoning')" '{"effort":"high"}'
+R OPENROUTER_API_KEY="$KEY" OPENROUTER_REASONING=off "$ROOT/lib/providers/or-glm" "$TMP/prompt.md" >/dev/null 2>&1; assert_eq "$(lastreq | jq -c '.body | fromjson | .reasoning')" '{"enabled":false}'
+out="$(R OPENROUTER_API_KEY="$KEY" OPENROUTER_MODEL=m OPENROUTER_REASONING=on "$OR" "$TMP/prompt.md" 2>&1)" && fail "bad reasoning value"; assert_contains "$out" "must be off or unset"
 
 # key files: bare key, `export NAME=key`, quoted, and with other lines present
 printf '%s\n' "$KEY" > "$TMP/key-bare"

@@ -15,7 +15,9 @@ set -euo pipefail
 #   OPENROUTER_ZDR=1       additionally require zero-data-retention endpoints
 #   OPENROUTER_ONLY        comma list of upstream providers to use exclusively (names as OpenRouter lists them)
 #   OPENROUTER_ALLOW_FALLBACKS  1 (default) lets OpenRouter try another endpoint of the same model on an error; 0 forbids it
-#   OPENROUTER_REASONING_EFFORT optional: low, medium or high, sent as reasoning.effort
+#   OPENROUTER_REASONING_EFFORT optional: minimal, low, medium or high, sent as reasoning.effort. Without this and OPENROUTER_REASONING, a voice runs with
+#                          the `reasoning` setting of its registry entry.
+#   OPENROUTER_REASONING   off sends reasoning.enabled=false. A model that cannot switch reasoning off answers HTTP 400.
 #   OPENROUTER_REGISTRY / E3D_OPENROUTER_REGISTRY  alternative registry file (tests, operators)
 # The key is sent from a 0600 header file, never on the command line, and is never printed. No web search: these voices are not search-capable.
 
@@ -39,6 +41,12 @@ or_model() {
   if [[ "$VOICE" == "openrouter" ]]; then printf '%s' "${OPENROUTER_MODEL:-}"; return 0; fi
   [[ -f "$REGISTRY" ]] || return 0
   jq -r --arg v "$VOICE" '[.models[]? | select(.voice_id == $v and .enabled == true)][0].model_id // empty' "$REGISTRY" 2>/dev/null || true
+}
+
+# The reasoning setting for this voice: the registry's (off, minimal, low, medium, high), unless the environment says otherwise.
+or_reasoning_default() {
+  [[ "$VOICE" == "openrouter" || ! -f "$REGISTRY" ]] && return 0
+  jq -r --arg v "$VOICE" '[.models[]? | select(.voice_id == $v and .enabled == true)][0].reasoning // empty' "$REGISTRY" 2>/dev/null || true
 }
 
 MODEL="$(or_model)"
@@ -82,7 +90,16 @@ if [[ "${E3D_PILOT_DRY_RUN:-0}" == "1" ]]; then
 fi
 
 case "${OPENROUTER_DATA_COLLECTION:-deny}" in deny|allow) ;; *) echo "error: $VOICE OPENROUTER_DATA_COLLECTION must be deny or allow" >&2; exit "$PROVIDER_EXIT_FAILURE" ;; esac
-case "${OPENROUTER_REASONING_EFFORT:-}" in ''|low|medium|high) ;; *) echo "error: $VOICE OPENROUTER_REASONING_EFFORT must be low, medium or high" >&2; exit "$PROVIDER_EXIT_FAILURE" ;; esac
+# one setting: OPENROUTER_REASONING=off, or OPENROUTER_REASONING_EFFORT=<level>, else the registry's value for the voice
+RSN_OFF=""; RSN_EFFORT=""
+if [[ -n "${OPENROUTER_REASONING:-}" ]]; then RSN_OFF="$OPENROUTER_REASONING"
+elif [[ -n "${OPENROUTER_REASONING_EFFORT:-}" ]]; then RSN_EFFORT="$OPENROUTER_REASONING_EFFORT"
+else
+  REG_RSN="$(or_reasoning_default)"
+  if [[ "$REG_RSN" == "off" ]]; then RSN_OFF=off; else RSN_EFFORT="$REG_RSN"; fi
+fi
+case "$RSN_EFFORT" in ''|minimal|low|medium|high) ;; *) echo "error: $VOICE OPENROUTER_REASONING_EFFORT must be minimal, low, medium or high" >&2; exit "$PROVIDER_EXIT_FAILURE" ;; esac
+case "$RSN_OFF" in ''|off) ;; *) echo "error: $VOICE OPENROUTER_REASONING must be off or unset" >&2; exit "$PROVIDER_EXIT_FAILURE" ;; esac
 if [[ -n "${OPENROUTER_MAX_TOKENS:-}" && ! "${OPENROUTER_MAX_TOKENS}" =~ ^[0-9]+$ ]]; then echo "error: $VOICE OPENROUTER_MAX_TOKENS must be a number" >&2; exit "$PROVIDER_EXIT_FAILURE"; fi
 
 work="$(mktemp -d "${TMPDIR:-/tmp}/e3d-pilot-openrouter.XXXXXX")"
@@ -98,10 +115,10 @@ jq -n --arg dc "${OPENROUTER_DATA_COLLECTION:-deny}" --arg zdr "${OPENROUTER_ZDR
    + (if $only != "" then {only: ($only | split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0)))} else {} end)
    + (if $fb == "0" then {allow_fallbacks: false} else {} end)' > "$work/provider.json"
 
-jq -n --rawfile content "$PROMPT_FILE" --arg model "$MODEL" --arg max "${OPENROUTER_MAX_TOKENS:-}" --arg effort "${OPENROUTER_REASONING_EFFORT:-}" --slurpfile prov "$work/provider.json" \
+jq -n --rawfile content "$PROMPT_FILE" --arg model "$MODEL" --arg max "${OPENROUTER_MAX_TOKENS:-}" --arg effort "$RSN_EFFORT" --arg rsn "$RSN_OFF" --slurpfile prov "$work/provider.json" \
   '{model: $model, messages: [{role: "user", content: $content}], usage: {include: true}, provider: $prov[0]}
    + (if $max != "" then {max_tokens: ($max | tonumber)} else {} end)
-   + (if $effort != "" then {reasoning: {effort: $effort}} else {} end)' > "$work/payload.json"
+   + (if $rsn == "off" then {reasoning: {enabled: false}} elif $effort != "" then {reasoning: {effort: $effort}} else {} end)' > "$work/payload.json"
 
 set +e
 http_code="$(curl -sS -m "${OPENROUTER_TIMEOUT:-180}" -o "$work/response.json" -w '%{http_code}' \

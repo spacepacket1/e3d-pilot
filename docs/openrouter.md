@@ -45,11 +45,25 @@ The key is read from `OPENROUTER_API_KEY` or `OPENROUTER_API_KEY_FILE` (a file h
 | `OPENROUTER_ZDR` | off | `1` also requires zero-data-retention endpoints. |
 | `OPENROUTER_ONLY` | none | Comma list of upstream providers to use exclusively. |
 | `OPENROUTER_ALLOW_FALLBACKS` | `1` | `0` forbids OpenRouter trying another endpoint of the same model. |
-| `OPENROUTER_REASONING_EFFORT` | none | `low`, `medium` or `high`. |
+| `OPENROUTER_REASONING_EFFORT` | the voice's registry value | `minimal`, `low`, `medium` or `high`. |
+| `OPENROUTER_REASONING` | the voice's registry value | `off` sends `reasoning.enabled=false`; a model that cannot switch reasoning off answers HTTP 400. |
 | `OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | |
 | `OPENROUTER_TIMEOUT` | `180` | seconds |
 
 Every request sets `require_parameters`, so an endpoint that cannot honor `max_tokens` is skipped instead of ignoring it.
+
+## Reasoning and the output limit
+
+`max_tokens` is a hard cap for all four voices (never exceeded in 72 measured calls on 2026-11-19), but it covers hidden reasoning as well as the answer. A reasoning model that thinks first can spend the whole limit and return an empty answer (DeepSeek at 256 tokens did, in every run). So each voice runs with a measured `reasoning` setting from the registry:
+
+| Voice | Setting | Why |
+|---|---|---|
+| `or-deepseek` | `off` | Switching it off gave a full answer in 146 to 169 tokens; `minimal` and `low` still spent 256 of 256 on reasoning. |
+| `or-glm` | `minimal` | Reasoning cannot be switched off; at `minimal` it used 6 to 9 tokens. |
+| `or-minimax` | `minimal` | Reasoning cannot be switched off; at `minimal` it used 71 to 90 tokens, and `low` sometimes spent the whole limit. |
+| `or-mistral` | `off` | Does not reason by default; asking for `low` made it reason and sometimes spend the whole limit. |
+
+MiniMax counts roughly three times as many input tokens as the other three for the same prompt (223 against 59 to 77), so any estimate of its input cost needs its own factor.
 
 ## What the adapter reports
 
