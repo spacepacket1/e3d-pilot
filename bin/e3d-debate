@@ -29,6 +29,8 @@ declare -A SEAT_ADAPTER
 adapter_of() { printf '%s' "${SEAT_ADAPTER[$1]:-$1}"; }
 DEBATE_ROUNDS=2
 DEBATE_SYNTHESIZER="claude"
+RECAP_PROVIDER="${E3D_DEBATE_RECAP:-}"   # --recap <provider>: an optional recap call after the verdict (docs/debate-recap.md)
+RECAP_LIB="$REPO_ROOT/lib/debate/recap.mjs"
 DEBATE_MAX_WORDS=200
 # Experts (docs/specs/experts-phase1-private-experts-spec.md): off unless E3D_SPECIALISTS=1. Every variable below stays empty, and nothing
 # below changes a prompt, a flag or a receipt, unless one of the --panel / --specialist / --*-specialist flags is given.
@@ -115,6 +117,11 @@ succeeds, via `e3d-pilot ideas note --decision --evidence`. This requires
 evidence link is a repo-relative path and only durable once that transcript
 is committed. This does not create the idea -- it must already exist.
 
+--recap <provider> (or E3D_DEBATE_RECAP) runs one extra call after the verdict, on that provider, which reads the rounds and writes recap.json
+in --out-dir: for each model after round 1 whether it held or moved and why, plus where the debate ended and what is open. It never changes
+the verdict or the exit status, and it is skipped in a per-token debate. rounds.json, each model's one-line position per round, is always
+written next to the transcript (docs/debate-recap.md).
+
 --web-search on|off (default on) lets the API providers (anthropic-api, openai-api, gemini-api, xai-api)
 use their vendor's web search tool in the debate rounds; CLI and MCP-sampling voices and the synthesizer
 never search. E3D_DEBATE_WEB_SEARCH=off turns it off everywhere, E3D_DEBATE_WEB_SEARCH_PROVIDERS limits which
@@ -193,6 +200,7 @@ while [[ $# -gt 0 ]]; do
     --auto) echo "error: --auto does not exist: a suggestion is never run by itself (see --suggest-panel)" >&2; exit 2 ;;
     --rounds) DEBATE_ROUNDS="$2"; shift 2 ;;
     --synthesizer) DEBATE_SYNTHESIZER="$2"; shift 2 ;;
+    --recap) RECAP_PROVIDER="${2:-}"; shift 2 ;;
     --max-words) DEBATE_MAX_WORDS="$2"; shift 2 ;;
     --prompts) DEBATE_PROMPT_VERSION="$2"; shift 2 ;;
     --approach) APPROACH="${2:-}"; shift 2 ;;
@@ -507,6 +515,7 @@ failure_reason() {
 run_with_retry() {
   local provider="$1" round="$2" out="$3" err="$4" attempt=0 nt=0 rc ntmax="${RWR_NT_MAX:-$DEBATE_NO_TEXT_RETRIES}" where="round $2"
   [[ "$round" == synth ]] && where="the synthesis"
+  [[ "$round" == recap ]] && where="the recap"
   shift 4
   : > "$err"
   while :; do
@@ -1387,6 +1396,39 @@ else
   echo "error: synthesis provider failed -- see $work_dir/synthesis.stderr" >&2
 fi
 
+# Round data and the optional recap (docs/debate-recap.md). rounds.json is local and free: every model's one-line position per round, read from the
+# transcript. The recap is one more call, only when asked for, after the verdict; whatever goes wrong here leaves the debate, its output and its exit
+# status exactly as they were.
+if command -v node >/dev/null 2>&1 && [[ -f "$RECAP_LIB" ]]; then
+  node "$RECAP_LIB" rounds "$transcript_md" > "$work_dir/rounds.json" 2>/dev/null || rm -f "$work_dir/rounds.json"
+  if [[ -n "$RECAP_PROVIDER" ]]; then
+    if (( PT_ON == 1 )); then
+      echo "note: --recap is skipped in a per-token debate (the recap call has no quoted limit yet)" >&2
+    elif [[ ! -x "$PROVIDERS_DIR/$RECAP_PROVIDER" ]]; then
+      echo "warning: --recap $RECAP_PROVIDER is not a provider adapter; no recap" >&2
+    elif [[ ! -s "$work_dir/rounds.json" ]] || ! jq -e '.roundsRan >= 2' "$work_dir/rounds.json" >/dev/null 2>&1; then
+      echo "note: no recap: the debate ran fewer than two rounds, so no model had a chance to move" >&2
+    elif (( synth_ok != 1 )); then
+      echo "note: no recap: the synthesis did not finish" >&2
+    else
+      node "$RECAP_LIB" prompt "$work_dir/rounds.json" > "$work_dir/recap.prompt.md" 2>/dev/null || : > "$work_dir/recap.prompt.md"
+      recap_rc=0
+      if [[ -s "$work_dir/recap.prompt.md" ]]; then
+        RWR_NT_MAX=0 run_with_retry "$RECAP_PROVIDER" recap "$work_dir/recap.reply" "$work_dir/recap.stderr" no_search_env "$PROVIDERS_DIR/$RECAP_PROVIDER" "$work_dir/recap.prompt.md" || recap_rc=$?
+      else
+        recap_rc=1
+      fi
+      if (( recap_rc == 0 )) && node "$RECAP_LIB" parse "$work_dir/recap.reply" "$work_dir/rounds.json" > "$work_dir/recap.json.tmp" 2>/dev/null; then
+        jq -c --arg by "$RECAP_PROVIDER" '. + {generated_by: $by}' "$work_dir/recap.json.tmp" > "$work_dir/recap.json" 2>/dev/null || rm -f "$work_dir/recap.json"
+        echo "note: recap written by $RECAP_PROVIDER ($(jq -r '.entries | length' "$work_dir/recap.json" 2>/dev/null || echo 0) entries)" >&2
+      else
+        echo "warning: the recap by $RECAP_PROVIDER failed or could not be checked; the debate is unaffected" >&2
+      fi
+      rm -f "$work_dir/recap.json.tmp"
+    fi
+  fi
+fi
+
 # Decision log (idea-bf6be2834a60): a structured record of how this debate ran, with no question or answer text.
 # Always written next to the transcript; also appended to $E3D_DEBATE_DECISION_LOG when that is set.
 write_decision_log() {
@@ -1445,6 +1487,8 @@ if [[ -n "$OUT_DIR" ]]; then
   [[ -s "$work_dir/decision-log.json" ]] && cp "$work_dir/decision-log.json" "$OUT_DIR/decision-log.json"
   [[ -s "$work_dir/web-search.json" ]] && cp "$work_dir/web-search.json" "$OUT_DIR/web-search.json"
   [[ -s "$work_dir/jev-council.json" ]] && cp "$work_dir/jev-council.json" "$OUT_DIR/jev-council.json"
+  [[ -s "$work_dir/rounds.json" ]] && cp "$work_dir/rounds.json" "$OUT_DIR/rounds.json"
+  [[ -s "$work_dir/recap.json" ]] && cp "$work_dir/recap.json" "$OUT_DIR/recap.json"
   [[ -s "$work_dir/seats.json" ]] && cp "$work_dir/seats.json" "$OUT_DIR/seats.json"
   [[ -s "$work_dir/questions.json" ]] && cp "$work_dir/questions.json" "$OUT_DIR/questions.json"
   [[ -s "$work_dir/case.json" ]] && cp "$work_dir/case.json" "$OUT_DIR/case.json"

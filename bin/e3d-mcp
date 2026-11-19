@@ -46,6 +46,8 @@ import { createMetering, createReadiness, modelsFromTranscript, orphanPolicy } f
 import { createHash, randomUUID } from 'node:crypto';
 import { createRuns, validateRunsConfig } from '../lib/mcp/runs.js';
 import { startRunServer, validateRunServerConfig, EXPERTS_LIMITS } from '../lib/mcp/run-server.js';
+import { createRecapRunner, recapConfigFrom } from '../lib/mcp/recap-runner.js';
+import { normalizeRounds } from '../lib/debate/recap.mjs';
 import { CASE_SYNTH_EXTRA_TOKENS } from '../lib/debate/case.mjs';
 import { validatePricingConfig, createPricingClient, limitsForPlan, pricedError, debateEnvFor, readUsageRows, searchCapable, searchCapFromEnv, requestedSearches, expertsRunFrom } from '../lib/mcp/pricing.js';
 import { loadExperts } from '../lib/debate/specialists.mjs';
@@ -63,6 +65,9 @@ const PRICING_CONFIG = validatePricingConfig(process.env, { http: HTTP_MODE, hoo
 // E3D_MCP_EXPERTS_RUN=1 (docs/specs/experts-phase2b1-hosted-lenses-spec.md section 2): the run listener advertises experts_v1 and runs the built-in
 // experts of a web run, one per vendor. Unset or 0: the fields are refused and nothing else changes.
 const EXPERTS_RUN = expertsRunFrom(process.env, { mode: PRICING_CONFIG.mode });
+// the recap job (docs/debate-recap.md): off unless E3D_MCP_RECAP=1, which also needs E3D_MCP_RECAP_PROVIDERS
+const RECAP_CONFIG = recapConfigFrom(process.env);
+const RESULT_ROUNDS = process.env.E3D_MCP_RESULT_ROUNDS === '1';
 const BUILTIN_EXPERTS_DIR = fileURLToPath(new URL('../lib/specialists', import.meta.url));
 let pricingClient = null; // billing's quote and usage-report client, once the external hook is running under per_token
 // E3D_MCP_AGENT (lib/mcp/agent.js): the agent contract (e3d_quote, quote_id and idempotency_key, structured errors, instructions).
@@ -697,6 +702,8 @@ async function executeDebate(plan, handle, ctx, { progress, onStarted, signal } 
     const { roundsRan, positions: rawPositions } = parsePositions(transcript);
     // the answer only: the source list and notices ride in the transcript (data for later rounds) and in web_search, not in the position
     const positions = rawPositions.map((p) => ({ ...p, text: clean(stripAnswerPrefix(p.text)) }));
+    // The engine's own record of each model's position per round (lib/debate/recap.mjs), rebuilt and bounded here; only when E3D_MCP_RESULT_ROUNDS=1.
+    const roundsOut = RESULT_ROUNDS && outcome === 'ok' ? normalizeRounds(await readFile(join(dir, 'out', 'rounds.json'), 'utf8').then(JSON.parse).catch(() => null)) : null;
     const seatModelMap = (() => { try { const m = JSON.parse(readFileSync(join(dir, 'out', 'seat-models.json'), 'utf8')); return m && typeof m === 'object' ? m : {}; } catch { return {}; } })();
     const samplingCalls = sampling.drain(tag).map((m) => ({ provider: m.voice === 'b' ? 'mcp-sampling-b' : 'mcp-sampling', model: m.model, hint: m.hint }));
     // One entry per provider+model, with how many calls it answered (a voice that also wrote the verdict made two).
@@ -725,6 +732,7 @@ async function executeDebate(plan, handle, ctx, { progress, onStarted, signal } 
         return { provider: p.provider, model: typeof model === 'string' && /^[!-~]{1,128}$/.test(model) ? model : 'unspecified', position: p.text };
       }),
       web_search: webSearch,
+      ...(roundsOut ? { rounds: roundsOut } : {}),
       ...(caseOut ? { case: { status: caseOut.status, questions: caseOut.questions } } : {}),
       // The engine's analysis fields (docs/web-analysis-fields-and-approach-spec.md Part A in e3d-pilot-cloud): additive, absent when the verdict
       // has none, already bounded and sanitised above. `adjusted` stays in the engine (the cloud does not store or show it).
@@ -1409,6 +1417,10 @@ if (!PRICING_CONFIG.ok) {
   process.stderr.write(`[e3d-mcp] refusing to start: ${PRICING_CONFIG.errors.join('; ')}\n`);
   process.exit(2);
 }
+if (!RECAP_CONFIG.ok) {
+  process.stderr.write(`[e3d-mcp] refusing to start: ${RECAP_CONFIG.errors.join('; ')}\n`);
+  process.exit(2);
+}
 if (!EXPERTS_RUN.ok) {
   process.stderr.write(`[e3d-mcp] refusing to start: ${EXPERTS_RUN.errors.join('; ')}\n`);
   process.exit(2);
@@ -1537,7 +1549,8 @@ if (HTTP_MODE) {
     // a separate loopback-only listener; the public one above never serves /internal/*
     if (hook && RUN_SERVER.enabled) {
       runServer = await startRunServer({ port: RUN_SERVER.config.port, token: RUN_SERVER.config.token, failsPerMin: RUN_SERVER.config.failsPerMin,
-        runs, external: hook.external, plan: planWebRun, log, pricing: { mode: PRICING_CONFIG.mode, customer: runsConfig.customer, search: searchCapable(process.env, { mode: PRICING_CONFIG.mode }), experts: EXPERTS_RUN.on } });
+        runs, external: hook.external, plan: planWebRun, log, pricing: { mode: PRICING_CONFIG.mode, customer: runsConfig.customer, search: searchCapable(process.env, { mode: PRICING_CONFIG.mode }), experts: EXPERTS_RUN.on },
+        recap: RECAP_CONFIG.on ? createRecapRunner({ providersDir: fileURLToPath(new URL('../lib/providers', import.meta.url)), providers: RECAP_CONFIG.providers, log }) : null });
     }
   } catch (e) { process.stderr.write(`[e3d-mcp] ${redact(e.message)}\n`); process.exit(2); }
   if (process.env.E3D_MCP_PORT_FILE) await writeFile(process.env.E3D_MCP_PORT_FILE, String(server.port));
