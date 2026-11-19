@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -euo pipefail
+# Voice or-minimax on the OpenRouter transport (docs/openrouter.md): the model is its entry in openrouter-models.json.
+export E3D_OPENROUTER_VOICE=or-minimax
+exec "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/openrouter" "$@"
