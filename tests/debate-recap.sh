@@ -36,6 +36,7 @@ eq(parseRounds('').rounds, [], 'an empty transcript has no rounds');
 eq(parseRounds('## Round 1 -- a\n\n').rounds[0].position, '', 'an empty answer has an empty position');
 eq(clean('a\u0000b\n\n c', 10), 'a b c', 'control characters and whitespace collapse');
 eq(clean('x'.repeat(30), 10).length, 10, 'bounded');
+eq(clean('**No, not yet.** Use \`a\` list __now__', 80), 'No, not yet. Use a list now', 'markdown emphasis markers are dropped');
 eq(headBytes('日本語のテスト', 7), '日本', 'cut on a character boundary, never inside one');
 const long = parseRounds('## Round 1 -- a\n\n' + 'word '.repeat(400));
 ok(Buffer.byteLength(long.rounds[0].excerpt, 'utf8') <= 603 && long.rounds[0].position.length <= 240, 'position and excerpt are bounded');
