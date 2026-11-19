@@ -4,9 +4,12 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import http from 'node:http';
 import { tmpdir } from 'node:os';
-import { createChatRunner, chatConfigFrom, checkMessages, chatPrompt, chatPreface, CHAT_CAPABILITY, CHAT_SEARCH_CAPABILITY, CHAT_LIMITS } from '../../lib/mcp/chat-runner.js';
+import { createChatRunner, chatConfigFrom, checkMessages, chatPrompt, chatPreface, CHAT_CAPABILITY, CHAT_SEARCH_CAPABILITY, CHAT_SKILLS_CAPABILITY, CHAT_LIMITS, skillBlock } from '../../lib/mcp/chat-runner.js';
 import { webSearchConfig, NO_WEB_ACCESS_TEXT } from '../../lib/debate/websearch.mjs';
 import { startRunServer } from '../../lib/mcp/run-server.js';
+import { loadExperts } from '../../lib/debate/specialists.mjs';
+import { lensBlock } from '../../lib/debate/specialists-plan.mjs';
+import { fileURLToPath } from 'node:url';
 
 let n = 0;
 const ok = (m) => { n++; console.log(`ok - chat: ${m}`); };
@@ -284,6 +287,55 @@ res = await fetch(`http://127.0.0.1:${srv3.port}/internal/runs`, { method: 'POST
 assert.deepEqual((await res.json()).capabilities, [CHAT_CAPABILITY], 'not advertised when search is killed');
 await srv3.close();
 ok('route: max_searches validated (400), 409 search_unavailable with no call, usage.searches returned, chat_search_v1 advertised only when search can run');
+
+// ---- skills (chat_skills_v1)
+const SK_DIR = fileURLToPath(new URL('../../lib/specialists', import.meta.url));
+const builtin = loadExperts({ tiers: [{ name: 'built-in', dir: SK_DIR }] }).experts;
+const sk = builtin.find((e) => e.name === 'skeptic');
+const cu = builtin.find((e) => e.name === 'customer');
+const pin = (e) => ({ id: e.name, hash: e.hash });
+const LB = 4096;
+calls = [];
+behaviour = { stdout: 'Skeptical answer.\n', stderr: USAGE, error: null };
+const kr = createChatRunner({ providersDir: '/providers', providers: ['openai-api'], exec, now: () => NOW, env: { PATH: process.env.PATH }, expertsDir: SK_DIR });
+assert.equal(kr.skillsAvailable(), true);
+assert.equal(createChatRunner({ providersDir: '/providers', providers: ['openai-api'], exec, now: () => NOW, env: { PATH: process.env.PATH } }).skillsAvailable(), false);
+r = await kr.run(req({ requestId: 'k1', skills: [pin(sk)], lensBytes: LB }));
+assert.equal(r.ok, true);
+assert.equal(calls.length, 1);
+assert.equal(calls[0].prompt, `${PRE}${skillBlock(sk.name, sk.lens)}Should we split the monolith?\n`, 'the skill block sits between the preface and the message');
+assert.ok(Buffer.byteLength(skillBlock(sk.name, sk.lens)) < Buffer.byteLength(lensBlock(sk)), 'a chat skill block is smaller than the debate lens block billing prices');
+r = await kr.run(req({ requestId: 'k2', skills: [pin(sk), pin(cu)], lensBytes: LB }));
+assert.ok(calls[1].prompt.indexOf(`[Skill: ${sk.name}.`) < calls[1].prompt.indexOf(`[Skill: ${cu.name}.`), 'in the order given');
+assert.equal((await kr.run(req({ requestId: 'k1', skills: [pin(sk)], lensBytes: LB }))).answer, 'Skeptical answer.');
+assert.equal(calls.length, 2, 'a repeated request id is answered from memory');
+assert.deepEqual(await kr.run(req({ requestId: 'k1', skills: [pin(cu)], lensBytes: LB })), { ok: false, code: 'invalid' }, 'the same id with other skills is a mistake');
+const nCalls = calls.length;
+for (const bad of [
+  { skills: [pin(sk)] }, { lensBytes: LB }, { skills: [], lensBytes: LB }, { skills: [pin(sk), pin(cu), pin(sk), pin(cu)], lensBytes: LB }, { skills: [pin(sk), pin(sk)], lensBytes: LB },
+  { skills: [{ id: sk.name, hash: `sha256:${'0'.repeat(64)}` }], lensBytes: LB }, { skills: [{ id: 'not-a-built-in', hash: sk.hash }], lensBytes: LB },
+  { skills: [{ ...pin(sk), extra: 1 }], lensBytes: LB }, { skills: [pin(sk)], lensBytes: 0 }, { skills: [pin(sk)], lensBytes: 4097 }, { skills: [pin(sk)], lensBytes: Buffer.byteLength(lensBlock(sk)) - 1 }, { skills: 'x', lensBytes: LB },
+]) assert.deepEqual(await kr.run(req({ requestId: `kb-${JSON.stringify(bad).length}-${Math.random()}`, ...bad })), { ok: false, code: 'invalid' }, JSON.stringify(bad).slice(0, 80));
+assert.equal(calls.length, nCalls, 'nothing invalid reaches a model');
+assert.deepEqual(await runner.run(req({ requestId: 'k-off', skills: [pin(sk)], lensBytes: LB })), { ok: false, code: 'skills_unavailable' }, 'a listener without the catalogue refuses before any call');
+ok('skills: pinned built-in skills (1 to 3, hash and size checked) are put between the preface and the message; anything else is refused before a call');
+const srv4 = await startRunServer({ port: 0, token: TOKEN, runs: {}, external: { hasFeature: () => true }, plan: async () => ({ error: 'no' }), log: () => {}, chat: kr });
+const post4 = (body, p = '/internal/chats') => fetch(`http://127.0.0.1:${srv4.port}${p}`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${TOKEN}` }, body: JSON.stringify(body) });
+const wire4 = (over) => ({ request_id: 'sk-w1', provider: 'openai-api', max_tokens: 700, messages: [U('Is this safe?')], ...over });
+res = await post4(wire4({ skills: [pin(sk)], lens_bytes: LB }));
+assert.deepEqual([res.status, (await res.json()).ok], [200, true]);
+res = await post4(wire4({ request_id: 'sk-w2', skills: [pin(sk)] }));
+assert.equal(res.status, 400, 'skills without lens_bytes');
+res = await post4({}, '/internal/runs');
+assert.ok((await res.json()).capabilities.includes(CHAT_SKILLS_CAPABILITY), 'chat_skills_v1 is advertised with the catalogue');
+await srv4.close();
+const srv5 = await startRunServer({ port: 0, token: TOKEN, runs: {}, external: { hasFeature: () => true }, plan: async () => ({ error: 'no' }), log: () => {}, chat: runner });
+res = await fetch(`http://127.0.0.1:${srv5.port}/internal/chats`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${TOKEN}` }, body: JSON.stringify(wire4({ request_id: 'sk-w9', skills: [pin(sk)], lens_bytes: LB })) });
+assert.deepEqual([res.status, (await res.json()).code], [409, 'skills_unavailable']);
+res = await fetch(`http://127.0.0.1:${srv5.port}/internal/runs`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${TOKEN}` }, body: '{}' });
+assert.equal((await res.json()).capabilities.includes(CHAT_SKILLS_CAPABILITY), false, 'not advertised without the catalogue');
+await srv5.close();
+ok('route: skills and lens_bytes travel together, 409 skills_unavailable without the catalogue, chat_skills_v1 advertised only with it');
 
 const off = await startRunServer({ port: 0, token: TOKEN, runs: {}, external: { hasFeature: () => true }, plan: async () => ({ error: 'no' }), log: () => {} });
 res = await fetch(`http://127.0.0.1:${off.port}/internal/chats`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${TOKEN}` }, body: '{}' });
