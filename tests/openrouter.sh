@@ -58,6 +58,29 @@ if (Object.keys(PROVIDER_FAMILY).some((k) => k.startsWith('or-'))) { console.err
 if (OPENROUTER_VOICE_FAMILY['or-glm'] !== 'glm') { console.error('or-glm family'); process.exit(1); }
 " || fail "independence"
 
+# the OpenRouter voices are priced per token, and never search
+node --input-type=module -e "
+import { PRICED_PROVIDERS, pricedError, limitsForPlan } from '$ROOT/lib/mcp/pricing.js';
+import { limitsFromEnv, searchFromEnv, MAX_TOKENS_ENV, API_PROVIDERS } from '$ROOT/lib/debate/token-pricing.mjs';
+import { familyOf } from '$ROOT/lib/mcp/panel.js';
+const v = ['or-deepseek', 'or-glm', 'or-minimax', 'or-mistral'];
+for (const p of v) {
+  if (!PRICED_PROVIDERS.includes(p)) { console.error('not priced: ' + p); process.exit(1); }
+  if (MAX_TOKENS_ENV[p] !== 'OPENROUTER_MAX_TOKENS') { console.error('limit variable: ' + p); process.exit(1); }
+  if (API_PROVIDERS.includes(p)) { console.error('an OpenRouter voice must not be a searching provider: ' + p); process.exit(1); }
+  if (!familyOf(p)) { console.error('the engine panel needs a family for ' + p); process.exit(1); }
+}
+if (pricedError(['anthropic-api', ...v], { env: {} }) !== null) { console.error('priced error for the four voices'); process.exit(1); }
+if (!pricedError(['claude', 'or-glm'], { env: {} })) { console.error('a CLI voice must still be refused'); process.exit(1); }
+const env = { E3D_DEBATE_MAX_TOKENS: JSON.stringify({ 'anthropic-api': 300, 'or-glm': 300 }) };
+const lim = limitsFromEnv(env, ['anthropic-api', 'or-glm']);
+if (lim.error || !lim.perToken) { console.error('limitsFromEnv: ' + lim.error); process.exit(1); }
+const s = searchFromEnv({ E3D_DEBATE_MAX_SEARCHES: JSON.stringify({ 'or-glm': 1 }), E3D_DEBATE_CITE_BYTES_MAX: '100' }, ['anthropic-api', 'or-glm'], true);
+if (!s.error) { console.error('an OpenRouter voice must not get a search cap'); process.exit(1); }
+const plan = limitsForPlan({ max_tokens: { 'anthropic-api': 1, 'or-glm': 1 }, answer_bytes: { 'anthropic-api': 1, 'or-glm': 1 } }, ['anthropic-api', 'or-glm'], { env: {} });
+if (plan.error) { console.error('limitsForPlan: ' + plan.error); process.exit(1); }
+" || fail "per-token pricing of OpenRouter voices"
+
 # ---------------- registration ----------------
 list="$("$ROOT/bin/e3d-pilot" providers list)"
 for v in or-deepseek or-glm or-minimax or-mistral; do assert_contains "$list" "$v"; done

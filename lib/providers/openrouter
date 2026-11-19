@@ -100,6 +100,8 @@ else
 fi
 case "$RSN_EFFORT" in ''|minimal|low|medium|high) ;; *) echo "error: $VOICE OPENROUTER_REASONING_EFFORT must be minimal, low, medium or high" >&2; exit "$PROVIDER_EXIT_FAILURE" ;; esac
 case "$RSN_OFF" in ''|off) ;; *) echo "error: $VOICE OPENROUTER_REASONING must be off or unset" >&2; exit "$PROVIDER_EXIT_FAILURE" ;; esac
+# Per-token pricing (E3D_PROVIDER_PER_TOKEN=1, set by bin/e3d-debate): every call carries the quoted output limit, or it does not run.
+if [[ "${E3D_PROVIDER_PER_TOKEN:-0}" == "1" && -z "${OPENROUTER_MAX_TOKENS:-}" ]]; then echo "error: $VOICE needs OPENROUTER_MAX_TOKENS in per-token mode" >&2; exit "$PROVIDER_EXIT_FAILURE"; fi
 if [[ -n "${OPENROUTER_MAX_TOKENS:-}" && ! "${OPENROUTER_MAX_TOKENS}" =~ ^[0-9]+$ ]]; then echo "error: $VOICE OPENROUTER_MAX_TOKENS must be a number" >&2; exit "$PROVIDER_EXIT_FAILURE"; fi
 
 work="$(mktemp -d "${TMPDIR:-/tmp}/e3d-pilot-openrouter.XXXXXX")"

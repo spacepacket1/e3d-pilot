@@ -376,6 +376,7 @@ pt_env() {
   case "$a" in
     anthropic-api) var=ANTHROPIC_API_MAX_TOKENS ;; openai-api) var=OPENAI_API_MAX_TOKENS ;;
     gemini-api) var=GEMINI_API_MAX_TOKENS ;; xai-api) var=XAI_API_MAX_TOKENS ;;
+    or-*) var=OPENROUTER_MAX_TOKENS ;;   # OpenRouter voices (docs/openrouter.md); the adapter refuses a per-token call without it
     *) echo "error: no output-limit setting for provider $a" >&2; exit 1 ;;
   esac
   PT_ENV=("$var=$(pt_limit "$a" "${2:-}")" E3D_PROVIDER_PER_TOKEN=1)
