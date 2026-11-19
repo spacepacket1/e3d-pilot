@@ -7,7 +7,7 @@ T="$(mktemp -d)"
 trap 'rm -rf "$T"' EXIT
 fail() { echo "FAIL: $*"; exit 1; }
 node --input-type=module -e "$(cat <<JS
-import { parseRounds, recapPrompt, parseRecap, TAGS, clean, headBytes } from '$ROOT/lib/debate/recap.mjs';
+import { parseRounds, recapPrompt, parseRecap, normalizeRounds, TAGS, clean, headBytes } from '$ROOT/lib/debate/recap.mjs';
 const eq = (a, b, m) => { if (JSON.stringify(a) !== JSON.stringify(b)) { console.error('FAIL: ' + m + '\n  got  ' + JSON.stringify(a) + '\n  want ' + JSON.stringify(b)); process.exit(1); } };
 const ok = (c, m) => { if (!c) { console.error('FAIL: ' + m); process.exit(1); } };
 
@@ -73,6 +73,15 @@ eq(parseRecap('{"entries":[{"round":2,"model":"x","tag":"moved"}],"recap":{}}', 
 eq(parseRecap('{"entries":[],"recap":{"ended":"done"}}', r).recap.ended, 'done', 'a recap with no entries is still a recap');
 eq(parseRecap(JSON.stringify({ entries: [{ round: 2, model: 'alpha', tag: 'moved', reason: 'r'.repeat(500), new_evidence: false }], recap: {} }), r).entries[0].reason.length, 140, 'reason is bounded');
 eq([...TAGS], ['held', 'partly_moved', 'moved'], 'the three tags');
+// ---- normalizeRounds: a copy of rounds.json is rebuilt and bounded, never passed through
+eq(normalizeRounds(JSON.parse(JSON.stringify(r))), r, 'a real rounds document survives unchanged');
+eq(normalizeRounds({ rounds: [] }), null, 'no rounds: null');
+eq(normalizeRounds(null), null, 'not an object: null');
+eq(normalizeRounds({ rounds: [{ round: 1, provider: 'a b' }] }), null, 'a provider name with a space is refused');
+eq(normalizeRounds({ rounds: [{ round: 11, provider: 'a' }] }), null, 'round 11 is out of range');
+const fat = normalizeRounds({ rounds: [{ round: 1, provider: 'a', position: 'p'.repeat(5000), excerpt: 'e'.repeat(5000), status: 'maybe', source: 'x', extra: { evil: 1 } }] });
+ok(fat.rounds[0].position.length <= 240 && fat.rounds[0].excerpt.length <= 600 && fat.rounds[0].status === null && fat.rounds[0].source === 'first_sentence' && !('extra' in fat.rounds[0]), 'fields are bounded, enums checked, unknown keys dropped');
+ok(normalizeRounds({ rounds: Array.from({ length: 161 }, () => ({ round: 1, provider: 'a' })) }) === null, 'more than 160 entries is refused');
 console.log('recap unit tests: ok');
 JS
 )" || fail "unit tests"
