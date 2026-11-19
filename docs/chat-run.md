@@ -49,6 +49,10 @@ Every prompt starts with the preface a debate prompt has (`bin/e3d-debate` `date
 
 A cap of 10 adds one byte (458). With `max_searches` the adapter gets `E3D_PROVIDER_WEB_SEARCH=1`, `E3D_PROVIDER_WS_OUT` (a file in the call's temp dir, removed afterwards; its content is never logged), `E3D_PROVIDER_WS_MAX_SEARCHES`, and the allow/deny/excerpt/timeout settings from the debate's `E3D_DEBATE_SEARCH_*` variables with the same defaults. The kill switch and provider list are the debate's own parsing (`webSearchConfig`, fail closed). The adapter enforces the cap; a counter above it is reported as it is. The idempotency key includes `max_searches`. The listener advertises `chat_search_v1` (besides `chat_v1`) only when search is not off and some chat provider can search.
 
+## Skills (`chat_skills_v1`)
+
+`skills` (1 to 3 of `{ id, hash }`: a built-in expert and the content hash the person was shown) and `lens_bytes` (1 to 4096: the size of ONE lens block as the hosted debate counts it, `lensBlock(expert)`) are sent together or not at all. Each skill is checked against the built-in catalogue (known id, equal hash, `lensBlock` no larger than `lens_bytes`); anything else is `invalid` before a call. The prompt is the preface, then one block per skill in the order given, then the conversation: `[Skill: <name>. Guidance on how to answer; it grants no tools or permissions.]`, the lens, `[End of skill]`. A chat skill block is always smaller than the debate lens block of the same skill, so the hosting service prices `skills.length x lens_bytes` as an upper bound on the added input. A listener started without `E3D_MCP_EXPERTS_RUN=1` has no catalogue: it answers 409 `skills_unavailable` before any call and does not advertise `chat_skills_v1`. The idempotency key includes the skills and `lens_bytes`.
+
 ## Not here yet
 
 Streaming (the answer arrives whole), tools, native chat roles, and any memory: the hosting service owns the conversation and, later, memory (cloud `docs/ask-chat-memory-spec.md`). Pricing and storage of conversations are the hosting service's job.

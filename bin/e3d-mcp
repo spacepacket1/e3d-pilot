@@ -1558,7 +1558,7 @@ if (HTTP_MODE) {
       runServer = await startRunServer({ port: RUN_SERVER.config.port, token: RUN_SERVER.config.token, failsPerMin: RUN_SERVER.config.failsPerMin,
         runs, external: hook.external, plan: planWebRun, log, pricing: { mode: PRICING_CONFIG.mode, customer: runsConfig.customer, search: searchCapable(process.env, { mode: PRICING_CONFIG.mode }), experts: EXPERTS_RUN.on },
         recap: RECAP_CONFIG.on ? createRecapRunner({ providersDir: fileURLToPath(new URL('../lib/providers', import.meta.url)), providers: RECAP_CONFIG.providers, log }) : null,
-        chat: CHAT_CONFIG.on ? createChatRunner({ providersDir: fileURLToPath(new URL('../lib/providers', import.meta.url)), providers: CHAT_CONFIG.providers, log }) : null });
+        chat: CHAT_CONFIG.on ? createChatRunner({ providersDir: fileURLToPath(new URL('../lib/providers', import.meta.url)), providers: CHAT_CONFIG.providers, log, ...(EXPERTS_RUN.on ? { expertsDir: BUILTIN_EXPERTS_DIR } : {}) }) : null });
     }
   } catch (e) { process.stderr.write(`[e3d-mcp] ${redact(e.message)}\n`); process.exit(2); }
   if (process.env.E3D_MCP_PORT_FILE) await writeFile(process.env.E3D_MCP_PORT_FILE, String(server.port));
