@@ -8,17 +8,21 @@ One message, answered by one model, with the conversation so far as context. Thi
 
 ```json
 { "request_id": "chat-123-4", "provider": "openai-api", "max_tokens": 700,
-  "messages": [ { "role": "user", "text": "..." }, { "role": "assistant", "text": "..." }, { "role": "user", "text": "..." } ] }
+  "messages": [ { "role": "user", "text": "..." }, { "role": "assistant", "text": "..." }, { "role": "user", "text": "..." } ],
+  "max_searches": 2 }
 ```
+
+`max_searches` is optional (integer 1 to 10) and turns on web search for this one call (capability `chat_search_v1`).
 
 Answers:
 
 | Status | Body | Meaning |
 |---|---|---|
-| 200 | `{ ok: true, answer, usage }` | `usage` is `{ input_tokens, output_tokens, model }` as the adapter reported it, or null |
+| 200 | `{ ok: true, answer, usage }` | `usage` is `{ input_tokens, output_tokens, model, searches }` as the adapter reported it, or null. `searches` is the vendor's own counter (integer), or null when the vendor gave none; it is never clamped to `max_searches` or estimated |
 | 200 | `{ ok: false, code: "unusable", usage }` | the call was made and answered with nothing; `usage` says what it used so it can be settled |
 | 400 | `invalid` | unknown field, bad ids, a limit out of range, a bad conversation |
 | 403 | `not_allowed` | the provider is not on `E3D_MCP_CHAT_PROVIDERS` |
+| 409 | `search_unavailable` | `max_searches` was sent but this provider cannot search (only anthropic-api, openai-api, gemini-api, xai-api can), or search is off (`E3D_DEBATE_WEB_SEARCH`, `E3D_DEBATE_WEB_SEARCH_PROVIDERS`, an invalid search setting). Returned before any call is made, so nothing was spent |
 | 503 | `unavailable`, `retry: true` | the call failed; `usage` too when the adapter printed one |
 | 404 | | the feature is off |
 
@@ -34,9 +38,20 @@ Answers:
 - **The answer.** Trimmed, cleaned of control characters, at most 100,000 characters. Rendered as text by whoever shows it.
 - **Logs.** Ids, the provider name and counts. Never a message or an answer.
 
+## Date, web-access preface and search
+
+Every prompt starts with the preface a debate prompt has (`bin/e3d-debate` `date_preamble`), so the model knows today's date (UTC) and whether it can search: `chatPreface({ date, searchCap })` in `lib/mcp/chat-runner.js`. The text is exactly the debate's and is priced by the hosting service as part of the chat overhead, so do not change it without telling billing. Sizes (the date is always 10 bytes, the text is ASCII):
+
+| Variant | Bytes |
+|---|---|
+| search off (no web access sentence) | 196 |
+| search on, cap 2 | 457 |
+
+A cap of 10 adds one byte (458). With `max_searches` the adapter gets `E3D_PROVIDER_WEB_SEARCH=1`, `E3D_PROVIDER_WS_OUT` (a file in the call's temp dir, removed afterwards; its content is never logged), `E3D_PROVIDER_WS_MAX_SEARCHES`, and the allow/deny/excerpt/timeout settings from the debate's `E3D_DEBATE_SEARCH_*` variables with the same defaults. The kill switch and provider list are the debate's own parsing (`webSearchConfig`, fail closed). The adapter enforces the cap; a counter above it is reported as it is. The idempotency key includes `max_searches`. The listener advertises `chat_search_v1` (besides `chat_v1`) only when search is not off and some chat provider can search.
+
 ## Not here yet
 
-Streaming (the answer arrives whole), tools or web search, native chat roles, and any memory: the hosting service owns the conversation and, later, memory (cloud `docs/ask-chat-memory-spec.md`). Pricing and storage of conversations are the hosting service's job.
+Streaming (the answer arrives whole), tools, native chat roles, and any memory: the hosting service owns the conversation and, later, memory (cloud `docs/ask-chat-memory-spec.md`). Pricing and storage of conversations are the hosting service's job.
 
 ## Tests
 
