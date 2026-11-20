@@ -684,6 +684,7 @@ Built-in adapters are `claude`, `codex`, `local`, `devin`, `grok-build`, the
 opt-in `gemini` trial adapter, two cloud adapters, `bedrock` and
 `azure-openai`, and four direct API adapters, `anthropic-api`, `openai-api`,
 `gemini-api` and `xai-api` (no CLI needed, for servers and containers); check them with `e3d-pilot providers list`.
+Four more voices, `or-deepseek`, `or-glm`, `or-minimax` and `or-mistral`, reach other model families through one OpenRouter adapter. They are for manual selection only and never join the automatic panel; see [docs/openrouter.md](docs/openrouter.md).
 `grok-build` is selected the same way as the others: name it in `providers.*`.
 It is available when the `grok` binary is on `PATH` (override with
 `GROK_BUILD_BIN`).

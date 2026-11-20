@@ -1,0 +1,172 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# OpenRouter chat-completions transport (curl + jq; no SDK). One adapter, many voices: a voice such as or-deepseek is a thin script that sets
+# E3D_OPENROUTER_VOICE and runs this one; the model comes from lib/providers/openrouter-models.json (docs/openrouter.md). Two voices on this
+# transport are two council seats even though they share one key; a model that already has a direct adapter (Claude, GPT, Gemini, Grok) is
+# never routed through here (the registry validator in tests/openrouter.sh refuses those families).
+#   OPENROUTER_API_KEY     or OPENROUTER_API_KEY_FILE (a file holding the key, or an `export OPENROUTER_API_KEY=...` line)
+#   E3D_OPENROUTER_VOICE   the voice id (set by the voice script). With the bare name `openrouter` the model is OPENROUTER_MODEL.
+#   OPENROUTER_MODEL       only for the bare `openrouter` voice: an exact model id. There is deliberately no default.
+#   OPENROUTER_MAX_TOKENS  optional output limit (sent as max_tokens; reasoning tokens count against it)
+#   OPENROUTER_BASE_URL    default https://openrouter.ai/api/v1
+#   OPENROUTER_DATA_COLLECTION  deny (default) or allow: with deny, OpenRouter only routes to endpoints that do not keep or train on prompts.
+#                          If none qualifies the call fails (HTTP 404); it never falls back to an endpoint that breaks the setting.
+#   OPENROUTER_ZDR=1       additionally require zero-data-retention endpoints
+#   OPENROUTER_ONLY        comma list of upstream providers to use exclusively (names as OpenRouter lists them)
+#   OPENROUTER_ALLOW_FALLBACKS  1 (default) lets OpenRouter try another endpoint of the same model on an error; 0 forbids it
+#   OPENROUTER_REASONING_EFFORT optional: minimal, low, medium or high, sent as reasoning.effort. Without this and OPENROUTER_REASONING, a voice runs with
+#                          the `reasoning` setting of its registry entry.
+#   OPENROUTER_REASONING   off sends reasoning.enabled=false. A model that cannot switch reasoning off answers HTTP 400.
+#   OPENROUTER_REGISTRY / E3D_OPENROUTER_REGISTRY  alternative registry file (tests, operators)
+# The key is sent from a 0600 header file, never on the command line, and is never printed. No web search: these voices are not search-capable.
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=./common.sh
+source "$SCRIPT_DIR/common.sh"
+
+OPENROUTER_BASE_URL="${OPENROUTER_BASE_URL:-https://openrouter.ai/api/v1}"
+VOICE="${E3D_OPENROUTER_VOICE:-openrouter}"
+REGISTRY="${E3D_OPENROUTER_REGISTRY:-$SCRIPT_DIR/openrouter-models.json}"
+PROVIDER_TOKEN_LIMIT="${E3D_PILOT_PROVIDER_TOKEN_LIMIT:-200000}"
+
+or_key() {
+  if [[ -n "${OPENROUTER_API_KEY:-}" ]]; then printf '%s' "$OPENROUTER_API_KEY"
+  else provider_key_from_file "${OPENROUTER_API_KEY_FILE:-}" OPENROUTER_API_KEY
+  fi
+}
+
+# The exact upstream model id for this voice. A registry entry must be enabled; the bare voice needs OPENROUTER_MODEL.
+or_model() {
+  if [[ "$VOICE" == "openrouter" ]]; then printf '%s' "${OPENROUTER_MODEL:-}"; return 0; fi
+  [[ -f "$REGISTRY" ]] || return 0
+  jq -r --arg v "$VOICE" '[.models[]? | select(.voice_id == $v and .enabled == true)][0].model_id // empty' "$REGISTRY" 2>/dev/null || true
+}
+
+# The reasoning setting for this voice: the registry's (off, minimal, low, medium, high), unless the environment says otherwise.
+or_reasoning_default() {
+  [[ "$VOICE" == "openrouter" || ! -f "$REGISTRY" ]] && return 0
+  jq -r --arg v "$VOICE" '[.models[]? | select(.voice_id == $v and .enabled == true)][0].reasoning // empty' "$REGISTRY" 2>/dev/null || true
+}
+
+MODEL="$(or_model)"
+
+if [[ "${E3D_PILOT_CHECK:-0}" == "1" ]]; then
+  if ! provider_binary_available curl || ! provider_binary_available jq; then
+    printf 'unavailable: curl and jq are required\n'
+    exit "$PROVIDER_EXIT_UNAVAILABLE"
+  fi
+  if [[ -z "$(or_key)" ]]; then
+    printf 'unavailable: set OPENROUTER_API_KEY (or OPENROUTER_API_KEY_FILE)\n'
+    exit "$PROVIDER_EXIT_UNAVAILABLE"
+  fi
+  if [[ -z "$MODEL" ]]; then
+    if [[ "$VOICE" == "openrouter" ]]; then printf 'unavailable: set OPENROUTER_MODEL (no default: model names change)\n'
+    else printf 'unavailable: voice %s is not enabled in the model registry\n' "$VOICE"; fi
+    exit "$PROVIDER_EXIT_UNAVAILABLE"
+  fi
+  # Reachability only: no key is sent and nothing is billed.
+  if curl -s -o /dev/null -m "${OPENROUTER_CHECK_TIMEOUT:-3}" "${OPENROUTER_BASE_URL%/}"; then
+    printf 'available (%s)\n' "$MODEL"
+    exit "$PROVIDER_EXIT_OK"
+  fi
+  printf 'unavailable: API not reachable (%s)\n' "${OPENROUTER_BASE_URL%/}"
+  exit "$PROVIDER_EXIT_UNAVAILABLE"
+fi
+
+if [[ -z "$(or_key)" || -z "$MODEL" ]]; then
+  echo "error: $VOICE is not configured (OPENROUTER_API_KEY or OPENROUTER_API_KEY_FILE, and an enabled model: the registry entry for the voice, or OPENROUTER_MODEL for the bare openrouter voice)" >&2
+  exit "$PROVIDER_EXIT_UNAVAILABLE"
+fi
+
+PROMPT_FILE="${1:-}"
+provider_require_prompt_file "$PROMPT_FILE"
+
+URL="${OPENROUTER_BASE_URL%/}/chat/completions"
+
+if [[ "${E3D_PILOT_DRY_RUN:-0}" == "1" ]]; then
+  printf 'curl -sS -X POST %q -H %q -H %q -d @- (voice=%s model=%s) < %q\n' "$URL" 'Authorization: Bearer [redacted]' 'Content-Type: application/json' "$VOICE" "$MODEL" "$PROMPT_FILE"
+  exit "$PROVIDER_EXIT_OK"
+fi
+
+case "${OPENROUTER_DATA_COLLECTION:-deny}" in deny|allow) ;; *) echo "error: $VOICE OPENROUTER_DATA_COLLECTION must be deny or allow" >&2; exit "$PROVIDER_EXIT_FAILURE" ;; esac
+# one setting: OPENROUTER_REASONING=off, or OPENROUTER_REASONING_EFFORT=<level>, else the registry's value for the voice
+RSN_OFF=""; RSN_EFFORT=""
+if [[ -n "${OPENROUTER_REASONING:-}" ]]; then RSN_OFF="$OPENROUTER_REASONING"
+elif [[ -n "${OPENROUTER_REASONING_EFFORT:-}" ]]; then RSN_EFFORT="$OPENROUTER_REASONING_EFFORT"
+else
+  REG_RSN="$(or_reasoning_default)"
+  if [[ "$REG_RSN" == "off" ]]; then RSN_OFF=off; else RSN_EFFORT="$REG_RSN"; fi
+fi
+case "$RSN_EFFORT" in ''|minimal|low|medium|high) ;; *) echo "error: $VOICE OPENROUTER_REASONING_EFFORT must be minimal, low, medium or high" >&2; exit "$PROVIDER_EXIT_FAILURE" ;; esac
+case "$RSN_OFF" in ''|off) ;; *) echo "error: $VOICE OPENROUTER_REASONING must be off or unset" >&2; exit "$PROVIDER_EXIT_FAILURE" ;; esac
+if [[ -n "${OPENROUTER_MAX_TOKENS:-}" && ! "${OPENROUTER_MAX_TOKENS}" =~ ^[0-9]+$ ]]; then echo "error: $VOICE OPENROUTER_MAX_TOKENS must be a number" >&2; exit "$PROVIDER_EXIT_FAILURE"; fi
+
+work="$(mktemp -d "${TMPDIR:-/tmp}/e3d-pilot-openrouter.XXXXXX")"
+trap 'rm -rf "$work"' EXIT
+chmod 700 "$work"
+( umask 077; printf 'Authorization: Bearer %s\nContent-Type: application/json\n' "$(or_key)" > "$work/headers" )
+
+# Provider preferences (OpenRouter "provider" object): privacy first, and the request must be honored as sent (require_parameters), so a
+# max_tokens limit is never silently ignored by an endpoint that does not support it.
+jq -n --arg dc "${OPENROUTER_DATA_COLLECTION:-deny}" --arg zdr "${OPENROUTER_ZDR:-0}" --arg only "${OPENROUTER_ONLY:-}" --arg fb "${OPENROUTER_ALLOW_FALLBACKS:-1}" \
+  '{data_collection: $dc, require_parameters: true}
+   + (if $zdr == "1" then {zdr: true} else {} end)
+   + (if $only != "" then {only: ($only | split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0)))} else {} end)
+   + (if $fb == "0" then {allow_fallbacks: false} else {} end)' > "$work/provider.json"
+
+jq -n --rawfile content "$PROMPT_FILE" --arg model "$MODEL" --arg max "${OPENROUTER_MAX_TOKENS:-}" --arg effort "$RSN_EFFORT" --arg rsn "$RSN_OFF" --slurpfile prov "$work/provider.json" \
+  '{model: $model, messages: [{role: "user", content: $content}], usage: {include: true}, provider: $prov[0]}
+   + (if $max != "" then {max_tokens: ($max | tonumber)} else {} end)
+   + (if $rsn == "off" then {reasoning: {enabled: false}} elif $effort != "" then {reasoning: {effort: $effort}} else {} end)' > "$work/payload.json"
+
+set +e
+http_code="$(curl -sS -m "${OPENROUTER_TIMEOUT:-180}" -o "$work/response.json" -w '%{http_code}' \
+  -H "@$work/headers" -d "@$work/payload.json" "$URL" 2> "$work/curl.err")"
+status=$?
+set -e
+
+if [[ $status -ne 0 ]]; then
+  printf 'error: %s request failed (curl exit %s): %s\n' "$VOICE" "$status" "$(head -c 300 "$work/curl.err" | tr '\n' ' ')" >&2
+  exit "$PROVIDER_EXIT_FAILURE"
+fi
+if [[ "$http_code" != 2* ]]; then
+  msg="$(jq -r '.error.message // empty' "$work/response.json" 2>/dev/null | head -c 300)"
+  case "$http_code" in
+    401) hint=' (the OpenRouter key was refused)' ;;
+    402) hint=' (the OpenRouter account is out of credits)' ;;
+    404) hint=' (no endpoint matches the privacy or routing settings, or the model is gone)' ;;
+    *) hint='' ;;
+  esac
+  printf 'error: %s HTTP %s%s%s\n' "$VOICE" "$http_code" "${msg:+: $msg}" "$hint" >&2
+  exit "$PROVIDER_EXIT_FAILURE"
+fi
+if ! jq -e 'type == "object"' "$work/response.json" >/dev/null 2>&1; then
+  echo "error: $VOICE returned a response that is not JSON" >&2
+  exit "$PROVIDER_EXIT_FAILURE"
+fi
+# OpenRouter can answer 200 with an error body (an upstream failure): treat it as the failure it is, with its own status code so a 429 or 5xx retries.
+if jq -e '.error != null and (.choices | type != "array" or length == 0)' "$work/response.json" >/dev/null 2>&1; then
+  code="$(jq -r '.error.code // empty | tostring' "$work/response.json" | head -c 12)"
+  msg="$(jq -r '.error.message // empty' "$work/response.json" | head -c 300)"
+  printf 'error: %s HTTP %s%s\n' "$VOICE" "${code:-502}" "${msg:+: $msg}" >&2
+  exit "$PROVIDER_EXIT_FAILURE"
+fi
+
+# the usage line comes first: a 200 with no content (all output tokens spent on reasoning, say) is still billed. `routing` carries what OpenRouter says
+# about who actually served the call, for the receipt.
+printf 'e3d_provider_usage=%s\n' "$(jq -c --arg v "$VOICE" --arg m "$MODEL" "$PROVIDER_OAI_USAGE_JQ"' oai_usage as $n
+  | {provider: $v, model: (.model // $m), tokens: (.usage.total_tokens // null), usage: (.usage // null)} + $n
+  + {routing: {transport: "openrouter", requested: $m, request_id: (.id // null), upstream: (.provider // null), cost: (.usage.cost // null)}}' "$work/response.json")" >&2
+content="$(jq -r '(.choices[0].message.content // "") | if type == "array" then map(.text // "") | join("") else . end' "$work/response.json")"
+if [[ -z "$content" ]]; then
+  echo "error: $VOICE returned no message content" >&2
+  exit "$PROVIDER_EXIT_FAILURE"
+fi
+tokens="$(jq '.usage.total_tokens // 0' "$work/response.json")"
+printf '%s\n' "$content"
+
+if [[ "$PROVIDER_TOKEN_LIMIT" =~ ^[0-9]+$ ]] && (( PROVIDER_TOKEN_LIMIT > 0 && tokens > PROVIDER_TOKEN_LIMIT )); then
+  printf 'error: %s provider token ceiling exceeded (%s > %s)\n' "$VOICE" "$tokens" "$PROVIDER_TOKEN_LIMIT" >&2
+  exit "$PROVIDER_EXIT_FAILURE"
+fi
