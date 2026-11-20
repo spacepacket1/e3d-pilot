@@ -42,12 +42,25 @@ The prompt tells the model that the debate text is data between markers, never t
 - A per-token debate (hosted): the recap call has no quoted limit yet. Quoting it as its own row is the billing step.
 - The named provider is not an adapter, fails, or answers something unusable: a warning, and the debate is unaffected.
 
+## The hosted job: `POST /internal/recaps`
+
+For the hosting service a recap is its own small job, not part of the debate's run. The run listener (the same loopback address and service token as `/internal/runs`) takes `POST /internal/recaps` with `{ request_id, debate_id, provider, max_tokens, rounds }`, where `rounds` is the stored copy of `rounds.json`. It runs one call and answers `{ ok: true, recap, usage }`. The service reserves and settles the money from `usage`; the engine only runs the call.
+
+- **Off by default.** `E3D_MCP_RECAP=1` turns it on and needs `E3D_MCP_RECAP_PROVIDERS`, the providers a recap may run on (API providers and OpenRouter voices, which have an output-limit setting). The listener then advertises the capability `recap_v1` in its health answer. Without the flag the route is a 404 and nothing is advertised.
+- **Checked before any call.** The provider must be on the list, ids and the limit (64 to 4096 tokens) must be well formed, and `rounds` is rebuilt from scratch (`normalizeRounds`): provider names, at most 10 rounds, 16 providers and 160 entries, bounded text, enums checked, unknown keys dropped. At least two rounds are needed.
+- **The call.** The adapter gets the limit in its own variable (`OPENAI_API_MAX_TOKENS`, `OPENROUTER_MAX_TOKENS` and so on) with per-token mode on, a 90 second limit and an output size limit. The prompt is a mode-0600 temp file that is removed afterwards.
+- **Answers.** `200 ok` with the recap and usage; `200 ok:false code:unusable` when the call was made but nothing in the answer could be checked (with the usage, so it can be settled); `400 invalid`; `403 not_allowed`; `503 unavailable` with `retry: true` (with usage when the adapter printed one).
+- **Idempotent.** The same `request_id` returns the same answer from a short memory, with no second paid call. The same id with other fields is invalid.
+- **Logs.** Ids, the provider name and counts. Never a position, a question or a key.
+
+`E3D_MCP_RESULT_ROUNDS=1` (default off) adds the rebuilt `rounds` to the stored result of a finished debate, so the service can keep them for a later recap. It is additive: nothing else in the result changes.
+
 ## Where this goes next
 
-The hosted service stores `rounds` and `recap` with the debate and prices the recap call as its own row in the quote, only when asked for. The page shows each `rounds` entry as a tagged chat message and the recap as a card (`docs/ask-chat-mode-spec.md`, section 6b, in the cloud repo).
+The hosted service stores `rounds` with the debate and `recap` with it once one is made, and prices the recap job on its own (cloud `docs/debate-recap-billing-spec.md`), only when asked for. The page shows each `rounds` entry as a tagged chat message and the recap as a card (`docs/ask-chat-mode-spec.md`, section 6b, in the cloud repo).
 
 A small prompt change would give round 1 answers a `POSITION:` line too, so every entry's summary comes from the model itself. It would add roughly a hundred bytes to the round 1 prompt, so it has to be re-measured with `E3D_DEBATE_PROMPT_OVERHEAD=1` and the hosted rate table's overhead figures updated. Not done here.
 
 ## Tests
 
-`bash tests/debate-recap.sh`: the parser, the prompt and the validator on their own, then `bin/e3d-debate` with stub providers (rounds always written, recap written when asked, output byte-identical with and without it, a failing, junk or unknown recap provider leaves the debate and its exit status alone, one round gives no recap).
+`bash tests/mcp-recap.sh` covers the job and its route (configuration, the call, idempotency, every refusal, usage on unusable and failed calls, no model text in logs, the 404 when off); `tests/mcp-runserver.sh` checks the stored `rounds`. `bash tests/debate-recap.sh`: the parser, the prompt and the validator on their own, then `bin/e3d-debate` with stub providers (rounds always written, recap written when asked, output byte-identical with and without it, a failing, junk or unknown recap provider leaves the debate and its exit status alone, one round gives no recap).

@@ -50,6 +50,7 @@ echo "\$all" >> "$ARGS"
 mode="\$(cat "$MODE")"
 mkdir -p "\$out"
 printf '# Debate\n\n## Round 1 -- claude\n\nTCONTENT-$MARK JSON file.\n\n## Round 1 -- codex\n\nSQLite.\n' > "\$out/transcript.md"
+printf '%s' '{"version":1,"roundsRan":1,"providers":["claude","codex"],"rounds":[{"round":1,"provider":"claude","position":"JSON file.","source":"first_sentence","status":null,"answerBytes":10,"excerpt":"JSON file."},{"round":1,"provider":"codex","position":"SQLite.","source":"first_sentence","status":null,"answerBytes":7,"excerpt":"SQLite."}]}' > "\$out/rounds.json"
 case "\$mode" in
   hang) touch "$STARTED"; exec sleep 20 ;;
 esac
@@ -58,7 +59,7 @@ STUBEOF
 chmod +x "$DEBATE"
 
 BASE_ENV=(E3D_MCP_AUTH_URL="$URL" E3D_MCP_AUTH_SERVICE_TOKEN="$SVC" E3D_MCP_DEBATE_BIN="$DEBATE" TYPESAFE_API_KEY="" E3D_MCP_PRINCIPAL=""
-  E3D_MCP_AUTH_CACHE_SEC=1 E3D_MCP_TIMEOUT_SEC=20 E3D_MCP_AUTH_HEALTH_SEC=1 E3D_MCP_RATE_PER_MIN=100000)
+  E3D_MCP_RESULT_ROUNDS=1 E3D_MCP_AUTH_CACHE_SEC=1 E3D_MCP_TIMEOUT_SEC=20 E3D_MCP_AUTH_HEALTH_SEC=1 E3D_MCP_RATE_PER_MIN=100000)
 
 # --- configuration errors refuse to start, without echoing the token ---
 SHORT="short-MARKER-token"
@@ -127,6 +128,7 @@ assert_eq "$(js "$r" | jq -r '[.accepted, .existing, .debate_id] | join(",")')" 
 wait_run "$D1" "$RT1" done
 g="$(js "$(rcall GET "$D1" "$RT1")")"
 assert_contains "$(jq -r .run.result.final_answer <<< "$g")" "ACONTENT-$MARK"; assert_eq "$(jq -r .run.result.consensus <<< "$g")" "split"
+assert_eq "$(jq -c '.run.result.rounds | [.roundsRan, .providers, (.rounds | length)]' <<< "$g")" '[1,["claude","codex"],2]' "E3D_MCP_RESULT_ROUNDS=1: the finished run carries the rebuilt rounds"
 assert_eq "$(jq -r '.run | has("transcript")' <<< "$g")" "false"
 assert_eq "$(ledger | jq -r --arg d "$D1" '[.effects[] | select(.debate_id == $d)] | map([.stored, (.charged > 0)]) | tostring')" "[[true,true]]" "one finalize, stored and charged"
 assert_eq "$(ledger | jq -r --arg d "$D1" '.debates[] | select(.debate_id == $d) | [.principal, .status, .has_result] | join(",")')" "acct_web,done,true"
