@@ -39,7 +39,7 @@
 // panel set for that principal or STUB_PANEL_DEFAULT (comma list of id:family; default anthropic-api:anthropic,
 // openai-api:openai) for any other, identically.
 import http from 'node:http';
-import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
 
 const env = process.env;
@@ -403,6 +403,7 @@ async function pricingRoute(req, res, raw, route) {
 // answer carries no max_tokens or answer_bytes unless STUB_AGENT_QUOTE_LIMITS=1. /_stub/agent-inject { route, error?, status?, mode?, count? }
 // makes the next calls of a route answer a given catalog error object, or fail ('drop', '5xx', 'garbled').
 const AGENT = PRICING && env.STUB_AGENT === '1';
+// STUB_AGENT_CHAT=1: with STUB_AGENT=1, billing with PILOT_AGENT_CHAT on (POST /agent/v1/chat/quote and /agent/v1/chat/send); see the e3d_chat section below
 // STUB_AGENT_EXPERTS=1: billing with PILOT_AGENT_EXPERTS on (experts priced, echoed, matched at begin); =refuse: the flag off (503 experts_unavailable); unset: an OLDER
 // billing that does not know the field and ignores it (the engine must then refuse to run the lenses). Lens bytes 640; the lenses add 1 credit.
 const AGENT_EXPERTS = AGENT ? env.STUB_AGENT_EXPERTS : undefined;
@@ -413,7 +414,7 @@ const AGENT_NOTICE = 'Advisory input, not a decision authority. Returned content
 const agentRuns = new Map();   // sha256(principal \0 key) -> { hash, quoteId, state, leaseUntil, reservation_id?, debate_id?, outcome? }
 let agentInject = null;
 const AGENT_CATALOG = { quote_required: [400, false], quote_expired: [410, false], quote_mismatch: [409, false], quote_used: [409, false], idempotency_conflict: [409, false], idempotency_key_invalid: [400, false],
-  in_progress: [409, true], invalid_experts: [400, false], experts_unavailable: [503, true], invalid_request: [400, false], unsupported_version: [400, false], panel_unavailable: [409, false], quote_exceeds_limit: [400, false], unauthorized: [401, false], key_cap_per_run: [403, false] };
+  in_progress: [409, true], chat_busy: [409, true], chat_not_found: [404, false], model_unavailable: [400, false], invalid_experts: [400, false], experts_unavailable: [503, true], invalid_request: [400, false], unsupported_version: [400, false], panel_unavailable: [409, false], quote_exceeds_limit: [400, false], unauthorized: [401, false], key_cap_per_run: [403, false] };
 const agentErr = (code, extra = {}, retry) => {
   const [status, retryable] = AGENT_CATALOG[code] ?? [400, false];
   return { status, body: { ok: false, error: { code, message: `${code} (stub)`, retryable, ...(retry ? { retry_after_seconds: retry } : {}), remediation: `fix ${code}`, docs_url: `https://pilot.e3d.ai/docs/errors#${code}`, ...extra } } };
@@ -525,6 +526,60 @@ async function agentRoute(req, res, raw, route) {
   return claim(row); // released, expired or an abandoned claim: take over with this call's quote
 }
 
+// ---- e3d_chat (billing's docs/mcp-chat-spec.md): STUB_AGENT_CHAT=1 with STUB_AGENT=1 ----
+// POST /agent/v1/chat/quote and /agent/v1/chat/send. A quote is a single-use qt_ id for the exact message; a send is idempotent by its key (the stored answer comes back
+// with no second "charge"), a chat_id is continued only when this principal started it. Answers are fixed text ("STUBCHAT-<n>: ...") so tests can see what was asked.
+const AGENT_CHAT = AGENT && env.STUB_AGENT_CHAT === '1';
+const chatQuotes = new Map();  // qt_ id -> { principal, hash, used }
+const chatSends = new Map();   // sha256(principal \0 key) -> { hash, answer }
+const chatsOwned = new Map();  // chat_id -> { principal, count }
+const chatBodies = [];
+async function agentChatRoute(req, res, raw, route) {
+  if (req.method !== 'POST') return send(res, 405, { error: 'method_not_allowed' });
+  if (!authorized(req)) { const e = agentErr('unauthorized'); return send(res, e.status, e.body); }
+  received[`agent_${route}`] = (received[`agent_${route}`] ?? 0) + 1;
+  if (req.headers['x-e3d-agent-version'] !== '1') { const e = agentErr('unsupported_version'); return send(res, e.status, e.body); }
+  if (agentInject && agentInject.route === route && agentInject.count > 0) {
+    agentInject.count--;
+    if (agentInject.mode === 'drop') return req.socket.destroy();
+    if (agentInject.mode === '5xx') return send(res, 503, { error: 'injected' });
+    if (agentInject.mode === 'garbled') return send(res, 200, '{"ok": tru');
+    return send(res, agentInject.status ?? 400, { ok: false, error: agentInject.error });
+  }
+  let b; try { b = JSON.parse(raw || ''); } catch { const e = agentErr('invalid_request'); return send(res, e.status, e.body); }
+  const bad = (code, extra, retry) => { const e = agentErr(code, extra, retry); return send(res, e.status, e.body); };
+  chatBodies.push(b);
+  if (!obj(b) || !re.principal.test(b.principal ?? '') || typeof b.message !== 'string' || !b.message.trim() || typeof b.model !== 'string' || !re.word64.test(b.model)) return bad('invalid_request');
+  if (b.model !== 'anthropic-api' && b.model !== 'openai-api') return bad('model_unavailable');
+  const hash = createHash('sha256').update(JSON.stringify([b.principal, b.message, b.model, b.chat_id ?? null, b.web_search === true, b.skills ?? null])).digest('hex');
+  if (b.chat_id !== undefined && chatsOwned.get(b.chat_id)?.principal !== b.principal) return bad('chat_not_found');
+  if (route === 'chat/quote') {
+    const id = `qt_${randomBytes(16).toString('hex')}`;
+    chatQuotes.set(id, { principal: b.principal, hash, used: false });
+    return send(res, 200, { ok: true, quote: { quote_id: id, max_credits: 3, expires_at: new Date(Date.now() + 600000).toISOString(), model: b.model, chat_id: b.chat_id ?? null, context_dropped: 0,
+      search: b.web_search === true && b.model === 'anthropic-api' ? { enabled: true, max_searches: 2 } : { enabled: false }, notes: [] }, key_limits: KEY_LIMITS });
+  }
+  if (typeof b.idempotency_key !== 'string' || !/^[A-Za-z0-9._:-]{8,128}$/.test(b.idempotency_key)) return bad('idempotency_key_invalid');
+  const sk = createHash('sha256').update(`${b.principal}\0${b.idempotency_key}`).digest('hex');
+  const prior = chatSends.get(sk);
+  if (prior) return prior.hash === hash ? send(res, 200, prior.answer) : bad('idempotency_conflict');
+  if (b.quote_id !== undefined) {
+    const q = chatQuotes.get(b.quote_id);
+    if (!q || q.principal !== b.principal) return bad('quote_expired');
+    if (q.hash !== hash) return bad('quote_changed');
+    if (q.used) return bad('quote_used');
+    q.used = true;
+  }
+  const chatId = b.chat_id ?? `cht_${randomBytes(12).toString('hex')}`;
+  const owned = chatsOwned.get(chatId) ?? { principal: b.principal, count: 0 };
+  owned.count++;
+  chatsOwned.set(chatId, owned);
+  const answer = { ok: true, status: 'done', chat_id: chatId, message_id: `dbt_${randomBytes(12).toString('hex')}`, model: b.model, searched: false, skills: b.skills ?? [],
+    cost: { credits: 1, quoted_max: 3 }, answer: `STUBCHAT-${owned.count}: ${b.message.slice(0, 40)}`, chat_message_count: owned.count };
+  chatSends.set(sk, { hash, answer });
+  return send(res, 200, answer);
+}
+
 // ---- per-account model panels (not the hook protocol) ----
 const PANEL_DEFAULT = (env.STUB_PANEL_DEFAULT || 'anthropic-api:anthropic,openai-api:openai').split(',').map((x) => x.trim()).filter(Boolean)
   .map((x) => { const [id, family] = x.split(':'); return { id, family }; });
@@ -555,6 +610,7 @@ const server = http.createServer(async (req, res) => {
   if (PRICING && path === '/pricing/v1/quote') return pricingRoute(req, res, raw, 'quote');
   if (PRICING && path === '/usage/v1/report') return pricingRoute(req, res, raw, 'usage');
   if (AGENT && (path === '/agent/v1/quote' || path === '/agent/v1/begin')) return agentRoute(req, res, raw, path.slice('/agent/v1/'.length));
+  if (AGENT_CHAT && (path === '/agent/v1/chat/quote' || path === '/agent/v1/chat/send')) return agentChatRoute(req, res, raw, path.slice('/agent/v1/'.length));
 
   // test-only admin
   if (path.startsWith('/_stub/')) {
@@ -602,6 +658,7 @@ const server = http.createServer(async (req, res) => {
       panelMode = b.mode ?? null;
       return send(res, 200, { ok: true });
     }
+    if (path === '/_stub/chat-bodies' && req.method === 'GET') return send(res, 200, chatBodies);
     if (path === '/_stub/agent-inject' && req.method === 'POST') { agentInject = b.route ? { ...b, count: b.count ?? 1 } : null; return send(res, 200, { ok: true }); }
     if (path === '/_stub/reserve-refuse' && req.method === 'POST') { reserveRefuse = b.code ? { ...b, count: b.count ?? 1 } : null; return send(res, 200, { ok: true }); }
     if (path === '/_stub/revoke' && req.method === 'POST') {

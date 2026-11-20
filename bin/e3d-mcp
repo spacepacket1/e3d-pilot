@@ -54,6 +54,7 @@ import { validatePricingConfig, createPricingClient, limitsForPlan, pricedError,
 import { loadExperts } from '../lib/debate/specialists.mjs';
 import { lensBlock } from '../lib/debate/specialists-plan.mjs';
 import { galleryFrom, createGalleryRead, GALLERY_INSTRUCTION } from '../lib/mcp/gallery-read.js';
+import { chatToolFrom, chatQuoteTool, chatTool, createChatHandlers, CHAT_INSTRUCTION } from '../lib/mcp/agent-chat.js';
 import { expertsFrom, expertsAgentFrom, checkAgentExperts, loadCatalogue as loadExpertsCatalogue, createExpertsRead, EXPERTS_INSTRUCTION, EXPERTS_USE_INSTRUCTION } from '../lib/mcp/experts-read.js';
 import { agentModeFrom, agentFieldsOf, AGENT_INSTRUCTIONS, SCHEMA_VERSION as AGENT_SCHEMA_VERSION, IDEMPOTENCY_KEY_RE, QUOTE_ID_RE, agentError, errorResult, reasonError, extendDebateTool, quoteTool, quoteResult, validQuote } from '../lib/mcp/agent.js';
 import { validatePanelConfig, validateRequiredConfig, withRequired, requireAvailable, createPanelClient, checkFamilies, requireFamilies, degrade, explicitPanel, familiesOf } from '../lib/mcp/panel.js';
@@ -86,6 +87,10 @@ const EXPERTS_CONFIG = expertsFrom(process.env);
 // billing's agent routes (PILOT_AGENT_EXPERTS) and run with the same planner flags as a web run. Needs E3D_MCP_EXPERTS=1 and the agent contract.
 const EXPERTS_AGENT = expertsAgentFrom(process.env);
 const AGENT_EXPERTS_ON = EXPERTS_AGENT.on && AGENT_ON;
+// E3D_MCP_CHAT_TOOL=1 (billing's docs/mcp-chat-spec.md): e3d_chat_quote and e3d_chat, one model's answer through billing's PILOT_AGENT_CHAT routes. Hosted agent contract only.
+const CHAT_TOOL = chatToolFrom(process.env);
+const CHAT_TOOL_ON = CHAT_TOOL.on && AGENT_ON;
+const CHAT_TOOL_NAMES = new Set(['e3d_chat_quote', 'e3d_chat']);
 const agentCatalogue = AGENT_EXPERTS_ON ? loadExpertsCatalogue(BUILTIN_EXPERTS_DIR) : null;
 const expertsRead = EXPERTS_CONFIG.on ? createExpertsRead({ builtinDir: fileURLToPath(new URL('../lib/specialists', import.meta.url)), use: AGENT_EXPERTS_ON }) : null;
 // The version comes from package.json, so a development build (0.2.0-dev.N) reports itself correctly.
@@ -1039,6 +1044,12 @@ async function toolListProviders(_args, _progress, ctx) {
     lines.push('', `Default voices for e3d_debate: ${eff.join(', ') || 'none'} (${pick.note}${REQUIRED.length ? '; required providers first' : ''})`);
   }
   lines.push(searchAvailability(process.env).text);
+  // e3d_chat: which providers answer one message and which of them can search (only the four direct vendors; the OpenRouter voices never do).
+  if (CHAT_TOOL_ON && ctx?.hosted) {
+    const chatProviders = CHAT_CONFIG.on ? CHAT_CONFIG.providers : (allowed ? known.filter((k) => allowed.includes(k.name)).map((k) => k.name) : known.map((k) => k.name));
+    const searching = chatProviders.filter((p) => API_PROVIDERS.includes(p));
+    lines.push('', `Chat (e3d_chat, one model per message): ${chatProviders.join(', ') || 'none'}. Web search in chat (web_search: true, off by default): ${searching.join(', ') || 'none'}.`);
+  }
   return text(lines.join('\n') || 'no providers found');
 }
 
@@ -1293,6 +1304,7 @@ const HANDLERS = {
   e3d_usage: usageHandler(usage, () => hookState),
   ...(galleryRead ? { e3d_gallery: galleryRead.handler } : {}),
   ...(expertsRead ? expertsRead.handlers : {}),
+  ...createChatHandlers({ client: { agentChatQuote: (b) => pricingClient.agentChatQuote(b), agentChatSend: (b) => pricingClient.agentChatSend(b) }, log }),
 };
 
 // A tool the connection may use. e3d_quote is free and only prices what e3d_debate runs, so whoever may debate may quote.
@@ -1303,7 +1315,7 @@ const PROBED_TOOLS = new Set(['e3d_debate', 'e3d_investigate', 'e3d_debate_start
 const probeClient = (info) => String(info?.name ?? 'unknown').replace(/[^A-Za-z0-9._-]+/g, '_').slice(0, 40) || 'unknown';
 
 // e3d_gallery reads public pages and costs nothing, so while it is switched on every connection may use it, whatever its key's tool list says.
-const permits = (conn, name) => !conn.allowed || conn.allowed.has(name) || ((name === 'e3d_quote' || name === 'e3d_investigate') && conn.allowed.has('e3d_debate')) || (name === 'e3d_gallery' && Boolean(galleryRead)) || ((name === 'e3d_list_experts' || name === 'e3d_get_expert') && Boolean(expertsRead));
+const permits = (conn, name) => !conn.allowed || conn.allowed.has(name) || ((name === 'e3d_quote' || name === 'e3d_investigate') && conn.allowed.has('e3d_debate')) || (name === 'e3d_gallery' && Boolean(galleryRead)) || ((name === 'e3d_list_experts' || name === 'e3d_get_expert') && Boolean(expertsRead)) || (CHAT_TOOL_NAMES.has(name) && CHAT_TOOL_ON && conn.allowed.has('e3d_debate'));
 
 async function handle(msg, conn = stdioConn) {
   const { id, method, params } = msg;
@@ -1321,7 +1333,7 @@ async function handle(msg, conn = stdioConn) {
         protocolVersion: SUPPORTED_PROTOCOLS.includes(want) ? want : SUPPORTED_PROTOCOLS[0],
         capabilities: { tools: { listChanged: false }, prompts: { listChanged: false } },
         serverInfo: SERVER_INFO,
-        instructions: conn.hosted && AGENT_ON ? [AGENT_INSTRUCTIONS, ...(galleryRead ? [GALLERY_INSTRUCTION] : []), ...(expertsRead ? [AGENT_EXPERTS_ON ? EXPERTS_USE_INSTRUCTION : EXPERTS_INSTRUCTION] : [])].join('\n\n')
+        instructions: conn.hosted && AGENT_ON ? [AGENT_INSTRUCTIONS, ...(galleryRead ? [GALLERY_INSTRUCTION] : []), ...(expertsRead ? [AGENT_EXPERTS_ON ? EXPERTS_USE_INSTRUCTION : EXPERTS_INSTRUCTION] : []), ...(CHAT_TOOL_ON ? [CHAT_INSTRUCTION] : [])].join('\n\n')
           : conn.hosted
           ? 'Use e3d_debate for contestable decisions where independent model perspectives and recorded dissent add value; always report its dissent, and never present a split verdict as settled. It uses a shared usage budget (see e3d_usage); do not use it for simple lookups.'
           : 'Use e3d_debate for contestable decisions where independent model perspectives and recorded dissent add value; always report its dissent. It costs credits; do not use it for simple lookups. The e3d_pilot_* tools run a human-gated pipeline: propose an idea, a human approves it (e3d_pilot_approve tells you how; never approve on your own), e3d_pilot_implement drafts and negotiates a spec and pauses, e3d_pilot_code_plan shows the plan, and only after the user agrees does e3d_pilot_execute write code and open a draft PR. Tools marked FREE spend nothing; tools marked SPENDS MODEL CREDITS do. Merging is never available here.',
@@ -1341,12 +1353,14 @@ async function handle(msg, conn = stdioConn) {
       const gated = (asyncEnabled() ? TOOLS : TOOLS.filter((t) => !ASYNC_TOOLS.has(t.name))).filter((t) => t.name !== 'e3d_investigate' || caseEnabled(conn));
       // agent mode (hosted, per-token): e3d_debate takes quote_id and idempotency_key, and e3d_quote is offered (to whoever may debate)
       const listed = AGENT_ON && conn.hosted ? gated.flatMap((t) => (t.name === 'e3d_debate' ? [extendDebateTool(t, { experts: AGENT_EXPERTS_ON }), ...(permits(conn, 'e3d_quote') ? [quoteTool(t, { experts: AGENT_EXPERTS_ON })] : [])] : t.name === 'e3d_investigate' ? [hostedInvestigateTool(extendDebateTool(t, { experts: AGENT_EXPERTS_ON }))] : [t])) : gated;
-      return reply({ tools: conn.allowed ? listed.filter((t) => permits(conn, t.name)) : listed });
+      // e3d_chat_quote and e3d_chat: hosted agent mode with E3D_MCP_CHAT_TOOL=1, to whoever may debate (a key's tool list never names them)
+      const withChat = CHAT_TOOL_ON && conn.hosted ? [...listed, chatQuoteTool, chatTool] : listed;
+      return reply({ tools: conn.allowed ? withChat.filter((t) => permits(conn, t.name)) : withChat });
     }
     case 'tools/call': {
       const handler = HANDLERS[params?.name];
       // A tool outside this connection's allowlist (or a gated one) is reported exactly like one that does not exist.
-      if (!handler || !permits(conn, params.name) || (params.name === 'e3d_quote' && !(AGENT_ON && conn.hosted)) || (ASYNC_TOOLS.has(params.name) && !asyncEnabled()) || (params.name === 'e3d_investigate' && !caseEnabled(conn))) return fail(-32602, `unknown tool: ${params?.name}`);
+      if (!handler || !permits(conn, params.name) || (params.name === 'e3d_quote' && !(AGENT_ON && conn.hosted)) || (CHAT_TOOL_NAMES.has(params.name) && !(CHAT_TOOL_ON && conn.hosted)) || (ASYNC_TOOLS.has(params.name) && !asyncEnabled()) || (params.name === 'e3d_investigate' && !caseEnabled(conn))) return fail(-32602, `unknown tool: ${params?.name}`);
       const token = params?._meta?.progressToken;
       const progress = token === undefined || conn.hosted ? undefined : (n, message) =>
         conn.send({ jsonrpc: '2.0', method: 'notifications/progress', params: { progressToken: token, progress: n, message } });
@@ -1410,6 +1424,10 @@ if (!EXPERTS_CONFIG.ok) {
 }
 if (!AGENT_CONFIG.ok) {
   process.stderr.write(`[e3d-mcp] refusing to start: ${AGENT_CONFIG.errors.join('; ')}\n`);
+  process.exit(2);
+}
+if (!CHAT_TOOL.ok || (CHAT_TOOL.on && !AGENT_ON)) {
+  process.stderr.write(`[e3d-mcp] refusing to start: ${CHAT_TOOL.ok ? 'E3D_MCP_CHAT_TOOL=1 needs the agent contract (hosted --http mode with E3D_MCP_AUTH_URL and E3D_MCP_PRICING=per_token, E3D_MCP_AGENT not 0)' : CHAT_TOOL.errors.join('; ')}\n`);
   process.exit(2);
 }
 if (!EXPERTS_AGENT.ok || (EXPERTS_AGENT.on && !AGENT_ON)) {
