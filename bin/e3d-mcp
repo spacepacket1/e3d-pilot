@@ -47,6 +47,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { createRuns, validateRunsConfig } from '../lib/mcp/runs.js';
 import { startRunServer, validateRunServerConfig, EXPERTS_LIMITS } from '../lib/mcp/run-server.js';
 import { createRecapRunner, recapConfigFrom } from '../lib/mcp/recap-runner.js';
+import { createChatRunner, chatConfigFrom } from '../lib/mcp/chat-runner.js';
 import { normalizeRounds } from '../lib/debate/recap.mjs';
 import { CASE_SYNTH_EXTRA_TOKENS } from '../lib/debate/case.mjs';
 import { validatePricingConfig, createPricingClient, limitsForPlan, pricedError, debateEnvFor, readUsageRows, searchCapable, searchCapFromEnv, requestedSearches, expertsRunFrom } from '../lib/mcp/pricing.js';
@@ -67,6 +68,8 @@ const PRICING_CONFIG = validatePricingConfig(process.env, { http: HTTP_MODE, hoo
 const EXPERTS_RUN = expertsRunFrom(process.env, { mode: PRICING_CONFIG.mode });
 // the recap job (docs/debate-recap.md): off unless E3D_MCP_RECAP=1, which also needs E3D_MCP_RECAP_PROVIDERS
 const RECAP_CONFIG = recapConfigFrom(process.env);
+// the single-model chat run (docs/chat-run.md): off unless E3D_MCP_CHAT=1, which also needs E3D_MCP_CHAT_PROVIDERS
+const CHAT_CONFIG = chatConfigFrom(process.env);
 const RESULT_ROUNDS = process.env.E3D_MCP_RESULT_ROUNDS === '1';
 const BUILTIN_EXPERTS_DIR = fileURLToPath(new URL('../lib/specialists', import.meta.url));
 let pricingClient = null; // billing's quote and usage-report client, once the external hook is running under per_token
@@ -1417,6 +1420,10 @@ if (!PRICING_CONFIG.ok) {
   process.stderr.write(`[e3d-mcp] refusing to start: ${PRICING_CONFIG.errors.join('; ')}\n`);
   process.exit(2);
 }
+if (!CHAT_CONFIG.ok) {
+  process.stderr.write(`[e3d-mcp] refusing to start: ${CHAT_CONFIG.errors.join('; ')}\n`);
+  process.exit(2);
+}
 if (!RECAP_CONFIG.ok) {
   process.stderr.write(`[e3d-mcp] refusing to start: ${RECAP_CONFIG.errors.join('; ')}\n`);
   process.exit(2);
@@ -1550,7 +1557,8 @@ if (HTTP_MODE) {
     if (hook && RUN_SERVER.enabled) {
       runServer = await startRunServer({ port: RUN_SERVER.config.port, token: RUN_SERVER.config.token, failsPerMin: RUN_SERVER.config.failsPerMin,
         runs, external: hook.external, plan: planWebRun, log, pricing: { mode: PRICING_CONFIG.mode, customer: runsConfig.customer, search: searchCapable(process.env, { mode: PRICING_CONFIG.mode }), experts: EXPERTS_RUN.on },
-        recap: RECAP_CONFIG.on ? createRecapRunner({ providersDir: fileURLToPath(new URL('../lib/providers', import.meta.url)), providers: RECAP_CONFIG.providers, log }) : null });
+        recap: RECAP_CONFIG.on ? createRecapRunner({ providersDir: fileURLToPath(new URL('../lib/providers', import.meta.url)), providers: RECAP_CONFIG.providers, log }) : null,
+        chat: CHAT_CONFIG.on ? createChatRunner({ providersDir: fileURLToPath(new URL('../lib/providers', import.meta.url)), providers: CHAT_CONFIG.providers, log, ...(EXPERTS_RUN.on ? { expertsDir: BUILTIN_EXPERTS_DIR } : {}) }) : null });
     }
   } catch (e) { process.stderr.write(`[e3d-mcp] ${redact(e.message)}\n`); process.exit(2); }
   if (process.env.E3D_MCP_PORT_FILE) await writeFile(process.env.E3D_MCP_PORT_FILE, String(server.port));
