@@ -131,6 +131,18 @@ lens_sentence="$(grep -o 'One analyst is an agent-diagnosis expert[^\\]*' "$ROOT
 node --input-type=module -e "import { CASE_SYNTH_EXTRA_BYTES } from '$ROOT/lib/debate/case.mjs'; if (CASE_SYNTH_EXTRA_BYTES !== 1500) process.exit(1)" || fail "CASE_SYNTH_EXTRA_BYTES is the cloud's 1500"
 echo "ok - case mode raises only the synthesis output limit by 2000 tokens; the prompt growth ($(( ov_case - ov_plain )) + $lens_sentence bytes) is inside the 1500-byte allowance"
 
+# OpenRouter voices (docs/openrouter.md) are priced per token like the four direct adapters: every call carries the quoted limit, the rows name the voices
+: > "$VREQ"
+PROVS_DIRECT="$PROVS"; PROVS=anthropic-api,or-glm,or-deepseek
+dbt "$TMP/o_or" OPENROUTER_API_KEY=k-or OPENROUTER_BASE_URL="http://127.0.0.1:$VP/v1" E3D_DEBATE_MAX_TOKENS='{"anthropic-api":321,"or-glm":400,"or-deepseek":500}' E3D_DEBATE_ANSWER_BYTES_MAX='{"anthropic-api":40,"or-glm":50,"or-deepseek":60}' -- --rounds 1 "Which?"
+assert_eq "$(vreq_count)" "4" "OpenRouter voices: 3 seats x 1 round + the synthesis"
+assert_eq "$(jq -c 'select(.body.max_tokens == 400 or .body.max_tokens == 500) | .body.max_tokens' "$VREQ" | sort | tr '\n' ' ')" "400 500 " "each OpenRouter call sends its own quoted max_tokens"
+assert_eq "$(jq -c '[.[] | .provider] | sort | unique' "$TMP/o_or/usage.json")" '["anthropic-api","or-deepseek","or-glm"]' "usage rows name the voices"
+rc=0; env "${vendor_env[@]}" OPENROUTER_API_KEY=k-or OPENROUTER_BASE_URL="http://127.0.0.1:$VP/v1" E3D_PROVIDER_PER_TOKEN=1 "$ROOT/lib/providers/or-glm" "$TMP/prompt.md" > "$TMP/or.out" 2>&1 || rc=$?
+assert_eq "$rc" "1" "a per-token OpenRouter call without its limit does not run"; assert_contains "$(cat "$TMP/or.out")" "needs OPENROUTER_MAX_TOKENS"
+PROVS="$PROVS_DIRECT"
+echo "ok - OpenRouter voices are priced per token: quoted limits sent, rows named, a call without its limit refused"
+
 # without the variables nothing changes: no usage.json, whole answers in prompts, no output limit sent
 : > "$VREQ"
 dbt "$TMP/o2" -- --rounds 2 "Which?"
