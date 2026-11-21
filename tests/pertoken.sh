@@ -71,7 +71,7 @@ ANSB='{"anthropic-api":40,"openai-api":50}'
 : > "$VREQ"
 dbt "$TMP/o1" E3D_DEBATE_MAX_TOKENS="$MAXT" E3D_DEBATE_ANSWER_BYTES_MAX="$ANSB" -- --rounds 2 "Which?"
 assert_eq "$(vreq_count)" "5" "exactly the planned calls: 2 rounds x 2 providers + the synthesis"
-assert_eq "$(jq -c 'select(.url == "/v1/messages") | .body.max_tokens' "$VREQ" | sort -u | tr '\n' ' ')" "321 " "every Anthropic call sends max_tokens = 321"
+assert_eq "$(jq -c 'select(.url == "/v1/messages") | .body.max_tokens' "$VREQ" | sort -u | tr '\n' ' ')" "321 821 " "every Anthropic seat call sends max_tokens = 321 and its synthesis 321 + 500"
 assert_eq "$(jq -c 'select(.url != "/v1/messages") | .body.max_completion_tokens' "$VREQ" | sort -u | tr '\n' ' ')" "456 " "every OpenAI call sends max_completion_tokens = 456"
 # prior answers inserted into the round 2 and synthesis prompts are cut to the per-provider byte limit, on a character boundary
 node - "$VREQ" "$ANSWER" <<'JS'
@@ -113,15 +113,15 @@ synth_limit() { jq -c 'select(.body.messages[0].content | test("Below is the ful
 seat_limits() { jq -c 'select(.body.messages[0].content | test("Below is the full transcript") | not) | [.url, (.body.max_tokens // .body.max_completion_tokens)]' "$VREQ" | sort -u | tr '\n' ' '; }
 : > "$VREQ"
 dbt "$TMP/o_plain" E3D_DEBATE_MAX_TOKENS="$MAXT" E3D_DEBATE_ANSWER_BYTES_MAX="$ANSB" -- --rounds 2 "Which?"
-assert_eq "$(synth_limit)" "321 " "a normal debate: the synthesis keeps the quoted limit"
+assert_eq "$(synth_limit)" "821 " "a normal debate: the synthesis gets the quoted 321 + 500 for \"## Each model\""
 plain_seats="$(seat_limits)"
 : > "$VREQ"
 dbt "$TMP/o_case" E3D_DEBATE_MAX_TOKENS="$MAXT" E3D_DEBATE_ANSWER_BYTES_MAX="$ANSB" -- --rounds 2 --follow-up "Which?"
-assert_eq "$(synth_limit)" "2321 " "case mode: the Anthropic synthesis gets 321 + 2000"
+assert_eq "$(synth_limit)" "2821 " "case mode: the Anthropic synthesis gets 321 + 500 + 2000"
 assert_eq "$(seat_limits)" "$plain_seats" "case mode: seat calls keep the quoted limits"
 : > "$VREQ"
 dbt "$TMP/o_case2" E3D_DEBATE_MAX_TOKENS="$MAXT" E3D_DEBATE_ANSWER_BYTES_MAX="$ANSB" -- --rounds 2 --follow-up --synthesizer openai-api "Which?"
-assert_eq "$(synth_limit)" "2456 " "case mode: an OpenAI synthesis gets 456 + 2000"
+assert_eq "$(synth_limit)" "2956 " "case mode: an OpenAI synthesis gets 456 + 500 + 2000"
 assert_eq "$(jq -c '[.[] | select(.key == "synth") | .provider]' "$TMP/o_case2/usage.json")" '["openai-api"]'
 # the prompt side of the same allowance: the case instructions plus the agent-diagnosis sentence stay inside CASE_SYNTH_EXTRA_BYTES (the hosted bound adds 1500 bytes)
 ov_plain="$(E3D_DEBATE_PROMPT_OVERHEAD=1 "$ROOT/bin/e3d-debate" --providers "$PROVS" --rounds 10 | jq -r .promptOverheadBytes.synthesis)"
@@ -130,6 +130,13 @@ lens_sentence="$(grep -o 'One analyst is an agent-diagnosis expert[^\\]*' "$ROOT
 (( ov_case - ov_plain + lens_sentence <= 1500 )) || fail "the case synthesis prompt grew by $(( ov_case - ov_plain )) + $lens_sentence bytes, more than the 1500 the hosted bound allows"
 node --input-type=module -e "import { CASE_SYNTH_EXTRA_BYTES } from '$ROOT/lib/debate/case.mjs'; if (CASE_SYNTH_EXTRA_BYTES !== 1500) process.exit(1)" || fail "CASE_SYNTH_EXTRA_BYTES is the cloud's 1500"
 echo "ok - case mode raises only the synthesis output limit by 2000 tokens; the prompt growth ($(( ov_case - ov_plain )) + $lens_sentence bytes) is inside the 1500-byte allowance"
+
+# "## Each model" (every debate): the synthesis limit is raised by SUMMARY_SYNTH_EXTRA_TOKENS (the hosted bound prices the same) and its instructions stay inside SUMMARY_SYNTH_EXTRA_BYTES
+assert_eq "$(node "$ROOT/lib/debate/case.mjs" summary-extra)" "500" "the extra output limit of every synthesis"
+sum_bytes="$(sed -n '/^summaries_synthesis_instructions() {/,/^EOP$/p' "$ROOT/bin/e3d-debate" | sed '1,2d;$d' | wc -c | tr -d ' ')"
+(( sum_bytes <= 900 )) || fail "the per-model summary instructions are $sum_bytes bytes, more than the 900 the hosted bound allows"
+node --input-type=module -e "import { SUMMARY_SYNTH_EXTRA_BYTES } from '$ROOT/lib/debate/case.mjs'; if (SUMMARY_SYNTH_EXTRA_BYTES !== 900) process.exit(1)" || fail "SUMMARY_SYNTH_EXTRA_BYTES is the cloud's 900"
+echo "ok - every synthesis gets 500 more output tokens for the per-model lines; their instructions ($sum_bytes bytes) are inside the 900-byte allowance"
 
 # OpenRouter voices (docs/openrouter.md) are priced per token like the four direct adapters: every call carries the quoted limit, the rows name the voices
 : > "$VREQ"

@@ -126,4 +126,12 @@ assert.ok(!/cut off/.test(v.dissent.summary)); ok('dissent followed by another s
 // a reply that is complete but has no CONSENSUS line keeps the old message
 v = parseVerdict('FINAL ANSWER: Do X, because it is simpler.');
 assert.equal(v.final_answer, 'Do X, because it is simpler.'); assert.equal(v.consensus, 'unknown'); assert.match(v.dissent.summary, /could not be parsed/); ok('complete answer without CONSENSUS: legacy message');
+// "## Each model": one line per participant, parsed to position_summaries and kept out of the dissent and the claims
+v = parseVerdict('FINAL ANSWER: Open.\nCONSENSUS: majority\nDISSENT: none\n\n## What would change this\n- a proof\n\n## Each model\n- anthropic-api | The Riemann hypothesis, still unproven.\n- **openai-api** | No position stated.\n- anthropic-api | duplicate is ignored\n\n## Key claims\n- It is open | tier: inferred | source: none | by: anthropic-api\nEND');
+assert.deepEqual(v.position_summaries, [{ provider: 'anthropic-api', text: 'The Riemann hypothesis, still unproven.' }, { provider: 'openai-api', text: 'No position stated.' }]);
+assert.equal(v.dissent.summary, 'none'); assert.equal(v.claims.length, 1); assert.deepEqual(v.would_change, ['a proof']); ok('each-model lines are parsed, deduplicated and kept out of dissent and claims');
+v = parseVerdict('FINAL ANSWER: Open.\nCONSENSUS: full\nDISSENT: none\n\n## Each model\n- anthropic-api | A.\n- openai-api | Cut off mid-li');
+assert.deepEqual(v.position_summaries.map((p) => p.provider), ['anthropic-api']); ok('without END the last each-model line is dropped');
+v = parseVerdict('FINAL ANSWER: Open.\nCONSENSUS: full\nDISSENT: none');
+assert.equal(v.position_summaries, undefined); ok('no each-model section: no position_summaries');
 EOF2
