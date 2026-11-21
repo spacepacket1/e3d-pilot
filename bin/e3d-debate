@@ -365,7 +365,7 @@ if [[ "$PROMPT_OVERHEAD" != "1" && ( -n "${E3D_DEBATE_MAX_TOKENS:-}" || -n "${E3
   done
   (( ${#PT_ADAPTERS[@]} == ${#DEBATE_PROVIDERS[@]} )) || { echo "error: per-token pricing prices one seat per provider; several seats on one provider are not supported with token limits" >&2; exit 1; }
   PT_CFG="$(node "$PT_LIB" config "$DEBATE_SYNTHESIZER" "${PT_ADAPTERS[@]}")" || exit 1
-  [[ "$(jq -r .perToken <<< "$PT_CFG")" == "true" ]] && { PT_ON=1; PT_MAX_JSON="$(jq -c .maxTokens <<< "$PT_CFG")"; }
+  [[ "$(jq -r .perToken <<< "$PT_CFG")" == "true" ]] && { PT_ON=1; PT_MAX_JSON="$(jq -c .maxTokens <<< "$PT_CFG")"; SUMMARY_SYNTH_EXTRA_TOKENS="$(node "$CASE_LIB" summary-extra)" || exit 1; }
   [[ "$(jq -r '.answerBytes != null' <<< "$PT_CFG")" == "true" ]] && { AB_ON=1; PT_ANS_JSON="$(jq -c .answerBytes <<< "$PT_CFG")"; }
   [[ "$(jq -r '.maxSearches != null' <<< "$PT_CFG")" == "true" ]] && { PT_SEARCH=1; PT_SEARCH_JSON="$(jq -c .maxSearches <<< "$PT_CFG")"; PT_CITE_BYTES="$(jq -r .citeBytes <<< "$PT_CFG")"; }
 fi
@@ -394,7 +394,12 @@ pt_env() {
 pt_limit() {
   local base
   base="$(jq -r --arg p "$1" '.[$p]' <<< "$PT_MAX_JSON")"
-  if (( FOLLOW_UP == 1 )) && [[ "$2" == synth* ]] && [[ "$base" =~ ^[0-9]+$ ]]; then echo $(( base + CASE_SYNTH_EXTRA_TOKENS )); else echo "$base"; fi
+  # every synthesis also writes "## Each model" (SUMMARY_SYNTH_EXTRA_TOKENS more, priced by the hosted bound); case mode adds its questions on top
+  if [[ "$2" == synth* ]] && [[ "$base" =~ ^[0-9]+$ ]]; then
+    base=$(( base + ${SUMMARY_SYNTH_EXTRA_TOKENS:-0} ))
+    (( FOLLOW_UP == 1 )) && base=$(( base + CASE_SYNTH_EXTRA_TOKENS ))
+  fi
+  echo "$base"
 }
 # WS_CAP: the per-call search cap each searching provider was quoted at (per-token search); ws_cap_for is the number the prompt tells the
 # model and the adapter enforces: the quote's, never the global E3D_DEBATE_SEARCH_MAX_PER_CALL
@@ -974,6 +979,7 @@ synthesis_prompt() {
     printf 'DISSENT: <one line, at most 40 words, on any remaining disagreement worth flagging, or "none">\n'
   fi
   analysis_synthesis_instructions
+  summaries_synthesis_instructions
   ledger_synthesis_instructions
   if (( FOLLOW_UP == 1 )); then case_synthesis_instructions; fi
   printf '%s\n' "$SYNTH_CURRENT_DATA_TEXT"
@@ -981,6 +987,17 @@ synthesis_prompt() {
 
 # Every debate: after the verdict lines, a short section naming the evidence that would change the answer, and a rule for probabilities.
 # lib/mcp/verdict.js strips the section (like "## Questions for you") and returns it as would_change, so it never lands inside DISSENT.
+# "## Each model": the shortest honest statement of what each participant concluded, so a reader can see every answer at a glance. lib/mcp/verdict.js parses it into
+# position_summaries (keyed by the participant name the transcript uses). It must not compare, rank or judge: the final answer and the dissent do that.
+summaries_synthesis_instructions() {
+  cat <<'EOP'
+
+Then add a section headed exactly "## Each model" with one line per participant, in transcript order, in exactly this form:
+- <participant name exactly as in the transcript headings> | <that participant's own conclusion in its last turn, in at most 25 words>
+Restate only what that participant concluded, in its own terms, as the shortest answer it gave to the question. Do not compare participants, say who is right or whether they agree. If it gave no conclusion, write: No position stated.
+EOP
+}
+
 # The claim ledger: after "What would change this", up to 6 lines naming the factual claims the answer rests on, tagged by how well they are
 # supported and by what kind of source. lib/mcp/verdict.js parses them into claims[]; a claim cannot stay "documented" with no source named.
 ledger_synthesis_instructions() {

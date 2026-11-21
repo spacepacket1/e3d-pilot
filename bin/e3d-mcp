@@ -737,7 +737,9 @@ async function executeDebate(plan, handle, ctx, { progress, onStarted, signal } 
       dissent: verdict.dissent.present === false ? 'none' : verdict.dissent.summary,
       positions: positions.map((p) => {
         const model = samplingModels.find((m) => m.provider === p.provider)?.model ?? seatModelMap[p.provider];
-        return { provider: p.provider, model: typeof model === 'string' && /^[!-~]{1,128}$/.test(model) ? model : 'unspecified', position: p.text };
+        // the synthesizer's one-line restatement of this model's answer (verdict.position_summaries); absent when it wrote none for this provider
+        const summary = verdict.position_summaries?.find((s) => s.provider === p.provider)?.text;
+        return { provider: p.provider, model: typeof model === 'string' && /^[!-~]{1,128}$/.test(model) ? model : 'unspecified', position: p.text, ...(summary ? { summary } : {}) };
       }),
       web_search: webSearch,
       ...(roundsOut ? { rounds: roundsOut } : {}),
@@ -1211,7 +1213,7 @@ const TOOLS = [
       properties: {
         debate_id: { type: 'string' }, status: { type: 'string', enum: ['queued', 'running', 'done', 'failed'] }, outcome: { type: ['string', 'null'] },
         final_answer: { type: 'string' }, consensus: { type: 'string', enum: ['full', 'majority', 'split', 'unknown'] }, dissent: { type: 'string', description: '"none" when there is no dissent.' },
-        positions: { type: 'array', items: { type: 'object', properties: { provider: { type: 'string' }, model: { type: 'string' }, position: { type: 'string' } }, required: ['provider', 'position'] } },
+        positions: { type: 'array', items: { type: 'object', properties: { provider: { type: 'string' }, model: { type: 'string' }, position: { type: 'string' }, summary: { type: 'string' } }, required: ['provider', 'position'] } },
         providers: { type: 'array', items: { type: 'string' } }, rounds: { type: 'integer' }, credits_charged: { type: ['integer', 'null'] },
         source: { type: 'string', enum: ['local', 'service'] }, transcript: { type: ['string', 'null'] }, poll_after_sec: { type: 'integer' },
         web_search: WEB_SEARCH_SCHEMA,
