@@ -128,4 +128,18 @@ echo "skills-hosted 9 (no degrade): ok"
 run "${ON[@]}" -- "${ARGS[@]}" "${SEATS[@]}" --hosted-skills "$T/good.json" --lens-bytes-max 50; [[ $rc -ne 0 ]] || fail "a hosted skill over --lens-bytes-max is refused"; nocall || fail "no call"
 run "${ON[@]}" -- "${ARGS[@]}" "${SEATS[@]}" --hosted-skills "$T/good.json" --lens-bytes-max 4096; [[ $rc -eq 0 ]] || fail "within the limit runs: $(cat "$T/stderr")"
 echo "skills-hosted 10 (lens bytes): ok"
+
+# 11. one hosted skill is enough with --fill-pool: that seat carries the skill, the other seats of the pool run plain
+run "${ON[@]}" -- "${ARGS[@]}" --seat-skill "skill.$P.lens-a" --fill-pool --hosted-skills "$T/good.json" --out-dir "$T/out11"
+[[ $rc -eq 0 ]] || fail "one hosted seat skill with --fill-pool must run: $(tail -3 "$T/stderr")"
+[[ "$(grep -l 'LENS-A-MARK' "$T"/seen-* | wc -l | tr -d ' ')" == 1 ]] || fail "exactly one seat carries the skill"
+[[ "$(ls "$T"/seen-* | wc -l | tr -d ' ')" -ge 3 ]] || fail "the other seats of the pool still answer (plain)"
+! grep -q 'LENS-B-MARK' "$T"/seen-* || fail "a skill that was not named is never used"
+jq -e '.skills | length == 1 and (.[0].id == "skill.'"$P"'.lens-a")' "$T/out11/decision-log.json" >/dev/null || fail "the receipt names the one skill: $(jq -c '.skills' "$T/out11/decision-log.json")"
+# without --fill-pool the two-expert rule stays
+run "${ON[@]}" -- "${ARGS[@]}" --seat-skill "skill.$P.lens-a" --hosted-skills "$T/good.json"; [[ $rc -eq 1 ]] || fail "one seat skill without --fill-pool is still refused, got $rc"; grep -q 'at least two experts' "$T/stderr" || fail "says why"; nocall || fail "no call"
+# --fill-pool does not relax the rule for --specialist
+mkdir -p "$T/lib/specialists/skeptic"; printf -- '---\nname: skeptic\ndescription: The skeptic lens. Use it in tests.\nlicense: MIT\nmetadata:\n  e3d.expert.version: "1"\n---\nLENS-SKEPTIC-MARK.\n' > "$T/lib/specialists/skeptic/SKILL.md"
+run "${ON[@]}" -- "${ARGS[@]}" --specialist skeptic --fill-pool; [[ $rc -eq 1 ]] || fail "one --specialist with --fill-pool is still refused, got $rc"; nocall || fail "no call"
+echo "skills-hosted 11 (one skill with --fill-pool): ok"
 echo "skills-hosted: ok"
