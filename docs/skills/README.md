@@ -12,6 +12,7 @@ Source: the "E3D Pilot User-Defined Skills: Implementation Specification" (v0.1,
 | 24 ADRs: 0001-0015 **Proposed**; 0016-0021 (calibration) 0022 (local plan, seat skills), 0023 (debate observer) and 0024 (hosted private subset) **owner-decided 2026-11-23**, awaiting reviewer sign-off | [phase1/adr/](phase1/adr/) |
 | User guide for the local skills commands (phase 2b) | [../skills.md](../skills.md) |
 | Phase 3 plan (seat, observer and chat attachment runtime), for review | [phase3/plan.md](phase3/plan.md) |
+| Gallery readiness note (public handles, labels, publish flow; proposal, no code) | [gallery-readiness.md](gallery-readiness.md) |
 | 12 JSON Schemas, shared definitions, stable error codes | [schemas/v1/](schemas/v1/) |
 | Fixtures (21 valid, 62 invalid; 17 schemas including the calibration records and the engine-local skill preview) and the harness | `tests/fixtures/skills/`, `tests/skills-schemas.{sh,mjs}` |
 | Threat model, permission matrix, privacy inventory | [phase1/threat-model.md](phase1/threat-model.md) |
