@@ -86,3 +86,7 @@ A prompt change is a new `prompt_version`.
 - Web search is off in a per-token debate unless the quote priced it (see the section above).
 - A debate process killed with SIGKILL (not SIGTERM) leaves only the rows of finished rounds; the missing calls fall to billing's fallback.
 - The usage report is sent from memory, not through the outbox: a crash between the report and finalize finalizes without a report.
+
+## The observer line (hosted skills; skills phase 3c)
+
+A debate observer skill (`docs/skills.md`) adds ONE more vendor call after the verdict, so a per-token debate runs it only with the limits its own quote line priced. `E3D_DEBATE_OBSERVER_MAX_TOKENS` (1 to 4096) is the vendor output limit of that call, set exactly like a seat's (`ANTHROPIC_API_MAX_TOKENS` and the others). `E3D_DEBATE_OBSERVER_INPUT_BYTES_MAX` (1 to 256000) is the most prompt bytes it may be sent: the debate is cut down to fit, and if even the smallest prompt does not fit, the observer is skipped. Both are given together and only with `--observer <skill>:<provider>`; the provider is the one the quote named and must be an API adapter (not `claude`). The call is never retried, and `usage.json` gets one more row, key `observer:<skill>`, with the vendor's counts, or an estimate at the quoted output limit when the debate is stopped while the call runs. Reserve, settlement and refund are the hosted service's (hosted spec 2.4); the engine only enforces the limits and reports the call.
