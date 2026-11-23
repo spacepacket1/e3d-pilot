@@ -1127,7 +1127,7 @@ Maintain this table in the repository after Phase 1:
 | Capability | Status (2026-11-23) | Flag | Code owner | Evidence | Last verified |
 |---|---|---|---|---|---|
 | Built-in instructional experts | implemented | `E3D_SPECIALISTS` | e3d-pilot | `tests/skills-compat.sh`, `tests/specialists-loader.sh` | 2026-11-22 |
-| User-local instructional skills | proposed; folder loading implemented for experts | `E3D_SKILLS_V1` (Phase 2) | e3d-pilot | schemas and 45 invalid fixtures (Phase 1) | 2026-11-22 |
+| User-local instructional skills | implemented locally (phase 2b, flags off); folder loading for experts since earlier | `E3D_SKILLS_V1`, `E3D_MCP_SKILLS` | e3d-pilot | `tests/skills-runtime.sh` | 2026-11-23 |
 | Chat attachment | partial, flagged (`chat_skills_v1`, built-in lenses only) | scope flag | e3d-pilot/cloud | audit | 2026-11-22 |
 | Debate seat attachment | implemented via `experts` | `E3D_SPECIALISTS` | e3d-pilot/cloud | `tests/debate-specialists.sh` | 2026-11-22 |
 | Debate observer | proposed (`after_synthesis` only) | observer flag | e3d-pilot/cloud | ADR-0006 | 2026-11-22 |

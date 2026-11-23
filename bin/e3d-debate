@@ -47,6 +47,9 @@ SPEC_BUILTIN_ONLY=0; SPEC_FILL_POOL=0; SPEC_LENS_MAX=""; SPEC_PINS=()
 SUGGEST=0; SUGGEST_RULES=0; SUGGEST_TASK=""
 SPEC_FLAG_USED=0
 SPEC_CLI="$REPO_ROOT/lib/debate/specialists-cli.mjs"
+# Skills (docs/skills/): off unless E3D_SKILLS_V1=1. Pure local commands (no model, no network); a debate is not changed by these flags.
+SKILL_ACTION=""; SKILL_ARG1=""; SKILL_ARG2=""; SKILL_VERSION=""; SKILL_HASH=""
+SKILLS_CLI="$REPO_ROOT/lib/skills/cli.mjs"
 PLAN_JSON=""
 LENS_DIR=""
 # Transient provider failures (HTTP 429/500/502/503/504 or a curl timeout) are retried this many times, waiting DELAY x attempt seconds.
@@ -173,6 +176,10 @@ Experts (off unless E3D_SPECIALISTS=1; docs/specs/experts-phase1-private-experts
   --expert-pin <name>=<hash>  refuse unless the expert's content hash is exactly this (repeatable; hosted runs)
   --lens-bytes-max N          refuse an expert whose lens block (wrapper included) is larger than N bytes (hosted runs)
   --list-specialists | --show-specialist <name> | --validate-specialist <folder> | --export-specialist <name> <folder> [--no-sidecar]
+Skills (off unless E3D_SKILLS_V1=1; docs/skills/). Pure local commands: no model, no network, nothing is run from a skill folder.
+  --list-skills | --show-skill <id|name> [--skill-version V] [--skill-hash H] | --validate-skill <folder> | --project-expert <name|folder>
+  --export-skill <id|name> <new folder>   writes a native skill folder (a built-in is exported as a local copy); never overwrites
+  --diff-skill <id|name|folder> <id|name|folder>   field-level difference and whether the definition hashes agree (exit 3 when they differ)
 Nothing is changed when none of these is given.
 EOF
 }
@@ -190,6 +197,18 @@ while [[ $# -gt 0 ]]; do
       [[ $# -ge 3 ]] || { echo "error: --export-specialist needs an expert name and an output folder" >&2; exit 1; }
       SPEC_ACTION=export; SPEC_ARG1="$2"; SPEC_ARG2="$3"; SPEC_FLAG_USED=1; shift 3 ;;
     --no-sidecar) SPEC_NO_SIDECAR=1; SPEC_FLAG_USED=1; shift ;;
+    --list-skills) SKILL_ACTION=list; shift ;;
+    --show-skill) SKILL_ACTION=show; SKILL_ARG1="${2:-}"; shift 2 ;;
+    --validate-skill) SKILL_ACTION=validate; SKILL_ARG1="${2:-}"; shift 2 ;;
+    --project-expert) SKILL_ACTION=project; SKILL_ARG1="${2:-}"; shift 2 ;;
+    --export-skill)
+      [[ $# -ge 3 ]] || { echo "error: --export-skill needs a skill id or name and a new output folder" >&2; exit 1; }
+      SKILL_ACTION=export; SKILL_ARG1="$2"; SKILL_ARG2="$3"; shift 3 ;;
+    --diff-skill)
+      [[ $# -ge 3 ]] || { echo "error: --diff-skill needs two skill ids, names or folders" >&2; exit 1; }
+      SKILL_ACTION=diff; SKILL_ARG1="$2"; SKILL_ARG2="$3"; shift 3 ;;
+    --skill-version) SKILL_VERSION="${2:-}"; shift 2 ;;
+    --skill-hash) SKILL_HASH="${2:-}"; shift 2 ;;
     --builtin-only) SPEC_BUILTIN_ONLY=1; SPEC_FLAG_USED=1; shift ;;
     --fill-pool) SPEC_FILL_POOL=1; SPEC_FLAG_USED=1; shift ;;
     --expert-pin) SPEC_PINS+=("${2:-}"); SPEC_FLAG_USED=1; shift 2 ;;
@@ -225,6 +244,14 @@ if [[ -n "${E3D_SPECIALISTS+x}" ]]; then
   case "$E3D_SPECIALISTS" in ''|0|1) ;; *) echo "error: E3D_SPECIALISTS must be 0 or 1" >&2; exit 2 ;; esac
 fi
 case "${E3D_SPECIALISTS_BUILTIN_ONLY:-}" in ''|0) ;; 1) SPEC_BUILTIN_ONLY=1 ;; *) echo "error: E3D_SPECIALISTS_BUILTIN_ONLY must be 0 or 1" >&2; exit 2 ;; esac
+if [[ -n "${E3D_SKILLS_V1+x}" ]]; then
+  case "$E3D_SKILLS_V1" in ''|0|1) ;; *) echo "error: E3D_SKILLS_V1 must be 0 or 1" >&2; exit 2 ;; esac
+fi
+if [[ -n "$SKILL_ACTION" || -n "$SKILL_VERSION" || -n "$SKILL_HASH" ]] && [[ "${E3D_SKILLS_V1:-0}" != "1" ]]; then
+  echo "error: skills are off. Set E3D_SKILLS_V1=1 to use --list-skills, --show-skill, --validate-skill, --project-expert, --export-skill and --diff-skill." >&2
+  exit 1
+fi
+if [[ -z "$SKILL_ACTION" ]] && [[ -n "$SKILL_VERSION$SKILL_HASH" ]]; then echo "error: --skill-version and --skill-hash apply to --show-skill" >&2; exit 1; fi
 if (( SPEC_FLAG_USED == 1 )) && [[ "${E3D_SPECIALISTS:-0}" != "1" ]]; then
   echo "error: experts are off. Set E3D_SPECIALISTS=1 to use --panel, --specialist, --min-families and the --list/--show/--validate/--export-specialist commands." >&2
   exit 1
@@ -239,6 +266,23 @@ fi
 SPEC_BUILTIN="$REPO_ROOT/lib/specialists"
 SPEC_USER="${HOME:-/nonexistent}/.config/e3d-pilot/specialists"
 SPEC_REPO="${LINK_REPO:-$PWD}/.e3d-pilot/specialists"
+if [[ -n "$SKILL_ACTION" ]]; then
+  command -v node >/dev/null 2>&1 || { echo "error: node is required for skills" >&2; exit 1; }
+  skill_common=(--builtin "$SPEC_BUILTIN" --user "$SPEC_USER" --repo "$SPEC_REPO")
+  (( SPEC_BUILTIN_ONLY == 0 )) || skill_common+=(--builtin-only)
+  skill_pin=()
+  [[ -z "$SKILL_VERSION" ]] || skill_pin+=(--version "$SKILL_VERSION")
+  [[ -z "$SKILL_HASH" ]] || skill_pin+=(--hash "$SKILL_HASH")
+  case "$SKILL_ACTION" in
+    list) node "$SKILLS_CLI" list "${skill_common[@]}" ;;
+    show) node "$SKILLS_CLI" show "$SKILL_ARG1" "${skill_common[@]}" ${skill_pin[@]+"${skill_pin[@]}"} ;;
+    validate) node "$SKILLS_CLI" validate "$SKILL_ARG1" ;;
+    project) node "$SKILLS_CLI" project "$SKILL_ARG1" "${skill_common[@]}" ;;
+    export) node "$SKILLS_CLI" export "$SKILL_ARG1" "$SKILL_ARG2" "${skill_common[@]}" ;;
+    diff) node "$SKILLS_CLI" diff "$SKILL_ARG1" "$SKILL_ARG2" "${skill_common[@]}" ;;
+  esac
+  exit $?
+fi
 if [[ -n "$SPEC_ACTION" ]]; then
   command -v node >/dev/null 2>&1 || { echo "error: node is required for experts" >&2; exit 1; }
   spec_common=(--builtin "$SPEC_BUILTIN" --user "$SPEC_USER" --repo "$SPEC_REPO")
@@ -312,6 +356,7 @@ if [[ -n "$SPEC_PANEL" ]] || (( ${#SPEC_LIST[@]} > 0 )); then
   (( SPEC_FILL_POOL == 0 )) || spec_plan_args+=(--fill-pool)
   [[ -z "$SPEC_LENS_MAX" ]] || spec_plan_args+=(--lens-bytes-max "$SPEC_LENS_MAX")
   for s in ${SPEC_PINS[@]+"${SPEC_PINS[@]}"}; do spec_plan_args+=(--expert-pin "$s"); done
+  [[ "${E3D_SKILLS_V1:-0}" != "1" ]] || spec_plan_args+=(--skills)   # the receipt then names each expert as a skill (id, version, definition_hash, use_id)
   spec_rc=0; PLAN_JSON="$(node "$SPEC_CLI" "${spec_plan_args[@]}")" || spec_rc=$?
   if (( spec_rc != 0 )); then echo "error: $(jq -r '.error // "could not plan the panel"' <<< "$PLAN_JSON" 2>/dev/null || echo "could not plan the panel")" >&2; exit 1; fi
   while IFS= read -r w; do echo "warning: $w" >&2; done < <(jq -r '.warnings[]' <<< "$PLAN_JSON")
@@ -651,6 +696,7 @@ if [[ -n "$PLAN_JSON" ]]; then
   mkdir -p "$LENS_DIR"
   while IFS= read -r p; do jq -j --arg p "$p" '.lens[$p]' <<< "$PLAN_JSON" > "$LENS_DIR/lens-$p.txt"; done < <(jq -r '.providers[]' <<< "$PLAN_JSON")
   jq -c .panel <<< "$PLAN_JSON" > "$work_dir/panel.json"
+  jq -ce '.skills // empty' <<< "$PLAN_JSON" > "$work_dir/skills.json" 2>/dev/null || rm -f "$work_dir/skills.json"
   echo "panel: $(jq -r '.panel.experts | map(.name + " on " + .seat) | join(", ")' <<< "$PLAN_JSON")$(jq -r 'if (.panel.plain_seats // [] | length) > 0 then "; plain: " + (.panel.plain_seats | map(.seat) | join(", ")) else "" end' <<< "$PLAN_JSON")$(jq -r 'if (.panel.dropped | length) > 0 then " (dropped: " + (.panel.dropped | join(", ")) + ")" else "" end' <<< "$PLAN_JSON")" >&2
 fi
 transcript_md="$work_dir/transcript.md"
@@ -1458,7 +1504,9 @@ write_decision_log() {
   providers_json="$(printf '%s\n' "${DEBATE_PROVIDERS_ALL[@]}" | jq -R . | jq -sc .)"
   local panel_json=null
   [[ -s "$work_dir/panel.json" ]] && panel_json="$(cat "$work_dir/panel.json")"
-  jq -nc --argjson panel "$panel_json" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg qhash "$qhash" --arg pv "$DEBATE_PROMPT_VERSION" \
+  local skills_json=null
+  [[ -s "$work_dir/skills.json" ]] && skills_json="$(cat "$work_dir/skills.json")"
+  jq -nc --argjson panel "$panel_json" --argjson skills "$skills_json" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg qhash "$qhash" --arg pv "$DEBATE_PROMPT_VERSION" \
     --arg synth "${SYNTH_FALLBACK_TO:-$DEBATE_SYNTHESIZER}" --arg stop "$stop_reason" --arg consensus "$consensus" \
     --argjson providers "$providers_json" --argjson maxr "$DEBATE_ROUNDS" --argjson ran "$ran" \
     --argjson at "$converged_at_round" --argjson fast "$fast_synthesis" --argjson sok "$synth_ok" \
@@ -1471,7 +1519,8 @@ write_decision_log() {
       dissent_present:$dissent, seconds:$secs, rounds:$rounds}
       + {web_search: (if $ws == null then {search_enabled: false} else $ws end)}
       + (if $jc == null then {} else {jev_council: $jc} end)
-      + (if $panel == null then {} else {panel: $panel} end)' > "$work_dir/decision-log.json" || return 0
+      + (if $panel == null then {} else {panel: $panel} end)
+      + (if $skills == null then {} else {skills: $skills} end)' > "$work_dir/decision-log.json" || return 0
   if [[ -n "${E3D_DEBATE_DECISION_LOG:-}" ]]; then
     { mkdir -p "$(dirname "$E3D_DEBATE_DECISION_LOG")" && jq -c . "$work_dir/decision-log.json" >> "$E3D_DEBATE_DECISION_LOG"; } 2>/dev/null \
       || echo "warning: could not append to E3D_DEBATE_DECISION_LOG" >&2

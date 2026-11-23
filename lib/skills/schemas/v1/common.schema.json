@@ -1,0 +1,160 @@
+{
+  "$id": "common.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Shared definitions for e3d skill schemas v1",
+  "$defs": {
+    "hash": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "hashKind": {
+      "enum": [
+        "definition",
+        "legacy_folder"
+      ]
+    },
+    "text": {
+      "type": "string",
+      "pattern": "^(?![\\s\\S]*\\uDB40[\\uDC00-\\uDC7F\\uDD00-\\uDDEF])[^\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F\\u007F-\\u009F\\u00AD\\u034F\\u061C\\u115F\\u1160\\u180E\\u200B-\\u200F\\u2028-\\u202E\\u2060-\\u2069\\u3164\\uFE00-\\uFE0D\\uFEFF\\uFFF9-\\uFFFC]*$"
+    },
+    "skillId": {
+      "type": "string",
+      "pattern": "^skill\\.[a-z0-9_]{2,40}\\.[a-z0-9]+(-[a-z0-9]+)*$",
+      "maxLength": 128
+    },
+    "compositionId": {
+      "type": "string",
+      "pattern": "^composition\\.[a-z0-9_]{2,40}\\.[a-z0-9]+(-[a-z0-9]+)*$",
+      "maxLength": 128
+    },
+    "semver": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]{0,5})\\.(0|[1-9][0-9]{0,5})\\.(0|[1-9][0-9]{0,5})$"
+    },
+    "time": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+    },
+    "principalRef": {
+      "type": "string",
+      "pattern": "^[a-z0-9_-]{3,64}$"
+    },
+    "prefixedId": {
+      "type": "string",
+      "pattern": "^[a-z]{2,5}_[0-9a-zA-Z]{4,40}$"
+    },
+    "skillRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "version",
+        "hash"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/skillId"
+        },
+        "version": {
+          "$ref": "#/$defs/semver"
+        },
+        "hash": {
+          "$ref": "#/$defs/hash"
+        }
+      }
+    },
+    "scopeRef": {
+      "type": "string",
+      "pattern": "^(project|user|conversation|debate|artifact):[A-Za-z0-9_-]{1,64}$"
+    },
+    "capability": {
+      "type": "string",
+      "enum": [
+        "context.read.current_request",
+        "conversation.read.current",
+        "debate.read.current",
+        "brain.read",
+        "brain.propose",
+        "evaluation.read",
+        "evaluation.emit",
+        "web.search",
+        "artifact.read.explicit"
+      ],
+      "x-code": "skill_capability_unknown"
+    },
+    "audience": {
+      "type": "string",
+      "enum": [
+        "private",
+        "team",
+        "public"
+      ]
+    },
+    "sensitivity": {
+      "type": "string",
+      "enum": [
+        "private",
+        "team",
+        "public"
+      ]
+    },
+    "metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "latency_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "credits": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "model_calls": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "tool_calls": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "input_tokens": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "output_tokens": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "artifactRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "id",
+        "digest"
+      ],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "debate_receipt",
+            "artifact",
+            "chat_turn",
+            "claim",
+            "observation",
+            "evaluation"
+          ]
+        },
+        "id": {
+          "$ref": "#/$defs/prefixedId"
+        },
+        "digest": {
+          "$ref": "#/$defs/hash"
+        }
+      }
+    }
+  }
+}

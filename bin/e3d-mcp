@@ -55,6 +55,7 @@ import { loadExperts } from '../lib/debate/specialists.mjs';
 import { lensBlock } from '../lib/debate/specialists-plan.mjs';
 import { galleryFrom, createGalleryRead, GALLERY_INSTRUCTION } from '../lib/mcp/gallery-read.js';
 import { chatToolFrom, chatQuoteTool, chatTool, createChatHandlers, CHAT_INSTRUCTION } from '../lib/mcp/agent-chat.js';
+import { skillsFrom, createSkillsRead, SKILLS_INSTRUCTION } from '../lib/mcp/skills-read.js';
 import { expertsFrom, expertsAgentFrom, checkAgentExperts, loadCatalogue as loadExpertsCatalogue, createExpertsRead, EXPERTS_INSTRUCTION, EXPERTS_USE_INSTRUCTION } from '../lib/mcp/experts-read.js';
 import { agentModeFrom, agentFieldsOf, AGENT_INSTRUCTIONS, SCHEMA_VERSION as AGENT_SCHEMA_VERSION, IDEMPOTENCY_KEY_RE, QUOTE_ID_RE, agentError, errorResult, reasonError, extendDebateTool, quoteTool, quoteResult, validQuote } from '../lib/mcp/agent.js';
 import { validatePanelConfig, validateRequiredConfig, withRequired, requireAvailable, createPanelClient, checkFamilies, requireFamilies, degrade, explicitPanel, familiesOf } from '../lib/mcp/panel.js';
@@ -92,6 +93,10 @@ const CHAT_TOOL = chatToolFrom(process.env);
 const CHAT_TOOL_ON = CHAT_TOOL.on && AGENT_ON;
 const CHAT_TOOL_NAMES = new Set(['e3d_chat_quote', 'e3d_chat']);
 const agentCatalogue = AGENT_EXPERTS_ON ? loadExpertsCatalogue(BUILTIN_EXPERTS_DIR) : null;
+// e3d_list_skills / e3d_get_skill / e3d_validate_skill / e3d_export_skill (lib/mcp/skills-read.js, docs/skills ADR-0015): free, read-only, LOCAL skills only,
+// off unless E3D_MCP_SKILLS=1; never on the hosted HTTP server.
+const SKILLS_CONFIG = skillsFrom(process.env, { http: HTTP_MODE });
+const skillsRead = SKILLS_CONFIG.on ? createSkillsRead({ dirs: { builtin: BUILTIN_EXPERTS_DIR, user: join(process.env.HOME || '/nonexistent', '.config', 'e3d-pilot', 'specialists'), repo: join(process.cwd(), '.e3d-pilot', 'specialists') } }) : null;
 const expertsRead = EXPERTS_CONFIG.on ? createExpertsRead({ builtinDir: fileURLToPath(new URL('../lib/specialists', import.meta.url)), use: AGENT_EXPERTS_ON }) : null;
 // The version comes from package.json, so a development build (0.2.0-dev.N) reports itself correctly.
 const PKG_VERSION = (() => { try { return JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).version; } catch { return '0.0.0-unknown'; } })();
@@ -1280,7 +1285,7 @@ const sampling = createSampling({ rpc, log });
 const stdioConn = { send, session: { clientInfo: null, capabilities: {}, rootsReady: null }, principal: process.env.E3D_MCP_PRINCIPAL || 'local', rpc, hosted: false, allowed: null };
 const newHttpConn = (principal, allowed) => ({ send: () => {}, session: { clientInfo: null, capabilities: {}, rootsReady: null }, principal, rpc: null, hosted: true, allowed });
 const actions = createPipelineActions({ guard, jobs, base: pipeline, usage });
-TOOLS.push(...pipeline.tools, ...actions.tools, usageTool, ...(galleryRead ? [galleryRead.tool] : []), ...(expertsRead ? expertsRead.tools : []));
+TOOLS.push(...pipeline.tools, ...actions.tools, usageTool, ...(galleryRead ? [galleryRead.tool] : []), ...(expertsRead ? expertsRead.tools : []), ...(skillsRead ? skillsRead.tools : []));
 
 // The client's workspace folders (MCP roots) are the default set of repos the pipeline tools may touch.
 async function refreshRoots(session = stdioConn.session) {
@@ -1306,6 +1311,7 @@ const HANDLERS = {
   e3d_usage: usageHandler(usage, () => hookState),
   ...(galleryRead ? { e3d_gallery: galleryRead.handler } : {}),
   ...(expertsRead ? expertsRead.handlers : {}),
+  ...(skillsRead ? skillsRead.handlers : {}),
   ...createChatHandlers({ client: { agentChatQuote: (b) => pricingClient.agentChatQuote(b), agentChatSend: (b) => pricingClient.agentChatSend(b) }, log }),
 };
 
@@ -1338,7 +1344,7 @@ async function handle(msg, conn = stdioConn) {
         instructions: conn.hosted && AGENT_ON ? [AGENT_INSTRUCTIONS, ...(galleryRead ? [GALLERY_INSTRUCTION] : []), ...(expertsRead ? [AGENT_EXPERTS_ON ? EXPERTS_USE_INSTRUCTION : EXPERTS_INSTRUCTION] : []), ...(CHAT_TOOL_ON ? [CHAT_INSTRUCTION] : [])].join('\n\n')
           : conn.hosted
           ? 'Use e3d_debate for contestable decisions where independent model perspectives and recorded dissent add value; always report its dissent, and never present a split verdict as settled. It uses a shared usage budget (see e3d_usage); do not use it for simple lookups.'
-          : 'Use e3d_debate for contestable decisions where independent model perspectives and recorded dissent add value; always report its dissent. It costs credits; do not use it for simple lookups. The e3d_pilot_* tools run a human-gated pipeline: propose an idea, a human approves it (e3d_pilot_approve tells you how; never approve on your own), e3d_pilot_implement drafts and negotiates a spec and pauses, e3d_pilot_code_plan shows the plan, and only after the user agrees does e3d_pilot_execute write code and open a draft PR. Tools marked FREE spend nothing; tools marked SPENDS MODEL CREDITS do. Merging is never available here.',
+          : 'Use e3d_debate for contestable decisions where independent model perspectives and recorded dissent add value; always report its dissent. It costs credits; do not use it for simple lookups. The e3d_pilot_* tools run a human-gated pipeline: propose an idea, a human approves it (e3d_pilot_approve tells you how; never approve on your own), e3d_pilot_implement drafts and negotiates a spec and pauses, e3d_pilot_code_plan shows the plan, and only after the user agrees does e3d_pilot_execute write code and open a draft PR. Tools marked FREE spend nothing; tools marked SPENDS MODEL CREDITS do. Merging is never available here.'  + (skillsRead ? ` ${SKILLS_INSTRUCTION}` : ''),
       });
     }
     case 'notifications/initialized': if (!conn.hosted) session.rootsReady = refreshRoots(session); return;
@@ -1418,6 +1424,10 @@ if (!REQUIRED_CONFIG.ok) {
 }
 if (!GALLERY_CONFIG.ok) {
   process.stderr.write(`[e3d-mcp] refusing to start: ${GALLERY_CONFIG.errors.join('; ')}\n`);
+  process.exit(2);
+}
+if (!SKILLS_CONFIG.ok) {
+  process.stderr.write(`[e3d-mcp] refusing to start: ${SKILLS_CONFIG.errors.join('; ')}\n`);
   process.exit(2);
 }
 if (!EXPERTS_CONFIG.ok) {

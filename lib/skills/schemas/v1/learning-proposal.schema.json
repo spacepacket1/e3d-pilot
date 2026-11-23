@@ -1,0 +1,182 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "learning-proposal.schema.json",
+  "title": "LearningProposal v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "proposal_id",
+    "target",
+    "diff",
+    "supporting_evaluation_ids",
+    "counterevidence",
+    "affected_task_classes",
+    "expected_benefit",
+    "rollback",
+    "author",
+    "approval",
+    "created_at"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "e3d.learning-proposal/v1",
+      "x-code": "skill_schema_version_unsupported"
+    },
+    "proposal_id": {
+      "type": "string",
+      "pattern": "^lpr_[0-9a-zA-Z]{4,40}$"
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "id",
+        "base_version",
+        "base_hash"
+      ],
+      "properties": {
+        "type": {
+          "enum": [
+            "skill",
+            "router_policy"
+          ]
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "base_version": {
+          "$ref": "common.schema.json#/$defs/semver"
+        },
+        "base_hash": {
+          "$ref": "common.schema.json#/$defs/hash"
+        }
+      }
+    },
+    "diff": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "format",
+        "content"
+      ],
+      "properties": {
+        "format": {
+          "enum": [
+            "unified",
+            "json_patch"
+          ]
+        },
+        "content": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64000
+        }
+      }
+    },
+    "supporting_evaluation_ids": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 50,
+      "items": {
+        "type": "string",
+        "pattern": "^evl_[0-9a-zA-Z]{4,40}$"
+      }
+    },
+    "counterevidence": {
+      "type": "array",
+      "maxItems": 50,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 300
+      }
+    },
+    "affected_task_classes": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 20,
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z0-9_]{3,40}$"
+      }
+    },
+    "expected_benefit": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "rollback": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "author": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "ref"
+      ],
+      "properties": {
+        "type": {
+          "enum": [
+            "human",
+            "job"
+          ]
+        },
+        "ref": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        }
+      }
+    },
+    "approval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state",
+        "reviewer",
+        "decided_at"
+      ],
+      "properties": {
+        "state": {
+          "enum": [
+            "proposed",
+            "approved",
+            "rejected",
+            "withdrawn"
+          ]
+        },
+        "reviewer": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "common.schema.json#/$defs/principalRef"
+            }
+          ]
+        },
+        "decided_at": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "common.schema.json#/$defs/time"
+            }
+          ]
+        }
+      }
+    },
+    "created_at": {
+      "$ref": "common.schema.json#/$defs/time"
+    }
+  }
+}

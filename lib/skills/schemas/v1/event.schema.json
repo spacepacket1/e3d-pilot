@@ -1,0 +1,208 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "event.schema.json",
+  "title": "Event envelope v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "event_id",
+    "event_type",
+    "occurred_at",
+    "principal_ref",
+    "tenant_ref",
+    "run_id",
+    "parent_run_id",
+    "skill_ref",
+    "context",
+    "metrics",
+    "status",
+    "payload_ref",
+    "privacy",
+    "trace"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "e3d.event/v1",
+      "x-code": "skill_schema_version_unsupported"
+    },
+    "event_id": {
+      "type": "string",
+      "pattern": "^evt_[0-9a-zA-Z]{4,40}$"
+    },
+    "event_type": {
+      "enum": [
+        "skill.definition.created",
+        "skill.definition.versioned",
+        "skill.definition.validated",
+        "skill.definition.deprecated",
+        "skill.composition.resolved",
+        "skill.composition.rejected",
+        "skill.attachment.resolved",
+        "skill.plan.previewed",
+        "skill.plan.approved",
+        "skill.plan.expired",
+        "skill.capability.granted",
+        "skill.capability.denied",
+        "skill.capability.used",
+        "skill.step.started",
+        "skill.step.completed",
+        "skill.step.failed",
+        "skill.fallback.used",
+        "skill.output.invalid",
+        "skill.observation.proposed",
+        "skill.observation.corrected",
+        "skill.observation.expired",
+        "skill.evaluation.created",
+        "skill.evaluation.corrected",
+        "skill.proposal.created",
+        "skill.proposal.approved",
+        "skill.proposal.rejected",
+        "skill.publish.previewed",
+        "skill.publish.confirmed",
+        "skill.publish.withdrawn",
+        "skill.fork.created",
+        "skill.reaction.recorded",
+        "skill.report.filed",
+        "skill.moderation.decided",
+        "skill.router.recommended",
+        "skill.router.accepted",
+        "skill.router.overridden",
+        "skill.outcome.linked"
+      ]
+    },
+    "occurred_at": {
+      "$ref": "common.schema.json#/$defs/time"
+    },
+    "principal_ref": {
+      "$ref": "common.schema.json#/$defs/principalRef"
+    },
+    "tenant_ref": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "common.schema.json#/$defs/principalRef"
+        }
+      ]
+    },
+    "run_id": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "string",
+          "pattern": "^skr_[0-9a-zA-Z]{4,40}$"
+        }
+      ]
+    },
+    "parent_run_id": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "common.schema.json#/$defs/prefixedId"
+        }
+      ]
+    },
+    "skill_ref": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "common.schema.json#/$defs/skillRef"
+        }
+      ]
+    },
+    "context": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "task_class",
+        "risk",
+        "audience"
+      ],
+      "properties": {
+        "task_class": {
+          "type": "string",
+          "pattern": "^[a-z0-9_]{3,40}$"
+        },
+        "risk": {
+          "enum": [
+            "low",
+            "medium",
+            "high"
+          ]
+        },
+        "audience": {
+          "$ref": "common.schema.json#/$defs/audience"
+        }
+      }
+    },
+    "metrics": {
+      "$ref": "common.schema.json#/$defs/metrics"
+    },
+    "status": {
+      "enum": [
+        "started",
+        "completed",
+        "failed",
+        "denied",
+        "skipped"
+      ]
+    },
+    "payload_ref": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "common.schema.json#/$defs/prefixedId"
+        }
+      ]
+    },
+    "privacy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "class",
+        "retention_policy"
+      ],
+      "properties": {
+        "class": {
+          "$ref": "common.schema.json#/$defs/sensitivity"
+        },
+        "retention_policy": {
+          "enum": [
+            "user-default",
+            "short",
+            "audit-minimal"
+          ]
+        }
+      }
+    },
+    "trace": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "trace_id",
+        "span_id"
+      ],
+      "properties": {
+        "trace_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{32}$"
+        },
+        "span_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{16}$"
+        }
+      }
+    }
+  }
+}

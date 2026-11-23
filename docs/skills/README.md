@@ -10,6 +10,7 @@ Source: the "E3D Pilot User-Defined Skills: Implementation Specification" (v0.1,
 | **Calibration specification v0.1 (part 3; builds on the skills contracts)** | [spec/e3d-pilot-calibration-spec-v0.1.md](spec/e3d-pilot-calibration-spec-v0.1.md) |
 | Grounding report, gap table, contradictions, phase map | [phase1/grounding-report.md](phase1/grounding-report.md) |
 | 21 ADRs: 0001-0015 **Proposed**; 0016-0021 (calibration) **owner-decided 2026-11-23**, awaiting reviewer sign-off | [phase1/adr/](phase1/adr/) |
+| User guide for the local skills commands (phase 2b) | [../skills.md](../skills.md) |
 | 12 JSON Schemas, shared definitions, stable error codes | [schemas/v1/](schemas/v1/) |
 | Fixtures (19 valid, 56 invalid; 16 schemas including the calibration records) and the harness | `tests/fixtures/skills/`, `tests/skills-schemas.{sh,mjs}` |
 | Threat model, permission matrix, privacy inventory | [phase1/threat-model.md](phase1/threat-model.md) |
@@ -39,7 +40,7 @@ Last verified 2026-11-22 against engine `511cce9` plus this branch; hosted `54b4
 | Capability | Status | Flag | Code owner | Evidence |
 | --- | --- | --- | --- | --- |
 | Built-in instructional experts | implemented | `E3D_SPECIALISTS` (engine); hosted flags off by default | e3d-pilot | `lib/specialists/`, `tests/skills-compat.sh` |
-| User-local instructional skills | partial (local experts: user and repo tiers) | `E3D_SKILLS_V1` proposed | e3d-pilot | `lib/debate/specialists.mjs` |
+| User-local instructional skills | **implemented locally in phase 2b** (projection of experts, native folders, resolver, six CLI commands, four stdio MCP tools, receipt block); flag off | `E3D_SKILLS_V1`, `E3D_MCP_SKILLS` | e3d-pilot | `tests/skills-runtime.sh`, `docs/skills.md` |
 | Chat attachment | partial (built-in lenses, 1 to 3) | hosted chat flags | e3d-pilot / cloud | `lib/mcp/chat-runner.js` |
 | Debate seat attachment | implemented as `experts` | `E3D_SPECIALISTS`, `E3D_MCP_EXPERTS_*` | e3d-pilot / cloud | `lib/debate/specialists-plan.mjs` |
 | Debate observer | proposed | observer flag | e3d-pilot / cloud | ADR-0006 |

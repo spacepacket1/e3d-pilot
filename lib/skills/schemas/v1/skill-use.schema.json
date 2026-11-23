@@ -1,0 +1,101 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "skill-use.schema.json",
+  "title": "SkillUse v1 (calibration)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "use_id",
+    "skill",
+    "mode",
+    "host",
+    "task_class",
+    "task_class_source",
+    "principal_ref",
+    "reminder_enabled",
+    "run_ref",
+    "issued_at",
+    "expires_at"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "e3d.skill-use/v1",
+      "x-code": "skill_schema_version_unsupported"
+    },
+    "use_id": {
+      "type": "string",
+      "pattern": "^use_[0-9a-zA-Z]{4,40}$"
+    },
+    "skill": {
+      "$ref": "common.schema.json#/$defs/skillRef"
+    },
+    "mode": {
+      "enum": [
+        "host_chat",
+        "pilot_chat",
+        "debate_seat",
+        "observer"
+      ]
+    },
+    "host": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "family",
+        "model_family"
+      ],
+      "properties": {
+        "family": {
+          "type": "string",
+          "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+          "minLength": 2,
+          "maxLength": 40
+        },
+        "model_family": {
+          "type": "string",
+          "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+          "minLength": 2,
+          "maxLength": 40
+        }
+      }
+    },
+    "task_class": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+      "minLength": 3,
+      "maxLength": 40
+    },
+    "task_class_source": {
+      "enum": [
+        "declared",
+        "derived",
+        "none"
+      ]
+    },
+    "principal_ref": {
+      "$ref": "common.schema.json#/$defs/principalRef"
+    },
+    "reminder_enabled": {
+      "type": "boolean"
+    },
+    "run_ref": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "string",
+          "pattern": "^skr_[0-9a-zA-Z]{4,40}$"
+        }
+      ]
+    },
+    "issued_at": {
+      "$ref": "common.schema.json#/$defs/time"
+    },
+    "expires_at": {
+      "$ref": "common.schema.json#/$defs/time"
+    }
+  }
+}

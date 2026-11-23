@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "prediction.schema.json",
+  "title": "Prediction v1 (calibration)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "prediction_id",
+    "use_id",
+    "claim",
+    "confidence",
+    "source",
+    "stated_at"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "e3d.prediction/v1",
+      "x-code": "skill_schema_version_unsupported"
+    },
+    "prediction_id": {
+      "type": "string",
+      "pattern": "^prd_[0-9a-zA-Z]{4,40}$"
+    },
+    "use_id": {
+      "type": "string",
+      "pattern": "^use_[0-9a-zA-Z]{4,40}$"
+    },
+    "claim": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "horizon_days"
+      ],
+      "properties": {
+        "type": {
+          "enum": [
+            "recommendation_will_work"
+          ]
+        },
+        "horizon_days": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 365
+        }
+      }
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "source": {
+      "enum": [
+        "user_stated",
+        "host_stated",
+        "model_stated"
+      ]
+    },
+    "stated_at": {
+      "$ref": "common.schema.json#/$defs/time"
+    }
+  }
+}

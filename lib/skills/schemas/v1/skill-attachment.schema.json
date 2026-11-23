@@ -1,0 +1,136 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "skill-attachment.schema.json",
+  "title": "SkillAttachment v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "attachment_id",
+    "target",
+    "hook",
+    "skill_ref",
+    "priority",
+    "enabled"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "e3d.skill-attachment/v1",
+      "x-code": "skill_schema_version_unsupported"
+    },
+    "attachment_id": {
+      "type": "string",
+      "pattern": "^att_[0-9a-zA-Z]{4,40}$"
+    },
+    "target": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "conversation_id"
+          ],
+          "properties": {
+            "type": {
+              "const": "chat"
+            },
+            "conversation_id": {
+              "$ref": "common.schema.json#/$defs/prefixedId"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "debate_id",
+            "seat"
+          ],
+          "properties": {
+            "type": {
+              "const": "debate_seat"
+            },
+            "debate_id": {
+              "$ref": "common.schema.json#/$defs/prefixedId"
+            },
+            "seat": {
+              "type": "string",
+              "pattern": "^[a-z0-9-]+(\\.[0-9]{1,2})?$|^seat_[0-9]{1,2}$"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "debate_id"
+          ],
+          "properties": {
+            "type": {
+              "const": "debate_observer"
+            },
+            "debate_id": {
+              "$ref": "common.schema.json#/$defs/prefixedId"
+            }
+          }
+        }
+      ]
+    },
+    "hook": {
+      "enum": [
+        "before_response",
+        "after_response",
+        "seat_prompt",
+        "after_synthesis"
+      ]
+    },
+    "skill_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "version"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "common.schema.json#/$defs/skillId"
+        },
+        "version": {
+          "$ref": "common.schema.json#/$defs/semver"
+        },
+        "hash": {
+          "$ref": "common.schema.json#/$defs/hash"
+        }
+      }
+    },
+    "parameters": {
+      "type": "object",
+      "maxProperties": 20,
+      "additionalProperties": {
+        "type": [
+          "string",
+          "integer",
+          "boolean"
+        ]
+      }
+    },
+    "priority": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 1000
+    },
+    "enabled": {
+      "type": "boolean"
+    },
+    "on_failure": {
+      "enum": [
+        "fail",
+        "plain_seat"
+      ]
+    }
+  }
+}
