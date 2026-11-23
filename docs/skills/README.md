@@ -26,8 +26,9 @@ No runtime work starts until architecture, security/privacy and evaluation revie
 
 | Gate | Reviewer | Status | Date | Notes |
 | --- | --- | --- | --- | --- |
-| Architecture (ADRs 0001-0009, 0012-0015, 0017) | pending | not approved | | |
-| Security and privacy (threat model, ADR-0007, 0008, 0011, 0015, 0016, 0019, 0020) | pending | not approved | | |
+| ADRs 0001-0004, 0012, 0014, 0015 (the phase 2 set) | owner | **accepted as written** | 2026-11-23 | Given when skills phase 2 was authorized; phase 2a and 2b have independent reviews in `phase1/review-record.md` |
+| Architecture (ADRs 0005-0009, 0013, 0017) | pending | not approved | | |
+| Security and privacy (threat model, ADR-0007, 0008, 0011, 0016, 0019, 0020) | pending | not approved | | |
 | Evaluation thresholds (evaluation-freeze.md) | pending | not approved | | |
 | Owner decisions (ADR-0010 license policy, ADR-0011 numbers) | pending | not approved | | |
 

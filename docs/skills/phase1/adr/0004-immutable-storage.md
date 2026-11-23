@@ -1,6 +1,6 @@
 # ADR-0004: Immutable version storage
 
-Status: **Proposed** (needs a human decision before Phase 2). Date: 2026-11-22. Phase: 1.
+Status: **Accepted by the owner, 2026-11-23** (approved as written when skills phase 2 was authorized; the independent reviews of the phase 2 work are in `review-record.md`). Date: 2026-11-22. Phase: 1.
 
 ## Context
 

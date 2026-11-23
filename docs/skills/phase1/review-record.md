@@ -63,3 +63,5 @@ One read-only Sonnet reviewer attacked the runtime (loader, resolver, export, CL
 | N10 export leaves a folder on a round-trip failure | nit | Accepted: the error says where, for inspection |
 
 `tests/skills-runtime.sh` now has 47 library cases; the cases for these findings fail on the code before the fixes.
+
+**Not independently reviewed:** the advisory scanner (`lib/skills/scan.mjs` and its wiring into the commands and MCP tools) was added after this review, at the owner's request (ADR-0015 item 6). It is tested (82 library cases: every rule, benign near-misses, the ten built-ins scanning clean, worst-case inputs at the size limit, and the wiring), but no separate reviewer has attacked it. Because it is advisory and never blocks, its failure modes are false negatives and false positives, not a bypass of a control.

@@ -64,6 +64,19 @@ so on, for example:
 The id, description, license and instruction text come from `SKILL.md`; `provenance`, `id` and `definition_hash` are set by the loader and may not be written
 in the file. The schemas are in `docs/skills/schemas/v1`.
 
+## The advisory scan
+
+Every skill is scanned for patterns aimed at the **agent** that will read it: asking it to ignore its rules or hide something from its user, to act without
+confirmation, to weaken its own safeguards, to run a download-and-pipe or destructive command, to send data to an address, to read secret files, or to imitate a
+system or Pilot message. Links, code blocks in runnable languages, long encoded blocks and mentions of credentials are shown as lower-level notices.
+`--validate-skill` prints the findings, `--list-skills` shows a `SCAN` column (`w` warnings, `n` notices), `--show-skill` includes the scan, and the MCP tools return it
+and tell the agent to tell its user before applying a skill that has warnings.
+
+It is **advisory**: it never refuses or changes a skill. It matches words, not intent, so a paraphrase, another language or an encoding can slip past it, and a
+normal sentence can trip it. A clean scan is not a safety claim, and a finding is not a verdict. Only a person reading the text can judge it. Rules and codes
+(`scan_override`, `scan_concealment`, `scan_permission`, `scan_exec`, `scan_exfiltration`, `scan_credentials`, `scan_spoof`, `scan_encoded`, `scan_link`,
+`scan_codeblock`) are in `lib/skills/scan.mjs`.
+
 ## What the fingerprint covers
 
 `definition_hash` covers the meaning: id, version, name, description, level, hooks, instruction text, schema references, limits, model hints. It does not
