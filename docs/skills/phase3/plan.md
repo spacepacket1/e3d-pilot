@@ -90,7 +90,20 @@ Docs for each PR (`docs/skills.md` sections, ADRs, the threat model rows T1, T8,
 | Scope creep into hosted work | 3a and 3b are engine-only; 3c waits for the hosted contract |
 | Calibration needs a `use_id` per observer run | the receipt already issues one per skill use; the observer run gets its own |
 
-## 7. Questions for you
+## 7. Owner decisions (2026-11-23)
+
+The recommendations in sections 2 and 3 were approved as written:
+
+1. Phase 3 is split into 3a, 3b and 3c; start with 3a.
+2. D2: seats keep `lensBlock`; id, version and hash live in the receipt and the preview.
+3. D3: `--seat-skill` is added beside `--specialist`.
+4. D7: the observer provider is explicit, defaulting to a vendor that did not synthesize; one observer per debate.
+5. D10: chat `after_response` is deferred to 3c.
+6. The 3b live canary stays subject to my stating its cost class and getting a go before any metered call (the approval did not name an amount).
+7. No built-in observer skill in 3b (a test-only fixture skill is used); showcase skills stay in Phase 6.
+8. The cloud-repo debate on observer pricing is **not** started: it spends credits, and 3c is not scheduled. It becomes the first task of 3c.
+
+## 8. Questions that were asked (kept for the record)
 
 1. Split Phase 3 into 3a, 3b and 3c as above, and start with 3a?
 2. D2: keep `lensBlock` for seats (receipt carries the labels)?
