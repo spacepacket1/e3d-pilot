@@ -68,7 +68,7 @@ Prior decisions this specification must respect: the 2026-11-17 council verdict 
 
 ## 3. Contracts (calibration contracts v1)
 
-These extend the skills contracts. The Phase 1 deliverable commits their JSON Schemas and fixtures; the examples here are the intended shape.
+These extend the skills contracts. The JSON Schemas are `docs/skills/schemas/v1/{skill-use,prediction,outcome,track-record}.schema.json`; every example below is a committed, validated fixture under `tests/fixtures/skills/valid/`, and the invalid fixtures (free-text note, pooled scope, verified outcome without evidence, rates below the minimum and others) are in `tests/fixtures/skills/invalid/`. In a reference, `hash` means `definition_hash`.
 
 ### 3.1 `SkillUse`
 
@@ -77,20 +77,28 @@ Created by Pilot (never by the client) when a skill is fetched for use, or by th
 ```json
 {
   "schema_version": "e3d.skill-use/v1",
-  "use_id": "use_01...",
-  "skill": {"id": "skill.e3d.skeptic", "version": "2.0.0", "definition_hash": "sha256:..."},
+  "use_id": "use_01abcd",
+  "skill": {
+    "id": "skill.e3d.skeptic",
+    "version": "2.0.0",
+    "hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
   "mode": "host_chat",
-  "host": {"family": "claude-code", "model_family": "anthropic"},
+  "host": {
+    "family": "claude-code",
+    "model_family": "anthropic"
+  },
   "task_class": "architecture-review",
   "task_class_source": "declared",
-  "principal_ref": "pseudonymous-or-private-id",
+  "principal_ref": "user_01hxyz",
+  "reminder_enabled": false,
   "run_ref": null,
   "issued_at": "2026-11-23T00:00:00Z",
   "expires_at": "2027-02-21T00:00:00Z"
 }
 ```
 
-`mode` is `host_chat`, `pilot_chat`, `debate_seat` or `observer`. `run_ref` links an engine receipt when Pilot ran it. `task_class_source` is `declared` (the host or user said), `derived` (a deterministic rule) or `none`. A use expires after 90 days (owner decision); an outcome after expiry is refused with `skill_use_expired`.
+`mode` is `host_chat`, `pilot_chat`, `debate_seat` or `observer`. `run_ref` links an engine receipt when Pilot ran it. `reminder_enabled` records whether the principal had the opt-in reminder on when the skill was fetched, so every record can report the share of reminded uses. `task_class_source` is `declared` (the host or user said), `derived` (a deterministic rule) or `none`. A use expires after 90 days (owner decision); an outcome after expiry is refused with `skill_use_expired`.
 
 ### 3.2 `Prediction` (optional)
 
@@ -99,24 +107,27 @@ A stated expectation made before the result is known, needed for calibration in 
 ```json
 {
   "schema_version": "e3d.prediction/v1",
-  "prediction_id": "prd_01...",
-  "use_id": "use_01...",
-  "claim": {"type": "recommendation_will_work", "horizon_days": 30},
+  "prediction_id": "prd_01abcd",
+  "use_id": "use_01abcd",
+  "claim": {
+    "type": "recommendation_will_work",
+    "horizon_days": 30
+  },
   "confidence": 0.7,
-  "source": "council_verdict_band",
-  "stated_at": "2026-11-23T00:00:00Z"
+  "source": "host_stated",
+  "stated_at": "2026-11-23T00:05:00Z"
 }
 ```
 
-Pilot does not invent a probability from a consensus level (`full`, `majority`, `split`, `unknown`). A mapping from consensus to confidence is itself calibrated later and is not assumed. Until a prediction exists, the record reports success rates only and says so.
+`source` is `user_stated`, `host_stated` or `model_stated`. Pilot does not invent a probability from a consensus level (`full`, `majority`, `split`, `unknown`), and the schema has no source that would allow it. A mapping from consensus to confidence is itself calibrated later and is not assumed. Until a prediction exists, the record reports success rates only and says so.
 
 ### 3.3 `Outcome`
 
 ```json
 {
   "schema_version": "e3d.outcome/v1",
-  "outcome_id": "out_01...",
-  "use_id": "use_01...",
+  "outcome_id": "out_01abcd",
+  "use_id": "use_01abcd",
   "result": "worked",
   "tier": "user_marked",
   "reported_by": "host",
@@ -126,29 +137,55 @@ Pilot does not invent a probability from a consensus level (`full`, `majority`, 
 }
 ```
 
-`result` is `worked`, `failed` or `unknown` (the words the hosted decision record already uses). `evidence_ref` is a digest of an artifact for `verified` outcomes. `supersedes` links a correction. Free-text notes are not part of the record; a private note stays in the decision record or the user's own notes.
+`result` is `worked`, `failed` or `unknown` (the words the hosted decision record already uses). A `verified` outcome must carry an `evidence_ref`; an `inferred` outcome may only carry `unknown`, so it can never count as resolved (`skill_outcome_invalid`). `evidence_ref` is a digest of an artifact for `verified` outcomes. `supersedes` links a correction. Free-text notes are not part of the record; a private note stays in the decision record or the user's own notes.
 
 ### 3.4 `TrackRecord` (derived, never stored as truth)
 
 ```json
 {
   "schema_version": "e3d.track-record/v1",
-  "subject": {"id": "skill.e3d.skeptic", "version": "2.0.0", "definition_hash": "sha256:..."},
-  "stratum": {"task_class": "architecture-review", "mode": "host_chat", "model_family": "anthropic"},
+  "subject": {
+    "id": "skill.e3d.skeptic",
+    "version": "2.0.0",
+    "hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "stratum": {
+    "task_class": "architecture-review",
+    "mode": "host_chat",
+    "model_family": "anthropic"
+  },
   "scope": "principal",
   "n_uses": 41,
   "n_resolved": 17,
-  "resolution_rate": 0.41,
-  "by_tier": {"verified": 2, "user_marked": 11, "host_reported": 4},
-  "success": {"count": 12, "rate": 0.71, "interval95": [0.47, 0.87], "method": "wilson"},
-  "baseline": {"n_resolved": 9, "success_rate": 0.56, "basis": "same principal, same task class, uses without this skill", "label": "observational"},
+  "resolution_rate": 0.4146,
+  "reminded_share": 0.25,
+  "by_tier": {
+    "verified": 2,
+    "user_marked": 11,
+    "host_reported": 4
+  },
+  "success": {
+    "count": 12,
+    "rate": 0.7059,
+    "interval95": [
+      0.4689,
+      0.8715
+    ],
+    "method": "wilson"
+  },
+  "baseline": {
+    "n_resolved": 9,
+    "success_rate": 0.5556,
+    "basis": "same principal, same task class, uses without this skill",
+    "label": "observational"
+  },
   "calibration": null,
   "status": "descriptive",
   "computed_at": "2026-12-01T00:00:00Z"
 }
 ```
 
-`status` is `insufficient_evidence` below the minimum, `descriptive` above it, and `calibrated` only when predictions exist and the reliability bins meet the minimum. The `baseline` is shown only when the same principal has resolved uses without the skill on the same task class; it is always labelled observational. `calibration` (when present) holds reliability bins and a proper scoring rule (Brier), never a single "accuracy" number.
+`scope` is `principal` only in v1: a pooled scope is not representable, which encodes the owner decision that pooling is not approved. `reminded_share` is the share of uses made with the reminder on. `status` is `insufficient_evidence` below the minimum (10 resolved uses; the record then carries no rate, baseline or calibration, or `skill_record_insufficient`), `descriptive` above it, and `calibrated` only when predictions exist and the reliability bins meet the minimum. The `baseline` is shown only when the same principal has resolved uses without the skill on the same task class; it is always labelled observational. `calibration` (when present) holds reliability bins and a proper scoring rule (Brier), never a single "accuracy" number.
 
 ### 3.5 Errors
 
@@ -426,7 +463,7 @@ Security, privacy, moderation, legal and evaluation reviews.
 
 ## 12. Owner decisions
 
-Decided 2026-11-23 (the Phase 1 ADRs record them formally):
+Decided 2026-11-23 and recorded as ADR-0016 to ADR-0021 (`phase1/adr/`):
 
 | # | Question | Decision |
 | --- | --- | --- |

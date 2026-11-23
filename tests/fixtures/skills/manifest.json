@@ -52,6 +52,30 @@
     {
       "file": "valid/event--step-completed.json",
       "schema": "event"
+    },
+    {
+      "file": "valid/skill-use--host-chat.json",
+      "schema": "skill-use"
+    },
+    {
+      "file": "valid/prediction--host-stated.json",
+      "schema": "prediction"
+    },
+    {
+      "file": "valid/outcome--user-marked.json",
+      "schema": "outcome"
+    },
+    {
+      "file": "valid/outcome--verified.json",
+      "schema": "outcome"
+    },
+    {
+      "file": "valid/track-record--descriptive.json",
+      "schema": "track-record"
+    },
+    {
+      "file": "valid/track-record--insufficient.json",
+      "schema": "track-record"
     }
   ],
   "invalid": [
@@ -288,6 +312,66 @@
       "file": "invalid/event--raw-prompt.json",
       "schema": "event",
       "code": "skill_schema_unknown_field"
+    },
+    {
+      "file": "invalid/skill-use--unknown-mode.json",
+      "schema": "skill-use",
+      "code": "skill_schema_value"
+    },
+    {
+      "file": "invalid/skill-use--bad-hash.json",
+      "schema": "skill-use",
+      "code": "skill_schema_format"
+    },
+    {
+      "file": "invalid/skill-use--expiry-too-long.json",
+      "schema": "skill-use",
+      "code": "skill_schema_limit",
+      "semantic": "use"
+    },
+    {
+      "file": "invalid/prediction--confidence-out-of-range.json",
+      "schema": "prediction",
+      "code": "skill_schema_limit"
+    },
+    {
+      "file": "invalid/prediction--invented-from-consensus.json",
+      "schema": "prediction",
+      "code": "skill_schema_value"
+    },
+    {
+      "file": "invalid/outcome--free-text-note.json",
+      "schema": "outcome",
+      "code": "skill_schema_unknown_field"
+    },
+    {
+      "file": "invalid/outcome--verified-without-evidence.json",
+      "schema": "outcome",
+      "code": "skill_outcome_invalid",
+      "semantic": "outcome"
+    },
+    {
+      "file": "invalid/outcome--inferred-counted.json",
+      "schema": "outcome",
+      "code": "skill_outcome_invalid",
+      "semantic": "outcome"
+    },
+    {
+      "file": "invalid/track-record--pooled-scope.json",
+      "schema": "track-record",
+      "code": "skill_schema_value"
+    },
+    {
+      "file": "invalid/track-record--rate-below-minimum.json",
+      "schema": "track-record",
+      "code": "skill_record_insufficient",
+      "semantic": "record"
+    },
+    {
+      "file": "invalid/track-record--tier-sum-mismatch.json",
+      "schema": "track-record",
+      "code": "skill_schema_value",
+      "semantic": "record"
     }
   ]
 }

@@ -1,0 +1,11 @@
+{
+  "schema_version": "e3d.outcome/v1",
+  "outcome_id": "out_01abcd",
+  "use_id": "use_01abcd",
+  "result": "worked",
+  "tier": "user_marked",
+  "reported_by": "host",
+  "evidence_ref": null,
+  "supersedes": null,
+  "reported_at": "2026-11-30T00:00:00Z"
+}

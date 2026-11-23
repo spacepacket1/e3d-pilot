@@ -1,0 +1,12 @@
+{
+  "schema_version": "e3d.prediction/v1",
+  "prediction_id": "prd_01abcd",
+  "use_id": "use_01abcd",
+  "claim": {
+    "type": "recommendation_will_work",
+    "horizon_days": 30
+  },
+  "confidence": 0.7,
+  "source": "council_verdict_band",
+  "stated_at": "2026-11-23T00:05:00Z"
+}

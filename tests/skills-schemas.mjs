@@ -90,6 +90,22 @@ export function check(name, doc) {
   return validate(doc, schema, ctx);
 }
 
+// Calibration track record: derived numbers must agree with each other and with the minimum-evidence rule (calibration spec section 3.4 and 9).
+export const MIN_RESOLVED = 10;
+function recordProblems(d) {
+  const tiers = d.by_tier.verified + d.by_tier.user_marked + d.by_tier.host_reported;
+  if (d.n_resolved > d.n_uses || tiers !== d.n_resolved) return 'skill_schema_value';
+  if (d.n_uses > 0 && d.resolution_rate !== null && Math.abs(d.resolution_rate - d.n_resolved / d.n_uses) > 0.001) return 'skill_schema_value';
+  if (d.n_resolved < MIN_RESOLVED && (d.status !== 'insufficient_evidence' || d.success !== null || d.baseline !== null || d.calibration !== null)) return 'skill_record_insufficient';
+  if (d.n_resolved >= MIN_RESOLVED && d.status === 'insufficient_evidence') return 'skill_schema_value';
+  if (d.success) {
+    if (d.success.count > d.n_resolved || Math.abs(d.success.rate - d.success.count / d.n_resolved) > 0.001) return 'skill_schema_value';
+    if (d.success.interval95[0] > d.success.rate || d.success.rate > d.success.interval95[1]) return 'skill_schema_value';
+  }
+  if ((d.status === 'calibrated') !== (d.calibration !== null)) return 'skill_schema_value';
+  return null;
+}
+
 // Reference semantic checks, run only after the schema passes. Returns a code or null.
 const HOOK_TARGET = { chat: ['before_response', 'after_response'], debate_seat: ['seat_prompt'], debate_observer: ['after_round', 'after_synthesis'] };
 export function semantic(kind, schema, doc) {
@@ -98,6 +114,9 @@ export function semantic(kind, schema, doc) {
   if (kind === 'composition') return compositionProblems(doc);
   if (kind === 'evaluation') return doc.uncertainty.ci_low > doc.uncertainty.ci_high || doc.uncertainty.level < 0.8 || (doc.quality_status !== 'unknown' && !doc.rubric.approved) ? 'skill_schema_value' : null;
   if (kind === 'attachment') return HOOK_TARGET[doc.target.type].includes(doc.hook) ? null : 'skill_conflict';
+  if (kind === 'use') { const span = Date.parse(doc.expires_at) - Date.parse(doc.issued_at); return span <= 0 || span > 90 * 86400000 ? 'skill_schema_limit' : null; }
+  if (kind === 'outcome') return (doc.tier === 'verified' && !doc.evidence_ref) || (doc.tier === 'inferred' && doc.result !== 'unknown') ? 'skill_outcome_invalid' : null;
+  if (kind === 'record') return recordProblems(doc);
   return null;
 }
 
@@ -120,7 +139,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     if (node.$ref && Object.keys(node).some((k) => k !== '$ref')) bad(`${where}: $ref must not have sibling keywords (the harness ignores them)`);
     if (node['x-code'] && (node.properties || node.items || node.anyOf)) bad(`${where}: x-code must be on a leaf schema`);
   };
-  for (const f of ['common', 'skill-definition', 'skill-composition', 'skill-attachment', 'skill-recommendation', 'skill-plan', 'skill-grant', 'skill-run', 'observation', 'evaluation', 'learning-proposal', 'skill-error', 'event']) walkSchema(load(`${f}.schema.json`), f);
+  for (const f of ['common', 'skill-definition', 'skill-composition', 'skill-attachment', 'skill-recommendation', 'skill-plan', 'skill-grant', 'skill-run', 'observation', 'evaluation', 'learning-proposal', 'skill-error', 'event', 'skill-use', 'prediction', 'outcome', 'track-record']) walkSchema(load(`${f}.schema.json`), f);
   // 1. every schema file loads and uses only supported keywords (validate throws on the first unsupported one while walking a fixture)
   for (const v of manifest.valid) {
     const doc = read(v.file);
@@ -131,6 +150,9 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     if (v.schema === 'skill-composition' && semantic('composition', v.schema, doc)) bad(`${v.file}: composition graph invalid`);
     if (v.schema === 'evaluation' && semantic('evaluation', v.schema, doc)) bad(`${v.file}: evaluation cross-field rule`);
     if (v.schema === 'skill-attachment' && semantic('attachment', v.schema, doc)) bad(`${v.file}: hook does not fit target`);
+    if (v.schema === 'skill-use' && semantic('use', v.schema, doc)) bad(`${v.file}: use id expiry rule`);
+    if (v.schema === 'outcome' && semantic('outcome', v.schema, doc)) bad(`${v.file}: outcome tier rule`);
+    if (v.schema === 'track-record' && semantic('record', v.schema, doc)) bad(`${v.file}: track record consistency or minimum-evidence rule`);
   }
   // 2. every invalid fixture fails with exactly the listed code
   for (const iv of manifest.invalid) {
@@ -144,7 +166,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const catalogue = Object.keys(JSON.parse(readFileSync(join(SCHEMAS, 'error-codes.json'), 'utf8')).codes);
   for (const iv of manifest.invalid) if (!catalogue.includes(iv.code)) bad(`${iv.file}: ${iv.code} is not in error-codes.json`);
   const covered = new Set([...manifest.valid, ...manifest.invalid].map((x) => x.schema));
-  for (const n of ['skill-definition', 'skill-composition', 'skill-attachment', 'skill-recommendation', 'skill-plan', 'skill-grant', 'skill-run', 'observation', 'evaluation', 'learning-proposal', 'skill-error', 'event']) {
+  for (const n of ['skill-definition', 'skill-composition', 'skill-attachment', 'skill-recommendation', 'skill-plan', 'skill-grant', 'skill-run', 'observation', 'evaluation', 'learning-proposal', 'skill-error', 'event', 'skill-use', 'prediction', 'outcome', 'track-record']) {
     if (!covered.has(n)) bad(`no fixture covers ${n}`);
     if (!manifest.valid.some((x) => x.schema === n)) bad(`no valid fixture for ${n}`);
     if (!manifest.invalid.some((x) => x.schema === n)) bad(`no invalid fixture for ${n}`);

@@ -9,9 +9,9 @@ Source: the "E3D Pilot User-Defined Skills: Implementation Specification" (v0.1,
 | **Engine specification v0.1 (part 1 of 2; phases 1 to 6; runnable by e3d-code).** The hosted part is in the private `e3d-pilot-cloud` repository, `docs/skills-hosted-spec.md` | [spec/e3d-pilot-user-defined-skills-spec-v0.1.md](spec/e3d-pilot-user-defined-skills-spec-v0.1.md) |
 | **Calibration specification v0.1 (part 3; builds on the skills contracts)** | [spec/e3d-pilot-calibration-spec-v0.1.md](spec/e3d-pilot-calibration-spec-v0.1.md) |
 | Grounding report, gap table, contradictions, phase map | [phase1/grounding-report.md](phase1/grounding-report.md) |
-| 14 ADRs (all **Proposed**) | [phase1/adr/](phase1/adr/) |
+| 21 ADRs: 0001-0015 **Proposed**; 0016-0021 (calibration) **owner-decided 2026-11-23**, awaiting reviewer sign-off | [phase1/adr/](phase1/adr/) |
 | 12 JSON Schemas, shared definitions, stable error codes | [schemas/v1/](schemas/v1/) |
-| Fixtures (13 valid, 45 invalid) and the harness | `tests/fixtures/skills/`, `tests/skills-schemas.{sh,mjs}` |
+| Fixtures (19 valid, 56 invalid; 16 schemas including the calibration records) and the harness | `tests/fixtures/skills/`, `tests/skills-schemas.{sh,mjs}` |
 | Threat model, permission matrix, privacy inventory | [phase1/threat-model.md](phase1/threat-model.md) |
 | Evaluation freeze (**proposed, not frozen**) | [phase1/evaluation-freeze.md](phase1/evaluation-freeze.md) |
 | Compatibility baseline and its tests | [phase1/compat-baseline.md](phase1/compat-baseline.md), `tests/skills-compat.sh` |
@@ -25,8 +25,8 @@ No runtime work starts until architecture, security/privacy and evaluation revie
 
 | Gate | Reviewer | Status | Date | Notes |
 | --- | --- | --- | --- | --- |
-| Architecture (ADRs 0001-0009, 0012-0014) | pending | not approved | | |
-| Security and privacy (threat model, ADR-0007, 0008, 0011) | pending | not approved | | |
+| Architecture (ADRs 0001-0009, 0012-0015, 0017) | pending | not approved | | |
+| Security and privacy (threat model, ADR-0007, 0008, 0011, 0015, 0016, 0019, 0020) | pending | not approved | | |
 | Evaluation thresholds (evaluation-freeze.md) | pending | not approved | | |
 | Owner decisions (ADR-0010 license policy, ADR-0011 numbers) | pending | not approved | | |
 

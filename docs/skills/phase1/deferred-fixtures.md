@@ -19,3 +19,7 @@ Phase 1 proves the schemas with a harness and a small reference checker (`tests/
 | File swapped between validate and read (read-once rule) | `skill_hash_mismatch` | Phase 2 |
 | Withdrawn version still resolvable | `skill_withdrawn` | Phase 3, 7 |
 | Edit without a version bump (`(id, version)` with a second hash) | `skill_version_invalid` | Phase 2 |
+| Outcome for an unknown, expired or foreign `use_id`; replayed report; second report that does not supersede | `skill_use_not_found`, `skill_use_expired`, `skill_outcome_conflict` | calibration 2, 3 |
+| Reading or writing another principal's record | `skill_scope_denied` | calibration 3, 4 |
+| Deleting a decision or skill removes its outcomes and recomputes the record | record numbers change; no stale rate | calibration 2, 4 |
+| Reminder off: no prompt text in tool descriptions or served metadata | byte-identical to the flag-off output | calibration 3 |

@@ -57,6 +57,15 @@ Prompt blocks (spec 6.4, unchanged): 1 policy, 2 task contract, 3 skill instruct
 | T22 | Referent drift behind a hashed reference (schema refs, suite refs) | n/a | `e3d://schemas/*/vN` immutable and shipped in the repo; receipts record fixture versions | 2 |
 | T23 | Withdrawn or deprecated skill still runs; mutable name or description spoofs approval | n/a | Status checked live (`skill_withdrawn`); name and description are hashed; no router reads `tags` | 3, 7 |
 | T18 | Secrets in a skill (public) | none | Publish scanner for secrets, PII, local paths, private evidence refs | 8 |
+| C-T1 | Outcome poisoning: fake or self-serving reports | n/a | Records per principal (pooling not representable in v1); tiers displayed; reactions and counts never count; rate limits; anomaly flags | calibration 3 |
+| C-T2 | Selection bias: people report only extremes | n/a | Resolution rate and reminded share always shown; `skill_record_insufficient` below 10 | calibration 2, 5 |
+| C-T3 | Goodhart: authors tune a skill to look good | n/a | Records keyed to immutable versions; a new version starts empty; no pooled public score | calibration 5 |
+| C-T4 | Re-identification from small strata | n/a | Coarse task classes; no free text; no pooling; minimum counts | calibration 5 |
+| C-T5 | Served skill injects the host agent | n/a | Same as T24 | calibration 3 |
+| C-T6 | Feedback loops from recommendations | n/a | Recommendations show evidence; randomised hold-out in the shadow study; L2/L3 need approval | calibration 6 |
+| C-T7 | Model drift makes old records misleading | n/a | Model family in the stratum; decay; separate display | calibration 5 |
+| C-T8 | Right-censoring and regression to the mean read as skill effects | n/a | Horizon rule; intervals; baseline labelled observational | calibration 2 |
+| C-T9 | Free text leaks into records | n/a | Schema has no text field (`outcome--free-text-note` fails) | calibration 2 |
 | T24 | **Served skill injects the host agent**: a skill fetched over MCP instructs a tool-capable agent (shell, files) to act | None (no skill tools yet) | Serve as labelled data only; instructional only; never install or run; scanner for host-directed instruction patterns; user sees hash and source; host keeps its own permissions (cannot be enforced by Pilot) | 2, calibration 3 |
 | T25 | Outcome poisoning: fake or self-serving use and outcome reports | n/a | Server-issued `use_id`; per-principal records; tiers displayed; aggregation only with opt-in, minimum group size and source diversity; reactions never count | calibration 3, 7 |
 
@@ -91,6 +100,8 @@ Rules: an instructional skill requesting any capability is invalid (`skill_capab
 | Observation | none | event/observation store (Phase 5) | 30 days default, 180 max, `expires_at` required | user delete, expiry job | no |
 | Evaluation record | experiments only | evaluation store | life of the skill version, private by default | with the skill | no |
 | Billing and audit | hosted ledger, usage events | same plus skill refs | financial rows kept; audit minimum 365 days | financial rows never deleted | no |
+| Skill use (calibration) | none | stored by principal, no text | 90 days for the use id; records 365 days (ADR-0019) | with the decision, skill or account; recomputed | no |
+| Outcome and track record (calibration) | none | private to the principal; derived records recomputed | 365 days | user delete, expiry, account close | no (pooling not approved, ADR-0020) |
 
 No raw credentials, hidden reasoning or unredacted private tool output in any layer (spec 9.1). Analytics receive aggregates only.
 

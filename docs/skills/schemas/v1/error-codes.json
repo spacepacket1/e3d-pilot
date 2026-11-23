@@ -33,6 +33,12 @@
     "skill_memory_error": "The memory source was unavailable, stale or out of scope.",
     "skill_output_invalid": "The skill output does not match its declared schema.",
     "skill_moderation_blocked": "Moderation or a scan blocked the operation.",
-    "skill_tenant_denied": "The principal or team may not see or use this skill."
+    "skill_tenant_denied": "The principal or team may not see or use this skill.",
+    "skill_use_not_found": "No skill use has that id for this principal (never issued, or issued to another principal).",
+    "skill_use_expired": "The use id has expired (90 days); an outcome can no longer be reported against it.",
+    "skill_outcome_invalid": "An outcome breaks a rule: a verified outcome without evidence, or an inferred outcome that claims a result.",
+    "skill_outcome_conflict": "An outcome conflicts with a recorded one (a second report that does not supersede the first).",
+    "skill_record_insufficient": "A track record asserts a rate or a status without the minimum resolved uses.",
+    "skill_scope_denied": "The caller may not read or write records outside its own principal."
   }
 }
