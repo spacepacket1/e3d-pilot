@@ -1,6 +1,6 @@
 # ADR-0005: API and tool names
 
-Status: **Proposed** (needs a human decision before Phase 2). Amended by ADR-0015 (local, read-only skill tools may ship in phase 2). Date: 2026-11-22. Phase: 1.
+Status: **Accepted as written** by the owner on 2026-11-23 (it was Proposed). Amended by ADR-0015 (local, read-only skill tools may ship in phase 2). Date: 2026-11-22. Phase: 1.
 
 ## Context
 

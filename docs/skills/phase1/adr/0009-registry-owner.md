@@ -1,6 +1,6 @@
 # ADR-0009: Database and registry owner; migration rules
 
-Status: **Proposed** (needs a human decision before Phase 2). Date: 2026-11-22. Phase: 1.
+Status: **Accepted as written** by the owner on 2026-11-23 (it was Proposed). Date: 2026-11-22. Phase: 1.
 
 ## Context
 
