@@ -225,6 +225,17 @@ r="$(rpost "$B3c")"; assert_eq "$(code "$r")" "202"; wait_run "$(jq -r .debate_i
 assert_eq "$(jq -s '[.[] | select(.body.model == "gem-test")] | length' "$VREQ")" "0" "no observer call when even the smallest prompt does not fit the quoted bound"
 echo "ok - one skill as seat and observer, an observer-only run, and an observer that does not fit its quoted input bound is skipped"
 
+# one seat skill is enough: that seat carries it, the other seats of the panel run plain (the engine takes one named skill with --fill-pool)
+: > "$VREQ"
+B2s="$(body "$PV3" "$LIM3" "[$(seat "$DA" anthropic-api)]")"; D2s="$(jq -r .debate_id <<< "$B2s")"
+r="$(rpost "$B2s")"; assert_eq "$(code "$r")" "202" "one seat skill is accepted: $(js "$r")"; RT2s="$(js "$r" | jq -r .run_token)"; wait_run "$D2s" "$RT2s" done
+R2s="$(lastrec)"
+assert_contains "$(jq -r .args <<< "$R2s")" "--seat-skill $SPEC_A:anthropic-api --fill-pool"; assert_not_contains "$(jq -r .args <<< "$R2s")" "--seat-skill $SPEC_B"
+assert_eq "$(prompts_with SEATMARK-ALPHA)" "2" "the one skill reaches its seat in both rounds"
+assert_eq "$(prompts_with '[Your role in this debate]')" "2" "only that seat carries a lens block; the two plain seats and the synthesis do not"
+assert_eq "$(jq -r '.run.outcome' <<< "$(rget "$D2s" "$RT2s")")" "ok"
+echo "ok - one seat skill is enough: it sits on its seat, the others run plain"
+
 # ---- 3. refusals: 400 invalid, nothing runs, nothing leaks
 n1="$(nrec)"; v1="$(vreq_count)"; SEATB="$(seat "$DB" openai-api)"
 refuse() { # refuse <label> <body>
@@ -240,7 +251,6 @@ refuse "changed text under the old hash" "$(body "$PV3" "$LIM3" "[$(seat "$(jq -
 refuse "a principal that is not the owner" "$(body "$PV3" "$LIM3" "[$(seat "$DA" anthropic-api), $SEATB]" | jq -c '.skills_principal = "u_zzzzzz999999"')"
 refuse "an observer-only skill used as a seat" "$(body "$PV3" "$LIM3" "[$(seat "$DR" anthropic-api), $SEATB]")"; assert_contains "$LAST_MSG" "seat hook"
 refuse "a seat-only skill used as the observer" "$(body "$PV2" "$LIM2" "[$(obsatt "$DA")]" | jq -c --argjson o "$OBSV" '.observer = $o')"; assert_contains "$LAST_MSG" "observer hook"
-refuse "one seat skill alone (the engine seats two or more)" "$(body "$PV3" "$LIM3" "[$(seat "$DA" anthropic-api)]")"
 refuse "the same skill on two seats" "$(body "$PV3" "$LIM3" "[$(seat "$DA" anthropic-api), $(seat "$DA" openai-api)]")"
 refuse "one id with two different definitions (each with a real hash)" "$(body "$PV2" "$LIM2" "[$(seat "$DUAL" anthropic-api), $(seat "$DB" openai-api), $(obsatt "$DUAL2")]" | jq -c --argjson o "$OBSV" '.observer = $o')"; assert_contains "$LAST_MSG" "skill_conflict"
 refuse "more instruction text than skill_bytes" "$(body "$PV3" "$LIM3" "[$(seat "$DA" anthropic-api), $(seat "$DB" openai-api)]" | jq -c '.skill_bytes = 60')"; assert_contains "$LAST_MSG" "skill_bytes"
