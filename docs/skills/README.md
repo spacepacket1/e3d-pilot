@@ -9,7 +9,7 @@ Source: the "E3D Pilot User-Defined Skills: Implementation Specification" (v0.1,
 | **Engine specification v0.1 (part 1 of 2; phases 1 to 6; runnable by e3d-code).** The hosted part is in the private `e3d-pilot-cloud` repository, `docs/skills-hosted-spec.md` | [spec/e3d-pilot-user-defined-skills-spec-v0.1.md](spec/e3d-pilot-user-defined-skills-spec-v0.1.md) |
 | **Calibration specification v0.1 (part 3; builds on the skills contracts)** | [spec/e3d-pilot-calibration-spec-v0.1.md](spec/e3d-pilot-calibration-spec-v0.1.md) |
 | Grounding report, gap table, contradictions, phase map | [phase1/grounding-report.md](phase1/grounding-report.md) |
-| 24 ADRs: 0001-0015 **Proposed**; 0005, 0006, 0009, 0010, 0013 and 0016-0024 **accepted or owner-decided 2026-11-23**; 0007, 0008, 0011, 0017 still pending | [phase1/adr/](phase1/adr/) |
+| 24 ADRs: 0001-0015 **Proposed**; 0005, 0006, 0009, 0010, 0013 and 0016-0024 **accepted or owner-decided 2026-11-23**; 0007, 0008, 0017 still pending | [phase1/adr/](phase1/adr/) |
 | User guide for the local skills commands (phase 2b) | [../skills.md](../skills.md) |
 | Phase 3 plan (seat, observer and chat attachment runtime), for review | [phase3/plan.md](phase3/plan.md) |
 | 12 JSON Schemas, shared definitions, stable error codes | [schemas/v1/](schemas/v1/) |
@@ -28,7 +28,7 @@ No runtime work starts until architecture, security/privacy and evaluation revie
 | Gate | Reviewer | Status | Date | Notes |
 | --- | --- | --- | --- | --- |
 | ADRs 0001-0004, 0012, 0014, 0015 (the phase 2 set) | owner | **accepted as written** | 2026-11-23 | Given when skills phase 2 was authorized; phase 2a and 2b have independent reviews in `phase1/review-record.md` |
-| Architecture: ADRs 0005, 0006, 0009, 0013 | owner | **accepted as written** | 2026-11-23 | ADR-0010 (license allow-list) accepted at the same time |
+| Architecture: ADRs 0005, 0006, 0009, 0013 | owner | **accepted as written** | 2026-11-23 | ADR-0010 (license allow-list) and ADR-0011 (retention numbers) accepted at the same time |
 | Architecture: ADRs 0007, 0008, 0017 | pending | not approved | | 0007 and 0008 gate phase 5 |
 | Security and privacy (threat model, ADR-0007, 0008, 0011, 0016, 0019, 0020) | pending | not approved | | |
 | Evaluation thresholds (evaluation-freeze.md) | pending | not approved | | |
