@@ -300,6 +300,10 @@ fi
 if [[ -n "${E3D_CALIBRATION_V1+x}" ]]; then
   case "$E3D_CALIBRATION_V1" in ''|0|1) ;; *) echo "error: E3D_CALIBRATION_V1 must be 0 or 1" >&2; exit 2 ;; esac
 fi
+# a hosted run serves many users and the local store belongs to one (ADR-0020: no pooling), so the two never meet
+if [[ "${E3D_CALIBRATION_V1:-0}" == "1" ]] && { (( HOSTED_SKILLS_SET == 1 )) || [[ "${E3D_SKILLS_HOSTED:-0}" == "1" ]]; }; then
+  echo "error: E3D_CALIBRATION_V1=1 cannot be used with hosted skills (--hosted-skills or E3D_SKILLS_HOSTED=1): the calibration store is local and private to one user" >&2; exit 1
+fi
 if [[ -n "$SKILL_ACTION" || ( "$SKILL_PIN_GIVEN" == 1 && "$CAL_ACTION" != record ) ]] && [[ "${E3D_SKILLS_V1:-0}" != "1" ]]; then
   echo "error: skills are off. Set E3D_SKILLS_V1=1 to use --list-skills, --show-skill, --validate-skill, --project-expert, --export-skill and --diff-skill." >&2
   exit 1
@@ -1708,7 +1712,7 @@ write_decision_log() {
       || echo "warning: could not append to E3D_DEBATE_DECISION_LOG" >&2
   fi
   # calibration (E3D_CALIBRATION_V1=1): note each skill use of this receipt in the local store so an outcome can be reported against its use_id
-  if [[ "${E3D_CALIBRATION_V1:-0}" == "1" && -s "$work_dir/skills.json" ]] && command -v node >/dev/null 2>&1; then
+  if [[ "${E3D_CALIBRATION_V1:-0}" == "1" && "${E3D_SKILLS_HOSTED:-0}" != "1" && "$HOSTED_SKILLS_SET" != 1 && -s "$work_dir/skills.json" ]] && command -v node >/dev/null 2>&1; then
     node "$CAL_CLI" register-uses -- "$work_dir/decision-log.json" > /dev/null 2>&1 || echo "warning: could not note the skill uses for outcome reporting" >&2
   fi
 }

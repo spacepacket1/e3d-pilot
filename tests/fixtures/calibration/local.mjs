@@ -3,7 +3,8 @@
 // not with the code under test) and against an independent reference implementation that solves the Wilson quadratic instead of using its closed form.
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, truncateSync, utimesSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { appendFileSync, chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, truncateSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -23,6 +24,7 @@ const HASH = `sha256:${'a'.repeat(64)}`;
 const fresh = () => join(T, `store${seq += 1}`);
 const SKILL = { id: 'skill.e3d.skeptic', version: '2.0.0', hash: HASH };
 const codeOf = (fn) => { try { fn(); } catch (e) { return e.code || `other:${e.message}`; } return null; };
+const isoS = (ms) => new Date(ms).toISOString().replace(/\.\d{3}Z$/, 'Z');
 const uid = (i) => `use_${String(i).padStart(6, '0')}`;
 const mkUse = (i, over = {}, now = NOW) => newUse({ use_id: uid(i), skill: SKILL, task_class: 'architecture-review', task_class_source: 'declared', ...over }, now);
 // `count` uses in one stratum (over: fields, or a function of the use number); outcomes: [result, tier] for use 1, 2, ...; the rest stay unmarked
@@ -81,14 +83,14 @@ await ok('a record of 41 uses with 17 resolved (2 verified, 11 user-marked, 4 ho
   assert.deepEqual(r.by_tier, { verified: 2, user_marked: 11, host_reported: 4 });
   assert.deepEqual(r.success, { count: 12, rate: 0.7059, interval95: [0.4687, 0.8672], method: 'wilson' }); // 12 / 17
   assert.equal(r.status, 'descriptive'); assert.equal(r.baseline, null); assert.equal(r.calibration, null); assert.equal(r.scope, 'principal');
-  assert.equal(describeRecord(r), 'skill.e3d.skeptic 2.0.0 on architecture-review (debate_seat, unknown): in your 17 resolved uses, 12 were marked worked (95% interval 47% to 87%); 41% of 41 uses had a recorded outcome');
+  assert.equal(describeRecord(r, records.length ? trackRecords(dir, {}, NOW).details[0] : undefined), 'skill.e3d.skeptic 2.0.0 on architecture-review (debate_seat, unknown): in your 17 resolved uses, 12 were marked worked (approximate 95% interval 46% to 87%); 41% of 41 uses were marked worked or failed; 0 marked unknown and 0 inferred (not counted as resolved); outcome sources: 2 verified, 11 user-marked, 4 host-reported; 22% of uses were made with the reminder on; 0 corrections on file');
 });
 await ok('the minimum rule: 9 resolved uses give no rate; 10 give one', () => {
   for (const [resolved, enough] of [[0, false], [1, false], [9, false], [10, true], [11, true]]) {
     const dir = fresh(); seed(dir, 12, Array.from({ length: resolved }, (_, i) => [i % 2 ? 'worked' : 'failed']));
     const { records, insufficient } = trackRecords(dir, {}, NOW);
     assert.equal(records.length, enough ? 1 : 0, `${resolved} resolved`); assert.equal(insufficient.length, enough ? 0 : 1);
-    if (!enough) assert.deepEqual(insufficient[0], { subject: SKILL, stratum: { task_class: 'architecture-review', mode: 'debate_seat', model_family: 'unknown' }, n_uses: 12, n_resolved: resolved, min_resolved: 10, code: 'skill_record_insufficient' });
+    if (!enough) assert.deepEqual(insufficient[0], { subject: SKILL, stratum: { task_class: 'architecture-review', mode: 'debate_seat', model_family: 'unknown' }, n_uses: 12, n_resolved: resolved, n_unknown: 0, n_inferred: 0, corrections: 0, min_resolved: 10, code: 'skill_record_insufficient' });
     else assert.ok(records[0].success && records[0].status === 'descriptive');
   }
   assert.equal(MIN_RESOLVED, 10);
@@ -383,7 +385,7 @@ await ok('retention applies to outcomes on their own: an outcome older than 365 
   assert.deepEqual(compact(d2, NOW + 10 * DAY).outcomes_dropped, 1);
 });
 await ok('compact on an empty or missing store creates nothing and is not an error', () => {
-  const dir = fresh(); assert.deepEqual(compact(dir, NOW), { uses_dropped: 0, outcomes_dropped: 0, unreadable_dropped: 0, uses_kept: 0, outcomes_kept: 0 });
+  const dir = fresh(); assert.deepEqual(compact(dir, NOW), { uses_dropped: 0, outcomes_dropped: 0, unreadable_dropped: 0, duplicates_dropped: 0, uses_kept: 0, outcomes_kept: 0 });
   const l = readdirSync(dir); assert.deepEqual(l, []);
 });
 
@@ -394,7 +396,7 @@ await ok('every command, with --json: record, report, mine, delete, compact; err
   let r = cli(['--skill-record', 'skeptic', '--json'], env); assert.equal(r.rc, 0, r.err);
   let j = JSON.parse(r.out); assert.equal(j.ok, true); assert.equal(j.records.length, 1); assert.deepEqual(j.records[0].success, { count: 7, rate: 0.7, interval95: [0.3968, 0.8922], method: 'wilson' }); assert.deepEqual(validateTrackRecord(j.records[0]), []);
   r = cli(['--skill-record', SKILL.id, '--skill-version', '2.0.0', '--skill-hash', HASH, '--task-class', 'architecture-review', '--skill-mode', 'debate_seat', '--model-family', 'unknown'], env);
-  assert.equal(r.rc, 0, r.err); assert.match(r.out, /in your 10 resolved uses, 7 were marked worked \(95% interval 40% to 89%\); 83% of 12 uses had a recorded outcome/); assert.match(r.out, /not a claim about the skill/);
+  assert.equal(r.rc, 0, r.err); assert.match(r.out, /in your 10 resolved uses, 7 were marked worked \(approximate 95% interval 39% to 90%\); 83% of 12 uses were marked worked or failed/); assert.match(r.out, /not a claim about the skill/);
   r = cli(['--skill-record', 'skeptic', '--skill-version', '9.9.9', '--json'], env); assert.equal(r.rc, 1); assert.equal(JSON.parse(r.out).error.code, 'skill_not_found'); assert.match(r.err, /^error: skill_not_found: /);
   r = cli(['--skill-record', 'nonesuch'], env); assert.equal(r.rc, 1); assert.match(r.err, /skill_not_found/);
   r = cli(['--report-outcome', uid(11), '--result', 'worked', '--json'], env); assert.equal(r.rc, 0, r.err); j = JSON.parse(r.out); assert.equal(j.status, 'recorded'); assert.equal(j.outcome.tier, 'user_marked'); assert.equal(j.outcome.reported_by, 'user'); assert.equal(j.superseded, null);
@@ -413,8 +415,8 @@ await ok('every command, with --json: record, report, mine, delete, compact; err
   for (const u of [uid(1), uid(2)]) cli(['--delete-outcome', u], env);
   r = cli(['--skill-record', 'skeptic', '--json'], env); j = JSON.parse(r.out);
   assert.equal(r.rc, 1); assert.equal(j.error.code, 'skill_record_insufficient'); assert.deepEqual(j.records, []); assert.equal(j.insufficient[0].n_resolved, 8); assert.equal(j.insufficient[0].n_uses, 13); assert.ok(!JSON.stringify(j).includes('"rate"'));
-  assert.match(r.err, /skill_record_insufficient/); assert.match(r.err, /8 resolved of 13 uses/);
-  r = cli(['--my-calibration'], env); assert.equal(r.rc, 0); assert.match(r.out, /not enough resolved outcomes \(8 of 10 needed; 13 uses recorded\)/);
+  assert.match(r.err, /skill_record_insufficient/); assert.match(r.err, /8 of 10 needed; 13 uses recorded/);
+  r = cli(['--my-calibration'], env); assert.equal(r.rc, 0); assert.match(r.out, /not enough resolved outcomes \(8 of 10 needed; 13 uses recorded; 0 marked unknown\)/);
   r = cli(['--compact-calibration', '--json'], env); j = JSON.parse(r.out); assert.equal(j.ok, true); assert.ok(j.outcomes_dropped >= 3);
   r = cli(['--compact-calibration'], env); assert.match(r.out, /^kept \d+ uses and \d+ outcomes; dropped 0 uses, 0 outcomes and 0 unreadable lines\n$/);
   r = cli(['--delete-outcome', 'use_nope0001', '--json'], env); assert.equal(r.rc, 1); assert.equal(JSON.parse(r.out).error.code, 'skill_use_not_found');
@@ -440,14 +442,194 @@ await ok('the commands refuse what they should: no state, unsafe state, missing 
 await ok('register-uses (what a debate with the flag on calls) notes each skill entry of a receipt once, skips entries with no skill, and honours the declared task class', () => {
   const dir = fresh(); const log = join(T, 'log.json'); const env = { E3D_CALIBRATION_DIR: dir };
   const entry = (i) => ({ seat: `s${i}`, hook: 'seat_prompt', scope: 'debate_seat', source: 'specialist', attachment_id: `att_${i}abcdefgh`, use_id: `use_${String(i).padStart(8, '0')}`, tier: 'built-in', legacy_folder_hash: 'h', id: 'skill.e3d.skeptic', version: '2.0.0', definition_hash: HASH, source_format: 'expert-v1-projection' });
-  writeFileSync(log, JSON.stringify({ schema: 1, skills: [entry(1), entry(2), { seat: 's3', use_id: 'use_00000003', name: 'gone', definition: null, reason: 'not_projectable_or_changed' }] }));
-  const run = (e) => spawnSync(process.execPath, [join(ROOT, 'lib/calibration/cli.mjs'), 'register-uses', '--', log], { env: { PATH: process.env.PATH, ...env, ...e }, encoding: 'utf8' });
+  writeFileSync(log, JSON.stringify({ schema: 1, ts: isoS(Date.now() - 5 * DAY), skills: [entry(1), entry(2), { seat: 's3', use_id: 'use_00000003', name: 'gone', definition: null, reason: 'not_projectable_or_changed' }] }));
+  const run = (e) => spawnSync(process.execPath, [join(ROOT, 'lib/calibration/cli.mjs'), 'register-uses', '--', log], { env: { PATH: process.env.PATH, E3D_CALIBRATION_V1: '1', ...env, ...e }, encoding: 'utf8' });
   let r = run({}); assert.equal(r.status, 0, r.stderr); assert.match(r.stdout, /noted 2 skill use/);
   r = run({}); assert.equal(r.status, 0); assert.equal(lines(dir, 'uses.jsonl').length, 2); // idempotent
   const u = JSON.parse(lines(dir, 'uses.jsonl')[0]); assert.equal(u.task_class, 'unclassified'); assert.equal(u.task_class_source, 'none'); assert.equal(u.mode, 'debate_seat'); assert.equal(u.principal_ref, 'local');
   const d2 = fresh(); r = run({ E3D_CALIBRATION_DIR: d2, E3D_CALIBRATION_TASK_CLASS: 'security-review' }); assert.equal(r.status, 0); const u2 = JSON.parse(lines(d2, 'uses.jsonl')[0]); assert.equal(u2.task_class, 'security-review'); assert.equal(u2.task_class_source, 'declared');
   r = run({ E3D_CALIBRATION_DIR: fresh(), E3D_CALIBRATION_TASK_CLASS: 'Bad Class!' }); assert.equal(r.status, 1); assert.match(r.stderr, /skill_schema_format/);
   writeFileSync(log, 'not json'); r = run({}); assert.equal(r.status, 1);
+});
+
+// ---------------------------------------------------------------- review fixes: wording of the shares, what is shown, what is counted, locks, hosted, receipts, wrappers
+await ok('the resolved share is not called "recorded": 10 worked/failed plus 10 unknown prints 50% marked worked or failed and 10 unknown', () => {
+  const dir = fresh(); seed(dir, 20, [...Array.from({ length: 10 }, () => ['worked']), ...Array.from({ length: 10 }, () => ['unknown'])]);
+  const t = trackRecords(dir, {}, NOW); const line = describeRecord(t.records[0], t.details[0]);
+  assert.match(line, /50% of 20 uses were marked worked or failed; 10 marked unknown and 0 inferred \(not counted as resolved\)/); assert.ok(!/had a recorded outcome/.test(line));
+  assert.deepEqual([t.details[0].n_unknown, t.details[0].n_inferred], [10, 0]);
+  const d2 = fresh(); seed(d2, 12, [...Array.from({ length: 10 }, () => ['worked']), ['unknown', 'inferred'], ['unknown', 'host_reported']]);
+  assert.deepEqual(trackRecords(d2, {}, NOW).details[0], { n_unknown: 1, n_inferred: 1, corrections: 0 });
+});
+await ok('corrections count superseded and deleted outcomes beside the record', () => {
+  const dir = fresh(); seed(dir, 17, Array.from({ length: 17 }, (_, i) => [i < 12 ? 'worked' : 'failed', i < 2 ? 'verified' : i < 13 ? 'user_marked' : 'host_reported']), (i) => ({ reminder_enabled: i <= 4 }));
+  reportOutcome(dir, { use_id: uid(3), result: 'failed' }, NOW + 1000); reportOutcome(dir, { use_id: uid(3), result: 'worked' }, NOW + 2000); // two supersessions
+  deleteOutcome(dir, uid(17), NOW + 3000); // one deleted
+  const t = trackRecords(dir, {}, NOW + 3000); const line = describeRecord(t.records[0], t.details[0]);
+  assert.equal(t.details[0].corrections, 3); assert.match(line, /3 corrections on file/); assert.match(line, /outcome sources: 2 verified, \d+ user-marked, \d+ host-reported/); assert.match(line, /24% of uses were made with the reminder on/);
+  assert.match(describeRecord(t.records[0], { n_unknown: 0, n_inferred: 0, corrections: 1 }), /1 correction on file/);
+});
+await ok('the interval prints outward (lower down, upper up) and says approximate; a bound on a whole percent is not moved', () => {
+  const fake = (lo, hi) => ({ subject: SKILL, stratum: { task_class: 'architecture-review', mode: 'debate_seat', model_family: 'unknown' }, status: 'descriptive', n_resolved: 10, n_uses: 10, success: { count: 5, rate: 0.5, interval95: [lo, hi], method: 'wilson' }, resolution_rate: 1, reminded_share: 0, by_tier: { verified: 0, user_marked: 10, host_reported: 0 } });
+  assert.match(describeRecord(fake(0.4687, 0.8672)), /approximate 95% interval 46% to 87%/);
+  assert.match(describeRecord(fake(0.29, 0.5801)), /interval 29% to 59%/); // 0.29 is exactly 29%: floor of 28.999... must not give 28
+  assert.match(describeRecord(fake(0, 1)), /interval 0% to 100%/);
+});
+await ok('lines ignored as unreadable are disclosed in the record, in the list of records and in --json', () => {
+  const dir = fresh(); const env = { E3D_CALIBRATION_DIR: dir }; seed(dir, 12, Array.from({ length: 10 }, () => ['worked']), {}, Date.now());
+  appendFileSync(join(dir, 'outcomes.jsonl'), 'garbage\n{"k":"outcome"}\n');
+  let r = cli(['--skill-record', 'skeptic'], env); assert.equal(r.rc, 0); assert.match(r.out, /2 unreadable lines were ignored/);
+  j: { const j = JSON.parse(cli(['--skill-record', 'skeptic', '--json'], env).out); assert.equal(j.unreadable_lines, 2); assert.equal(j.details.length, 1); break j; }
+  r = cli(['--my-calibration'], env); assert.match(r.out, /2 unreadable lines were ignored/); assert.equal(JSON.parse(cli(['--my-calibration', '--json'], env).out).unreadable_lines, 2);
+  appendFileSync(join(dir, 'outcomes.jsonl'), 'x\n'); // one more makes three; with a single bad line the note is singular
+  const d2 = fresh(); seed(d2, 12, Array.from({ length: 10 }, () => ['worked']), {}, Date.now()); appendFileSync(join(d2, 'outcomes.jsonl'), 'garbage\n');
+  assert.match(cli(['--skill-record', 'skeptic'], { E3D_CALIBRATION_DIR: d2 }).out, /1 unreadable line was ignored/);
+  const d3 = fresh(); seed(d3, 3, [], {}, Date.now()); appendFileSync(join(d3, 'uses.jsonl'), 'garbage\n');
+  const ins = cli(['--skill-record', 'skeptic', '--json'], { E3D_CALIBRATION_DIR: d3 }); assert.equal(ins.rc, 1); assert.equal(JSON.parse(ins.out).unreadable_lines, 1); assert.match(ins.err, /1 unreadable line was ignored/);
+  assert.equal(JSON.parse(cli(['--compact-calibration', '--json'], env).out).unreadable_dropped, 3);
+  assert.doesNotMatch(cli(['--my-calibration'], env).out, /unreadable/);
+});
+
+// locks
+const alivePid = () => { const p = spawn('sleep', ['30']); return p; };
+await ok('a lock whose holder is gone is taken over at once, even when it is fresh', () => {
+  const dir = fresh(); seed(dir, 1); writeFileSync(join(dir, '.lock'), '2147480000:0123456789abcdef', { mode: 0o600 });
+  const t0 = Date.now(); assert.equal(registerUse(dir, mkUse(2)).status, 'recorded'); assert.ok(Date.now() - t0 < 2500, 'no 5 s wait');
+  assert.equal(existsSync(join(dir, '.lock')), false); assert.equal(readdirSync(dir).filter((f) => f.includes('stale')).length, 0);
+});
+await ok('a lock whose holder is alive is NOT taken over, however old it looks (a suspended or slow holder keeps it)', () => {
+  const dir = fresh(); seed(dir, 1); const p = alivePid(); const lock = join(dir, '.lock');
+  try {
+    writeFileSync(lock, `${p.pid}:0123456789abcdef`, { mode: 0o600 }); const old = new Date(Date.now() - 5 * 60000); utimesSync(lock, old, old);
+    assert.equal(codeOf(() => registerUse(dir, mkUse(2))), 'skill_scope_denied'); // busy
+    assert.equal(readFileSync(lock, 'utf8'), `${p.pid}:0123456789abcdef`); assert.equal(lines(dir, 'uses.jsonl').length, 1);
+    const older = new Date(Date.now() - 11 * 60000); utimesSync(lock, older, older); // past the hard ceiling (a reused pid or a hung process) it is taken
+    assert.equal(registerUse(dir, mkUse(2)).status, 'recorded');
+  } finally { p.kill(); }
+});
+await ok('an owner-less lock is taken over only after a short grace', () => {
+  const dir = fresh(); seed(dir, 1); const lock = join(dir, '.lock'); writeFileSync(lock, '', { mode: 0o600 });
+  const t0 = Date.now(); assert.equal(registerUse(dir, mkUse(2)).status, 'recorded'); assert.ok(Date.now() - t0 >= 1500, 'waited for the grace period');
+});
+await ok('the old holder never removes a lock that replaced its own', async () => {
+  const { withLock } = await import('../../../lib/calibration/store.mjs');
+  const dir = fresh(); seed(dir, 1); const lock = join(dir, '.lock');
+  withLock(dir, () => { rmSync(lock); writeFileSync(lock, '2147480001:ffffffffffffffff', { mode: 0o600 }); }); // taken over meanwhile by another holder
+  assert.equal(readFileSync(lock, 'utf8'), '2147480001:ffffffffffffffff');
+  rmSync(lock); withLock(dir, () => {}); assert.equal(existsSync(lock), false); // and its own lock is removed as before
+});
+await ok('a real second process waits for a live holder and then writes; nothing is lost or torn', async () => {
+  const dir = fresh(); seed(dir, 2);
+  const p = spawn(process.execPath, [join(HERE, 'worker.mjs'), dir, 'hold', '1500', 'x']); await new Promise((res) => p.stdout.once('data', res));
+  const t0 = Date.now(); reportOutcome(dir, { use_id: uid(1), result: 'worked' }, NOW); const waited = Date.now() - t0;
+  await new Promise((res) => p.on('exit', res));
+  assert.ok(waited >= 800, `waited ${waited} ms for the holder`); assert.equal(lines(dir, 'outcomes.jsonl').length, 1); assert.equal(existsSync(join(dir, '.lock')), false);
+});
+await ok('a fork of one use\'s chain is flagged, not trusted by file order: two outcomes that both start the chain keep the first', () => {
+  const dir = fresh(); seed(dir, 12, Array.from({ length: 11 }, () => ['worked']));
+  const a = JSON.parse(lines(dir, 'outcomes.jsonl')[0]).doc;
+  appendFileSync(join(dir, 'outcomes.jsonl'), `${JSON.stringify({ k: 'outcome', doc: { ...a, outcome_id: 'out_fork0001', result: 'failed' } })}\n`); // supersedes null again: a fork
+  appendFileSync(join(dir, 'outcomes.jsonl'), `${JSON.stringify({ k: 'outcome', doc: { ...a, outcome_id: 'out_fork0002', result: 'failed', supersedes: 'out_zzzz00001' } })}\n`); // names something else
+  const t = trackRecords(dir, {}, NOW);
+  assert.equal(t.corrupt, 2); assert.equal(t.records[0].success.count, 11); assert.equal(t.records[0].n_resolved, 11); // the first outcome stands; the later "failed" does not win by position
+  assert.equal(compact(dir, NOW).unreadable_dropped, 2); assert.equal(trackRecords(dir, {}, NOW).corrupt, 0); assert.equal(lines(dir, 'outcomes.jsonl').length, 11);
+});
+await ok('after a deletion a new chain may start again; after retention drops the head of a chain the rest stays valid', () => {
+  const dir = fresh(); seed(dir, 1, [['worked']]); deleteOutcome(dir, uid(1), NOW); reportOutcome(dir, { use_id: uid(1), result: 'failed' }, NOW); assert.equal(trackRecords(dir, {}, NOW).corrupt, 0);
+  const d2 = fresh(); registerUse(d2, mkUse(1, {}, NOW - 80 * DAY)); reportOutcome(d2, { use_id: uid(1), result: 'worked' }, NOW - 79 * DAY); reportOutcome(d2, { use_id: uid(1), result: 'failed' }, NOW - 1 * DAY);
+  compact(d2, NOW + 300 * DAY); // the use is 380 days old: everything goes, nothing is flagged
+  assert.equal(trackRecords(d2, {}, NOW + 300 * DAY).corrupt, 0);
+});
+
+// hosted
+await ok('the switch refuses to run with hosted skills: --hosted-skills, E3D_SKILLS_HOSTED=1, and the module itself', () => {
+  const dir = fresh(); const env = { E3D_CALIBRATION_DIR: dir };
+  let r = cli(['--my-calibration'], { ...env, E3D_SKILLS_HOSTED: '1' }); assert.equal(r.rc, 1); assert.match(r.err, /cannot be used with hosted skills/); assert.equal(existsSync(dir), false);
+  r = cli(['--my-calibration', '--hosted-skills', join(T, 'nothing.json')], env); assert.equal(r.rc, 1); assert.match(r.err, /cannot be used with hosted skills/);
+  r = cli(['q?', '--hosted-skills', join(T, 'nothing.json')], env); assert.equal(r.rc, 1); assert.match(r.err, /cannot be used with hosted skills/);
+  const direct = (e) => spawnSync(process.execPath, [join(ROOT, 'lib/calibration/cli.mjs'), 'mine'], { env: { PATH: process.env.PATH, E3D_CALIBRATION_DIR: dir, ...e }, encoding: 'utf8' });
+  r = direct({ E3D_CALIBRATION_V1: '1', E3D_SKILLS_HOSTED: '1' }); assert.equal(r.status, 1); assert.match(r.stderr, /not used by hosted runs/);
+  r = direct({}); assert.equal(r.status, 1); assert.match(r.stderr, /calibration is off/); // the module is not a way around the switch
+  r = direct({ E3D_CALIBRATION_V1: '0' }); assert.equal(r.status, 1);
+  assert.equal(direct({ E3D_CALIBRATION_V1: '1' }).status, 0);
+});
+
+// receipts
+await ok('register-uses: the use is issued at the receipt time; an old, future, undated or malformed receipt is refused; run_ref ties the uses of one receipt together', () => {
+  const dir = fresh(); const env = { E3D_CALIBRATION_DIR: dir, E3D_CALIBRATION_V1: '1' };
+  const entry = (i) => ({ seat: `s${i}`, use_id: `use_${String(i).padStart(8, '0')}`, id: 'skill.e3d.skeptic', version: '2.0.0', definition_hash: HASH });
+  const log = join(T, 'rcpt.json');
+  const run = (body, e = {}) => { writeFileSync(log, typeof body === 'string' ? body : JSON.stringify(body)); return spawnSync(process.execPath, [join(ROOT, 'lib/calibration/cli.mjs'), 'register-uses', '--', log], { env: { PATH: process.env.PATH, ...env, ...e }, encoding: 'utf8' }); };
+  const ts = isoS(Date.now() - 10 * DAY);
+  let r = run({ ts, skills: [entry(1), entry(2)] }); assert.equal(r.status, 0, r.stderr);
+  const us = lines(dir, 'uses.jsonl').map((l) => JSON.parse(l)); assert.equal(us[0].issued_at, ts); assert.equal(us[0].expires_at, isoS(Date.parse(ts) + 90 * DAY));
+  assert.match(us[0].run_ref, /^skr_[0-9a-f]{24}$/); assert.equal(us[0].run_ref, us[1].run_ref); // the co-active set of one receipt is recoverable
+  assert.equal(us[0].run_ref, `skr_${createHash('sha256').update(readFileSync(log)).digest('hex').slice(0, 24)}`);
+  r = run({ ts, skills: [entry(1), entry(2)] }); assert.equal(r.status, 0); assert.equal(lines(dir, 'uses.jsonl').length, 2); // replaying the same receipt changes nothing
+  const other = run({ ts, skills: [entry(3)] }); assert.equal(other.status, 0); assert.notEqual(JSON.parse(lines(dir, 'uses.jsonl')[2]).run_ref, us[0].run_ref);
+  const d2 = fresh(); const e2 = { E3D_CALIBRATION_DIR: d2 };
+  r = run({ ts: isoS(Date.now() - 100 * DAY), skills: [entry(5)] }, e2); assert.equal(r.status, 1); assert.match(r.stderr, /skill_use_expired/);
+  r = run({ ts: isoS(Date.now() - 90 * DAY - 5000), skills: [entry(5)] }, e2); assert.equal(r.status, 1); // just past 90 days
+  r = run({ ts: isoS(Date.now() + 3 * DAY), skills: [entry(5)] }, e2); assert.equal(r.status, 1); assert.match(r.stderr, /future/);
+  r = run({ skills: [entry(5)] }, e2); assert.equal(r.status, 1); assert.match(r.stderr, /no valid ts/);
+  r = run({ ts: '2026-02-30T00:00:00Z', skills: [entry(5)] }, e2); assert.equal(r.status, 1);
+  assert.equal(existsSync(join(d2, 'uses.jsonl')), false);
+});
+await ok('a use_id with records or a deletion on file cannot be registered again once its use row is gone', () => {
+  const dir = fresh(); seed(dir, 2, [['worked']]);
+  writeFileSync(join(dir, 'uses.jsonl'), '', { mode: 0o600 }); // the use row is gone (the outcome is still on file)
+  assert.equal(codeOf(() => registerUse(dir, mkUse(1))), 'skill_outcome_conflict');
+  const d2 = fresh(); seed(d2, 1, [['worked']]); deleteOutcome(d2, uid(1), NOW); writeFileSync(join(d2, 'uses.jsonl'), '', { mode: 0o600 });
+  assert.equal(codeOf(() => registerUse(d2, mkUse(1))), 'skill_outcome_conflict'); // a tombstone on file counts too
+  assert.equal(registerUse(d2, mkUse(2)).status, 'recorded');
+});
+await ok('the docs warn that the MCP phase must not reuse the receipt path, and name the open risks', () => {
+  const doc = readFileSync(join(ROOT, 'docs/skills.md'), 'utf8');
+  assert.match(doc, /must not reuse this path/); assert.match(doc, /task class is a free slug/); assert.match(doc, /no export command/); assert.match(doc, /calibrationBlock/);
+});
+
+// wrappers, tombstones, duplicates, counting
+await ok('a wrapper with an extra key cannot carry free text past a rewrite: it is unreadable, not counted, and compact never writes it back', () => {
+  const dir = fresh(); seed(dir, 12, Array.from({ length: 10 }, () => ['worked']));
+  const d = JSON.parse(lines(dir, 'outcomes.jsonl')[0]).doc;
+  appendFileSync(join(dir, 'outcomes.jsonl'), `${JSON.stringify({ k: 'outcome', doc: { ...d, outcome_id: 'out_wrap0001', use_id: uid(11) }, note: 'FREE TEXT' })}\n`);
+  appendFileSync(join(dir, 'outcomes.jsonl'), `${JSON.stringify({ k: 'tombstone', use_id: uid(1), at: '2026-12-01T00:00:00Z', note: 'FREE TEXT' })}\n`); // not a valid tombstone: must not delete anything
+  appendFileSync(join(dir, 'outcomes.jsonl'), `${JSON.stringify({ k: 'tombstone', use_id: 'nope', at: '2026-12-01T00:00:00Z' })}\n${JSON.stringify({ k: 'tombstone', use_id: uid(1), at: 'yesterday' })}\n`);
+  const t = trackRecords(dir, {}, NOW); assert.equal(t.corrupt, 4); assert.equal(t.records[0].n_resolved, 10);
+  const c = compact(dir, NOW); assert.equal(c.unreadable_dropped, 4); assert.equal(c.outcomes_kept, 10);
+  assert.ok(!readFileSync(join(dir, 'outcomes.jsonl'), 'utf8').includes('FREE TEXT')); assert.equal(trackRecords(dir, {}, NOW).corrupt, 0);
+  assert.equal(readFileSync(join(dir, 'outcomes.jsonl'), 'utf8').split('\n').filter(Boolean).every((l) => JSON.stringify(Object.keys(JSON.parse(l)).sort()) === '["doc","k"]'), true);
+});
+await ok('compact and a read count the same lines, and duplicates (an outcome_id or a use_id repeated) are unreadable, dropped and reported', () => {
+  const dir = fresh(); seed(dir, 12, Array.from({ length: 10 }, () => ['worked']));
+  const first = lines(dir, 'outcomes.jsonl')[0]; const useLine = lines(dir, 'uses.jsonl')[0];
+  appendFileSync(join(dir, 'outcomes.jsonl'), `${first}\nnot json\n[1]\n`); // a repeated outcome_id, two unparseable lines
+  appendFileSync(join(dir, 'uses.jsonl'), `${useLine}\n{"use_id":1}\n`); // a repeated use line and a use that fails its schema
+  const before = trackRecords(dir, {}, NOW); assert.equal(before.corrupt, 5);
+  const c = compact(dir, NOW); assert.equal(c.unreadable_dropped, before.corrupt); assert.equal(c.duplicates_dropped, 2);
+  assert.equal(c.uses_dropped, 0); assert.equal(c.outcomes_dropped, 0); assert.equal(lines(dir, 'outcomes.jsonl').length, 10); assert.equal(lines(dir, 'uses.jsonl').length, 12);
+  assert.equal(trackRecords(dir, {}, NOW).corrupt, 0); assert.match(cli(['--compact-calibration'], { E3D_CALIBRATION_DIR: dir }).out, /dropped 0 uses, 0 outcomes and 0 unreadable lines\n$/);
+  appendFileSync(join(dir, 'uses.jsonl'), `${useLine}\n`); assert.match(cli(['--compact-calibration'], { E3D_CALIBRATION_DIR: dir }).out, /1 unreadable lines \(1 of them repeated an id\)/);
+});
+
+// nits
+await ok('a hard-linked data file is refused', () => {
+  const dir = fresh(); seed(dir, 2, [['worked']]); linkSync(join(dir, 'outcomes.jsonl'), join(T, `hl${seq}`));
+  assert.equal(codeOf(() => trackRecords(dir, {}, NOW)), 'skill_scope_denied'); assert.equal(codeOf(() => reportOutcome(dir, { use_id: uid(2), result: 'worked' }, NOW)), 'skill_scope_denied');
+});
+await ok('impossible dates and outcomes from the future are refused on write and counted as unreadable on read', () => {
+  const dir = fresh(); registerUse(dir, mkUse(1));
+  for (const t of ['2026-02-30T00:00:00Z', '2026-12-01T24:00:00Z', '2026-13-01T00:00:00Z', '2026-12-01T10:60:00Z']) assert.equal(codeOf(() => appendOutcome(dir, goodOutcome({ reported_at: t }), NOW)), 'skill_outcome_invalid', t);
+  for (const t of ['2026-02-30T00:00:00Z', '2026-12-01T24:00:00Z']) assert.equal(codeOf(() => registerUse(dir, { ...mkUse(2), issued_at: t })), 'skill_schema_invalid', t);
+  assert.equal(codeOf(() => appendOutcome(dir, goodOutcome({ reported_at: isoS(NOW + 2 * DAY) }), NOW)), 'skill_outcome_invalid'); // two days ahead
+  assert.equal(appendOutcome(dir, goodOutcome({ reported_at: isoS(NOW + DAY - 1000) }), NOW).status, 'recorded'); // inside the one-day skew
+  const d2 = fresh(); registerUse(d2, mkUse(1)); appendFileSync(join(d2, 'outcomes.jsonl'), `${JSON.stringify({ k: 'outcome', doc: goodOutcome({ reported_at: '2026-02-30T00:00:00Z' }) })}\n`, { mode: 0o600 });
+  assert.equal(trackRecords(d2, {}, NOW).corrupt, 1);
+  assert.equal(codeOf(() => registerUse(fresh(), { ...mkUse(3), run_ref: 'skr_abc' })), 'skill_schema_invalid'); // a run_ref must match its pattern
+});
+await ok('compact removes the leftovers of a crashed compaction and leaves other files alone', () => {
+  const dir = fresh(); seed(dir, 1); writeFileSync(join(dir, '.uses.jsonl.0123abcd.tmp'), 'x', { mode: 0o600 }); writeFileSync(join(dir, '.outcomes.jsonl.ffff00.tmp'), 'x', { mode: 0o600 }); writeFileSync(join(dir, 'keep.txt'), 'x');
+  compact(dir, NOW); assert.deepEqual(readdirSync(dir).sort(), ['keep.txt', 'uses.jsonl']);
 });
 
 // ---------------------------------------------------------------- wording (ADR-0021): every user-visible string and every doc the work adds

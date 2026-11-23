@@ -168,8 +168,8 @@ A stated expectation made before the result is known, needed for calibration in 
     "count": 12,
     "rate": 0.7059,
     "interval95": [
-      0.4689,
-      0.8715
+      0.4687,
+      0.8672
     ],
     "method": "wilson"
   },
@@ -184,6 +184,8 @@ A stated expectation made before the result is known, needed for calibration in 
   "computed_at": "2026-12-01T00:00:00Z"
 }
 ```
+
+`resolution_rate` is `n_resolved / n_uses`, the share of uses marked worked or failed; a use marked `unknown` has an outcome on file but is not resolved, so the human line also prints how many were marked `unknown` or `inferred`. The interval is the Wilson score interval, computed from `success.count` and `n_resolved` (for 12 of 17: 0.4687 to 0.8672; an earlier draft of this example showed 0.4689 to 0.8715, which was wrong).
 
 `scope` is `principal` only in v1: a pooled scope is not representable, which encodes the owner decision that pooling is not approved. `reminded_share` is the share of uses made with the reminder on. `status` is `insufficient_evidence` below the minimum (10 resolved uses; the record then carries no rate, baseline or calibration, or `skill_record_insufficient`), `descriptive` above it, and `calibrated` only when predictions exist and the reliability bins meet the minimum. The `baseline` is shown only when the same principal has resolved uses without the skill on the same task class; it is always labelled observational. `calibration` (when present) holds reliability bins and a proper scoring rule (Brier), never a single "accuracy" number.
 
@@ -260,7 +262,7 @@ Jev (`docs/jev-council.md`) is a consumer: its thresholds are recalibrated again
 
 ## 9. Evaluation and data gates
 
-Claims follow `docs/skills/phase1/evaluation-freeze.md`: no "improves", "best", "accurate" or "verified" without the definition and sample basis. Allowed words: "track record", "calibration", "recorded outcomes", "resolved uses", "how it went"; the hosted decision-record wording ban (no memory, learning, truth, audit, governance, knowledge base, or better outcomes) applies to all calibration copy and shares its copy test. Allowed language: "In your 17 resolved uses of this skill on architecture reviews, 12 were marked worked (95% interval 47% to 87%); 41% of uses had a recorded outcome." The track record is a description of what was recorded, not a claim about the skill.
+Claims follow `docs/skills/phase1/evaluation-freeze.md`: no "improves", "best", "accurate" or "verified" without the definition and sample basis. Allowed words: "track record", "calibration", "recorded outcomes", "resolved uses", "how it went"; the hosted decision-record wording ban (no memory, learning, truth, audit, governance, knowledge base, or better outcomes) applies to all calibration copy and shares its copy test. Allowed language: "In your 17 resolved uses of this skill on architecture reviews, 12 were marked worked (approximate 95% interval 46% to 87%); 41% of uses were marked worked or failed." The track record is a description of what was recorded, not a claim about the skill.
 
 **Data gates (owner-approved 2026-11-23; revisable only by an ADR):**
 

@@ -8,7 +8,7 @@ The hosted decision-record spec bans "memory, learning, truth, audit or audit tr
 
 ## Decision
 
-1. The same ban applies to all calibration copy and shares its copy test. 2. Allowed words: "track record", "calibration", "recorded outcomes", "resolved uses", "how it went". 3. The skills claim language still applies: no "improves", "best", "accurate" or "verified" without the definition and sample basis. 4. Example of an allowed sentence: "In your 17 resolved uses of this skill on architecture reviews, 12 were marked worked (95% interval 47% to 87%); 41% of uses had a recorded outcome."
+1. The same ban applies to all calibration copy and shares its copy test. 2. Allowed words: "track record", "calibration", "recorded outcomes", "resolved uses", "how it went". 3. The skills claim language still applies: no "improves", "best", "accurate" or "verified" without the definition and sample basis. 4. Example of an allowed sentence: "In your 17 resolved uses of this skill on architecture reviews, 12 were marked worked (approximate 95% interval 46% to 87%); 41% of uses were marked worked or failed."
 
 ## Consequences
 
