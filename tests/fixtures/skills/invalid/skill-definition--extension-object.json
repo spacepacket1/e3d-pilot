@@ -1,0 +1,94 @@
+{
+  "schema_version": "e3d.skill/v1",
+  "id": "skill.user_01hxyz.behavioral-intelligence",
+  "version": "1.0.0",
+  "name": "Behavioral Intelligence",
+  "description": "Evaluates interaction and workflow patterns using cited observations.",
+  "owner_ref": "user_01hxyz",
+  "visibility": "private",
+  "status": "draft",
+  "capability_level": "learning",
+  "license": "CC-BY-4.0",
+  "tags": [
+    "behavior",
+    "evaluation",
+    "workflow"
+  ],
+  "tasks": [
+    "chat-review",
+    "debate-observer",
+    "outcome-evaluation"
+  ],
+  "hooks": [
+    {
+      "scope": "debate_observer",
+      "event": "after_synthesis"
+    },
+    {
+      "scope": "evaluation",
+      "event": "after_outcome"
+    }
+  ],
+  "instructions": {
+    "method": "Separate observation, hypothesis, and verified outcome. Cite event ids.",
+    "constraints": [
+      "Do not infer protected or sensitive traits.",
+      "Do not describe a pattern as stable without minimum evidence."
+    ]
+  },
+  "input_schema_ref": "e3d://schemas/behavior-input/v1",
+  "output_schema_ref": "e3d://schemas/behavior-report/v1",
+  "requested_capabilities": [
+    {
+      "capability": "brain.read",
+      "purpose": "Retrieve permissioned prior outcome summaries.",
+      "resource_classes": [
+        "outcome_summary",
+        "user_correction"
+      ]
+    },
+    {
+      "capability": "evaluation.emit",
+      "purpose": "Record a scoped hypothesis or evaluation."
+    }
+  ],
+  "memory_policy": {
+    "read": "explicit",
+    "write": "propose_only",
+    "max_items": 20,
+    "allowed_scopes": [
+      "current_user",
+      "current_project"
+    ]
+  },
+  "limits": {
+    "max_input_bytes": 64000,
+    "max_output_bytes": 16000,
+    "max_model_calls": 1,
+    "max_tool_calls": 3,
+    "timeout_ms": 60000
+  },
+  "fallback": {
+    "on_unavailable_capability": "skip_with_notice",
+    "on_invalid_output": "return_unstructured_with_warning"
+  },
+  "tests": {
+    "suite_refs": [
+      "fixture://behavioral-intelligence/v1"
+    ]
+  },
+  "provenance": {
+    "parent": null,
+    "forked_from": null,
+    "source_format": "e3d-native",
+    "created_by": "user_01hxyz",
+    "created_at": "2026-11-22T00:00:00Z"
+  },
+  "definition_hash": "sha256:7a1ff32c2dad1137f78307521c5aa72ffcb4598f0c862a8346cc9a62761699fb",
+  "signature": null,
+  "extensions": {
+    "e3d.note": {
+      "nested": "x"
+    }
+  }
+}

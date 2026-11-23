@@ -1,0 +1,32 @@
+{
+  "schema_version": "e3d.learning-proposal/v1",
+  "proposal_id": "lpr_01abcd",
+  "target": {
+    "type": "skill",
+    "id": "skill.user_01hxyz.skeptic",
+    "base_version": "2.1.0",
+    "base_hash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+  },
+  "diff": {
+    "format": "unified",
+    "content": "--- a/method\n+++ b/method\n@@\n-Do not hedge.\n+Do not hedge; state your confidence.\n"
+  },
+  "supporting_evaluation_ids": [
+    "evl_01abcd"
+  ],
+  "affected_task_classes": [
+    "planted_errors"
+  ],
+  "expected_benefit": "Fewer vague answers.",
+  "rollback": "Re-activate version 2.1.0; the proposal creates a new version only.",
+  "author": {
+    "type": "job",
+    "ref": "learning-job-1"
+  },
+  "approval": {
+    "state": "proposed",
+    "reviewer": null,
+    "decided_at": null
+  },
+  "created_at": "2026-11-22T00:00:00Z"
+}

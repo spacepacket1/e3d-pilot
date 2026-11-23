@@ -1,0 +1,41 @@
+{
+  "schema_version": "e3d.track-record/v1",
+  "subject": {
+    "id": "skill.e3d.skeptic",
+    "version": "2.0.0",
+    "hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "stratum": {
+    "task_class": "architecture-review",
+    "mode": "host_chat",
+    "model_family": "anthropic"
+  },
+  "scope": "principal",
+  "n_uses": 41,
+  "n_resolved": 17,
+  "resolution_rate": 0.4146,
+  "reminded_share": 0.25,
+  "by_tier": {
+    "verified": 2,
+    "user_marked": 11,
+    "host_reported": 9
+  },
+  "success": {
+    "count": 12,
+    "rate": 0.7059,
+    "interval95": [
+      0.4689,
+      0.8715
+    ],
+    "method": "wilson"
+  },
+  "baseline": {
+    "n_resolved": 9,
+    "success_rate": 0.5556,
+    "basis": "same principal, same task class, uses without this skill",
+    "label": "observational"
+  },
+  "calibration": null,
+  "status": "descriptive",
+  "computed_at": "2026-12-01T00:00:00Z"
+}

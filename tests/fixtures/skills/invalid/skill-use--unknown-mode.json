@@ -1,0 +1,21 @@
+{
+  "schema_version": "e3d.skill-use/v1",
+  "use_id": "use_01abcd",
+  "skill": {
+    "id": "skill.e3d.skeptic",
+    "version": "2.0.0",
+    "hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "mode": "autopilot",
+  "host": {
+    "family": "claude-code",
+    "model_family": "anthropic"
+  },
+  "task_class": "architecture-review",
+  "task_class_source": "declared",
+  "principal_ref": "user_01hxyz",
+  "reminder_enabled": false,
+  "run_ref": null,
+  "issued_at": "2026-11-23T00:00:00Z",
+  "expires_at": "2027-02-21T00:00:00Z"
+}

@@ -1,0 +1,73 @@
+{
+  "schema_version": "e3d.skill/v1",
+  "id": "skill.e3d.skeptic",
+  "version": "1.0.0",
+  "name": "skeptic",
+  "description": "Finds the strongest reason a plan should not be done. Use for risk review, spec review and finding gaps.",
+  "owner_ref": "e3d",
+  "visibility": "public",
+  "status": "active",
+  "capability_level": "instructional",
+  "license": "MIT",
+  "tags": [
+    "risk",
+    "review",
+    "decision"
+  ],
+  "tasks": [
+    "decide",
+    "review-spec",
+    "find-gaps"
+  ],
+  "hooks": [
+    {
+      "scope": "debate_seat",
+      "event": "seat_prompt"
+    }
+  ],
+  "instructions": {
+    "method": "Your job is to find the strongest reason this should NOT be done. Name the specific failure, who is hurt, and the evidence that would show you are wrong. You may not praise. Do not hedge.",
+    "constraints": [
+      "Drop any point you cannot name the evidence for."
+    ]
+  },
+  "input_schema_ref": "e3d://schemas/seat-input/v1",
+  "output_schema_ref": "e3d://schemas/seat-output/v1",
+  "requested_capabilities": [],
+  "memory_policy": {
+    "read": "none",
+    "write": "none",
+    "max_items": 0,
+    "allowed_scopes": []
+  },
+  "limits": {
+    "max_input_bytes": 64000,
+    "max_output_bytes": 16000,
+    "max_model_calls": 0,
+    "max_tool_calls": 0,
+    "timeout_ms": 60000
+  },
+  "model_hints": [
+    {
+      "provider": "grok-build",
+      "effort": "high"
+    },
+    {
+      "provider": "claude"
+    }
+  ],
+  "fallback": {
+    "on_unavailable_capability": "fail",
+    "on_invalid_output": "return_unstructured_with_warning"
+  },
+  "provenance": {
+    "parent": null,
+    "forked_from": null,
+    "source_format": "expert-v1-projection",
+    "legacy_folder_hash": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "created_by": "e3d",
+    "created_at": "2026-11-22T00:00:00Z"
+  },
+  "definition_hash": "sha256:53590aa728ce5a3430bc04d77c4bc09b8cb7dd27913f864697970bd9926b8887",
+  "signature": null
+}

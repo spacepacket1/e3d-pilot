@@ -1,0 +1,185 @@
+{
+  "note": "Built-in expert identity as of the skills Phase 1 grounding. A change here is a deliberate, reviewed change of expert meaning (the content hash is what hosted pins and receipts name).",
+  "experts": [
+    {
+      "name": "agent-diagnosis",
+      "version": "1",
+      "hash": "sha256:4f5f29a1796b690f8d3fb634fd446753f257161d0d797f263cfd7913fe13d4da",
+      "license": "MIT",
+      "tools": "none",
+      "tasks": [
+        "find-gaps"
+      ],
+      "models": [],
+      "lens_block_bytes": 616
+    },
+    {
+      "name": "architect",
+      "version": "1",
+      "hash": "sha256:190d62538003ad177c1e7f5e6bc3cbf097035ebef6acfca951cfc43c566ddba2",
+      "license": "MIT",
+      "tools": "none",
+      "tasks": [
+        "review-spec",
+        "decide"
+      ],
+      "models": [],
+      "lens_block_bytes": 391
+    },
+    {
+      "name": "compliance",
+      "version": "1",
+      "hash": "sha256:e312b9c206e9b0034d0c855990be8c14efbde7542d1cc84efab82b04d4cb7feb",
+      "license": "MIT",
+      "tools": "none",
+      "tasks": [
+        "review-spec"
+      ],
+      "models": [],
+      "lens_block_bytes": 445
+    },
+    {
+      "name": "customer",
+      "version": "1",
+      "hash": "sha256:53ed1613a7c0082fcb2dbaa5ba9f8d44eee76affcc2b3b2f124e7e4f56ea35b7",
+      "license": "MIT",
+      "tools": "none",
+      "tasks": [
+        "decide",
+        "review-spec"
+      ],
+      "models": [],
+      "lens_block_bytes": 451
+    },
+    {
+      "name": "facilitator",
+      "version": "1",
+      "hash": "sha256:7ef075b50cb2223bcd81303faa09b4e53cbc3777a4543c3b7f00921e1869d38c",
+      "license": "MIT",
+      "tools": "none",
+      "tasks": [
+        "find-gaps",
+        "decide"
+      ],
+      "models": [],
+      "lens_block_bytes": 427
+    },
+    {
+      "name": "factchecker",
+      "version": "2",
+      "hash": "sha256:70e73c0e4650417cc2463d79ee6d5bb98de9cb4b1fc730765a683b8c0dfa3b97",
+      "license": "MIT",
+      "tools": "none",
+      "tasks": [
+        "find-gaps",
+        "review-spec"
+      ],
+      "models": [],
+      "lens_block_bytes": 521
+    },
+    {
+      "name": "implementer",
+      "version": "1",
+      "hash": "sha256:0981bc9abb2271ffd75c585509ffc768f876a7652619e5f3eef917f2ded72c71",
+      "license": "MIT",
+      "tools": "none",
+      "tasks": [
+        "review-spec",
+        "find-gaps"
+      ],
+      "models": [
+        {
+          "provider": "codex"
+        }
+      ],
+      "lens_block_bytes": 419
+    },
+    {
+      "name": "macro-market-analyst",
+      "version": "1",
+      "hash": "sha256:fe5508e7672d3d630a8e3b1a8fa67fe615af0921945397a62809924608e2c9aa",
+      "license": "MIT",
+      "tools": "none",
+      "tasks": [
+        "forecast",
+        "decide",
+        "find-gaps"
+      ],
+      "models": [],
+      "lens_block_bytes": 635
+    },
+    {
+      "name": "premortem",
+      "version": "1",
+      "hash": "sha256:6c9b1cf7d45a67e9cab225cd6611d79c3d7e10e89d1135b52feb92f747152f9f",
+      "license": "MIT",
+      "tools": "none",
+      "tasks": [
+        "decide",
+        "find-gaps"
+      ],
+      "models": [],
+      "lens_block_bytes": 371
+    },
+    {
+      "name": "skeptic",
+      "version": "1",
+      "hash": "sha256:e0d2f4a4052443a4942f62c5963742f22cabd5c8e57833e8ea91705b64990b11",
+      "license": "MIT",
+      "tools": "none",
+      "tasks": [
+        "decide",
+        "review-spec",
+        "find-gaps"
+      ],
+      "models": [
+        {
+          "provider": "grok-build",
+          "effort": "high"
+        },
+        {
+          "provider": "claude"
+        }
+      ],
+      "lens_block_bytes": 455
+    }
+  ],
+  "presets": {
+    "risk-review": {
+      "min_seats": 3,
+      "experts": [
+        "skeptic",
+        "premortem",
+        "compliance",
+        "implementer"
+      ]
+    },
+    "spec-review": {
+      "min_seats": 3,
+      "experts": [
+        "implementer",
+        "architect",
+        "skeptic",
+        "customer"
+      ]
+    },
+    "gap-finding": {
+      "min_seats": 3,
+      "experts": [
+        "facilitator",
+        "customer",
+        "architect",
+        "factchecker"
+      ]
+    },
+    "market-commentary": {
+      "min_seats": 3,
+      "experts": [
+        "macro-market-analyst",
+        "factchecker",
+        "skeptic",
+        "customer"
+      ]
+    }
+  }
+}

@@ -143,13 +143,14 @@ echo "ok - per token: a dropped seat has its failed attempts counted and no late
 # ---- 8. per token synthesis: own retry merges; fallback reports ONE synth row (the call that wrote the verdict)
 rc=0; dbt "$TMP/p3" claude-ntsynth1 gpt-ok gem-ok "${PT[@]}" -- --rounds 1 "Which?" || rc=$?
 assert_eq "$rc" 0
-assert_eq "$(jq -c '.[] | select(.key == "synth") | [.provider, .input_tokens, .output_tokens]' "$TMP/p3/usage.json")" '["anthropic-api",40,329]' "p3: synthesis retry merged into the one synth row (321 + 8 out)"
+# the synthesis limit is the quoted 321 plus SUMMARY_SYNTH_EXTRA_TOKENS (500, the "## Each model" lines, lib/debate/case.mjs); the failed first attempt spends all of it, the retry 8
+assert_eq "$(jq -c '.[] | select(.key == "synth") | [.provider, .input_tokens, .output_tokens]' "$TMP/p3/usage.json")" '["anthropic-api",40,829]' "p3: synthesis retry merged into the one synth row (321 + 500 summary + 8 out)"
 rc=0; dbt "$TMP/p4" claude-ntsynth gpt-ok gem-ok "${PT[@]}" -- --rounds 1 "Which?" || rc=$?
 assert_eq "$rc" 0
 assert_eq "$(jq -c '[.[] | select(.key == "synth")] | length' "$TMP/p4/usage.json")" 1 "p4: exactly one synth row (billing refuses a repeated key)"
 assert_eq "$(jq -c '.[] | select(.key == "synth") | [.provider, .input_tokens, .output_tokens]' "$TMP/p4/usage.json")" '["openai-api",20,8]' "p4: the row is the fallback call"
-assert_eq "$(jq -c '[.[] | [.key, .provider, .input_tokens, .output_tokens]]' "$TMP/p4/usage-unreported.json")" '[["synth-failed:anthropic-api","anthropic-api",40,642]]' "p4: the failed synthesizer attempts are kept for the operator, not sent as a row"
-assert_eq "$(jq -c 'select(.kind == "synth" and .url == "/v1/chat/completions") | .max_tokens' "$VREQ" | tr '\n' ' ')" "456 " "p4: the fallback sends its own quoted limit"
+assert_eq "$(jq -c '[.[] | [.key, .provider, .input_tokens, .output_tokens]]' "$TMP/p4/usage-unreported.json")" '[["synth-failed:anthropic-api","anthropic-api",40,1642]]' "p4: the failed synthesizer attempts are kept for the operator, not sent as a row (two attempts at 821 = 321 + 500 summary)"
+assert_eq "$(jq -c 'select(.kind == "synth" and .url == "/v1/chat/completions") | .max_tokens' "$VREQ" | tr '\n' ' ')" "956 " "p4: the fallback sends its own quoted limit plus the summary allowance (456 + 500)"
 echo "ok - per token synthesis: retry merges into one row; a fallback reports one synth row at its own provider, the failed attempts go to usage-unreported.json"
 
 # ---- 9. per token: xai-api (uncapped reasoning) is never a synthesis fallback; without per token it may be

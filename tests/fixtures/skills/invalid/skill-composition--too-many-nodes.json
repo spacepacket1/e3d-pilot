@@ -1,0 +1,65 @@
+{
+  "schema_version": "e3d.skill-composition/v1",
+  "id": "composition.user_01hxyz.architecture-review",
+  "version": "1.0.0",
+  "nodes": [
+    {
+      "node_id": "systems",
+      "skill": {
+        "id": "skill.e3d.systems-thinking",
+        "version": "1.0.0",
+        "hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    {
+      "node_id": "security",
+      "skill": {
+        "id": "skill.e3d.security-review",
+        "version": "1.0.0",
+        "hash": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      }
+    },
+    {
+      "node_id": "premortem",
+      "skill": {
+        "id": "skill.e3d.premortem",
+        "version": "1.0.0",
+        "hash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      }
+    },
+    {
+      "node_id": "synthesis",
+      "skill": {
+        "id": "skill.e3d.decision-synthesis",
+        "version": "1.0.0",
+        "hash": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from": "systems.output",
+      "to": "synthesis.systems"
+    },
+    {
+      "from": "security.output",
+      "to": "synthesis.security"
+    },
+    {
+      "from": "premortem.output",
+      "to": "synthesis.premortem"
+    }
+  ],
+  "execution": {
+    "mode": "parallel_then_reduce",
+    "failure_policy": "continue_optional",
+    "max_parallel": 3
+  },
+  "limits": {
+    "max_nodes": 17,
+    "max_depth": 4,
+    "max_total_model_calls": 8,
+    "max_total_tool_calls": 12
+  },
+  "definition_hash": "sha256:a7c8774297fd8ffed166a85638e8a36c0fbb83bee8b22ab4f25afdf73ba205cf"
+}

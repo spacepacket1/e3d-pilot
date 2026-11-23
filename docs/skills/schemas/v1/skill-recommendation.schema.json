@@ -1,0 +1,143 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "skill-recommendation.schema.json",
+  "title": "SkillRecommendation v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "recommendation_id",
+    "skill",
+    "strategy",
+    "reason_codes",
+    "explanation",
+    "confidence",
+    "uncertainties",
+    "estimated_budget"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "e3d.skill-recommendation/v1",
+      "x-code": "skill_schema_version_unsupported"
+    },
+    "recommendation_id": {
+      "type": "string",
+      "pattern": "^rec_[0-9a-zA-Z]{4,40}$"
+    },
+    "skill": {
+      "$ref": "common.schema.json#/$defs/skillRef"
+    },
+    "strategy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "panel_size",
+        "expert_skills",
+        "observer_skills",
+        "tool_requests",
+        "stop_conditions"
+      ],
+      "properties": {
+        "mode": {
+          "enum": [
+            "direct",
+            "chat",
+            "debate",
+            "tools",
+            "research",
+            "ask_user",
+            "stop"
+          ]
+        },
+        "panel_size": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 6
+        },
+        "expert_skills": {
+          "type": "array",
+          "maxItems": 6,
+          "items": {
+            "type": "string",
+            "pattern": "^skill\\.[a-z0-9_]{2,40}\\.[a-z0-9-]+@[0-9]+\\.[0-9]+\\.[0-9]+$"
+          }
+        },
+        "observer_skills": {
+          "type": "array",
+          "maxItems": 4,
+          "items": {
+            "type": "string",
+            "pattern": "^skill\\.[a-z0-9_]{2,40}\\.[a-z0-9-]+@[0-9]+\\.[0-9]+\\.[0-9]+$"
+          }
+        },
+        "tool_requests": {
+          "type": "array",
+          "maxItems": 12,
+          "items": {
+            "$ref": "common.schema.json#/$defs/capability"
+          }
+        },
+        "stop_conditions": {
+          "type": "array",
+          "maxItems": 8,
+          "items": {
+            "enum": [
+              "consensus_full",
+              "budget_exhausted",
+              "user_stop",
+              "evidence_missing"
+            ]
+          }
+        }
+      }
+    },
+    "reason_codes": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 8,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[A-Z][A-Z0-9_]{2,40}$"
+      }
+    },
+    "explanation": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 600
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "uncertainties": {
+      "type": "array",
+      "maxItems": 8,
+      "items": {
+        "type": "string",
+        "maxLength": 300
+      }
+    },
+    "estimated_budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "credits_max",
+        "latency_ms_p95"
+      ],
+      "properties": {
+        "credits_max": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "latency_ms_p95": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "schema_version": "e3d.event/v1",
+  "event_id": "evt_01abcd",
+  "event_type": "skill.secret.read",
+  "occurred_at": "2026-11-22T00:00:00Z",
+  "principal_ref": "user_01abcd",
+  "tenant_ref": null,
+  "run_id": "skr_01abcd",
+  "parent_run_id": "dbt_01abcd",
+  "skill_ref": {
+    "id": "skill.e3d.behavioral-intelligence",
+    "version": "1.0.0",
+    "hash": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+  },
+  "context": {
+    "task_class": "security_review",
+    "risk": "high",
+    "audience": "private"
+  },
+  "metrics": {
+    "latency_ms": 1800,
+    "credits": 200,
+    "input_tokens": 1000,
+    "output_tokens": 400
+  },
+  "status": "completed",
+  "payload_ref": "art_01abcd",
+  "privacy": {
+    "class": "private",
+    "retention_policy": "user-default"
+  },
+  "trace": {
+    "trace_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "span_id": "bbbbbbbbbbbbbbbb"
+  }
+}

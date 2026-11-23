@@ -1,0 +1,208 @@
+{
+  "note": "tool names and their input property names, with every skills/experts flag unset and with E3D_MCP_EXPERTS=1 (clean environment)",
+  "default": {
+    "e3d_debate": [
+      "include_transcript",
+      "max_words",
+      "mode",
+      "providers",
+      "question",
+      "rounds",
+      "web_search"
+    ],
+    "e3d_list_providers": [],
+    "e3d_provenance_trace": [
+      "idea_id",
+      "repo"
+    ],
+    "e3d_ideas_list": [
+      "repo",
+      "status"
+    ],
+    "e3d_investigate": [
+      "answers",
+      "case_id",
+      "experts",
+      "include_transcript",
+      "max_words",
+      "mode",
+      "providers",
+      "question",
+      "rounds",
+      "web_search"
+    ],
+    "e3d_pilot_config_check": [
+      "repo"
+    ],
+    "e3d_pilot_job_status": [
+      "job_id",
+      "repo",
+      "run_id",
+      "tail_lines",
+      "wait_seconds"
+    ],
+    "e3d_pilot_artifact": [
+      "max_bytes",
+      "name",
+      "phase",
+      "repo",
+      "run_id"
+    ],
+    "e3d_pilot_propose": [
+      "category",
+      "rationale",
+      "repo",
+      "source",
+      "title"
+    ],
+    "e3d_pilot_start": [
+      "focus",
+      "repo",
+      "run_id",
+      "stage"
+    ],
+    "e3d_pilot_approve": [
+      "idea_id",
+      "note",
+      "repo"
+    ],
+    "e3d_pilot_reject": [
+      "confirm_phrase",
+      "idea_id",
+      "reason",
+      "repo"
+    ],
+    "e3d_pilot_request_changes": [
+      "confirm_phrase",
+      "idea_id",
+      "reason",
+      "repo"
+    ],
+    "e3d_pilot_implement": [
+      "idea_id",
+      "repo"
+    ],
+    "e3d_pilot_code_plan": [
+      "idea_id",
+      "repo",
+      "run_id"
+    ],
+    "e3d_pilot_execute": [
+      "idea_id",
+      "plan_token",
+      "repo"
+    ],
+    "e3d_pilot_cancel_paused": [
+      "idea_id",
+      "reason",
+      "repo"
+    ],
+    "e3d_usage": []
+  },
+  "experts_read": {
+    "e3d_debate": [
+      "include_transcript",
+      "max_words",
+      "mode",
+      "providers",
+      "question",
+      "rounds",
+      "web_search"
+    ],
+    "e3d_list_providers": [],
+    "e3d_provenance_trace": [
+      "idea_id",
+      "repo"
+    ],
+    "e3d_ideas_list": [
+      "repo",
+      "status"
+    ],
+    "e3d_investigate": [
+      "answers",
+      "case_id",
+      "experts",
+      "include_transcript",
+      "max_words",
+      "mode",
+      "providers",
+      "question",
+      "rounds",
+      "web_search"
+    ],
+    "e3d_pilot_config_check": [
+      "repo"
+    ],
+    "e3d_pilot_job_status": [
+      "job_id",
+      "repo",
+      "run_id",
+      "tail_lines",
+      "wait_seconds"
+    ],
+    "e3d_pilot_artifact": [
+      "max_bytes",
+      "name",
+      "phase",
+      "repo",
+      "run_id"
+    ],
+    "e3d_pilot_propose": [
+      "category",
+      "rationale",
+      "repo",
+      "source",
+      "title"
+    ],
+    "e3d_pilot_start": [
+      "focus",
+      "repo",
+      "run_id",
+      "stage"
+    ],
+    "e3d_pilot_approve": [
+      "idea_id",
+      "note",
+      "repo"
+    ],
+    "e3d_pilot_reject": [
+      "confirm_phrase",
+      "idea_id",
+      "reason",
+      "repo"
+    ],
+    "e3d_pilot_request_changes": [
+      "confirm_phrase",
+      "idea_id",
+      "reason",
+      "repo"
+    ],
+    "e3d_pilot_implement": [
+      "idea_id",
+      "repo"
+    ],
+    "e3d_pilot_code_plan": [
+      "idea_id",
+      "repo",
+      "run_id"
+    ],
+    "e3d_pilot_execute": [
+      "idea_id",
+      "plan_token",
+      "repo"
+    ],
+    "e3d_pilot_cancel_paused": [
+      "idea_id",
+      "reason",
+      "repo"
+    ],
+    "e3d_usage": [],
+    "e3d_list_experts": [
+      "query",
+      "task"
+    ],
+    "e3d_get_expert": [
+      "name"
+    ]
+  }
+}

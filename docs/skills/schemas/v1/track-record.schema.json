@@ -1,0 +1,275 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "track-record.schema.json",
+  "title": "TrackRecord v1 (calibration, derived)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "subject",
+    "stratum",
+    "scope",
+    "n_uses",
+    "n_resolved",
+    "resolution_rate",
+    "reminded_share",
+    "by_tier",
+    "success",
+    "baseline",
+    "calibration",
+    "status",
+    "computed_at"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "e3d.track-record/v1",
+      "x-code": "skill_schema_version_unsupported"
+    },
+    "subject": {
+      "$ref": "common.schema.json#/$defs/skillRef"
+    },
+    "stratum": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "task_class",
+        "mode",
+        "model_family"
+      ],
+      "properties": {
+        "task_class": {
+          "type": "string",
+          "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+          "minLength": 3,
+          "maxLength": 40
+        },
+        "mode": {
+          "enum": [
+            "host_chat",
+            "pilot_chat",
+            "debate_seat",
+            "observer"
+          ]
+        },
+        "model_family": {
+          "type": "string",
+          "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+          "minLength": 2,
+          "maxLength": 40
+        }
+      }
+    },
+    "scope": {
+      "enum": [
+        "principal"
+      ]
+    },
+    "n_uses": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 1000000
+    },
+    "n_resolved": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 1000000
+    },
+    "resolution_rate": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      ]
+    },
+    "reminded_share": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      ]
+    },
+    "by_tier": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "verified",
+        "user_marked",
+        "host_reported"
+      ],
+      "properties": {
+        "verified": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000000
+        },
+        "user_marked": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000000
+        },
+        "host_reported": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000000
+        }
+      }
+    },
+    "success": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "count",
+            "rate",
+            "interval95",
+            "method"
+          ],
+          "properties": {
+            "count": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1000000
+            },
+            "rate": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "interval95": {
+              "type": "array",
+              "minItems": 2,
+              "maxItems": 2,
+              "items": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              }
+            },
+            "method": {
+              "enum": [
+                "wilson"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "baseline": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "n_resolved",
+            "success_rate",
+            "basis",
+            "label"
+          ],
+          "properties": {
+            "n_resolved": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1000000
+            },
+            "success_rate": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "basis": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "label": {
+              "enum": [
+                "observational"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "calibration": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "bins",
+            "brier"
+          ],
+          "properties": {
+            "bins": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 20,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "stated_mid",
+                  "n",
+                  "realised"
+                ],
+                "properties": {
+                  "stated_mid": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 1
+                  },
+                  "n": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 1000000
+                  },
+                  "realised": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 1
+                  }
+                }
+              }
+            },
+            "brier": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            }
+          }
+        }
+      ]
+    },
+    "status": {
+      "enum": [
+        "insufficient_evidence",
+        "descriptive",
+        "calibrated"
+      ]
+    },
+    "computed_at": {
+      "$ref": "common.schema.json#/$defs/time"
+    }
+  }
+}

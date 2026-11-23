@@ -1,0 +1,22 @@
+{
+  "schema_version": "e3d.observation/v1",
+  "observation_id": "obs_01abcd",
+  "subject": {
+    "type": "workflow",
+    "id": "debate-review"
+  },
+  "claim": {
+    "type": "redundancy_hypothesis",
+    "statement": "Two seats repeated the same unsupported claim."
+  },
+  "status": "hypothesis",
+  "evidence_refs": [],
+  "counterevidence_refs": [],
+  "scope": "project:abc",
+  "sensitivity": "private",
+  "valid_from": "2026-11-22T00:00:00Z",
+  "expires_at": "2026-12-22T00:00:00Z",
+  "sample_size": 1,
+  "confidence": 0.42,
+  "created_by_run": "skr_01abcd"
+}

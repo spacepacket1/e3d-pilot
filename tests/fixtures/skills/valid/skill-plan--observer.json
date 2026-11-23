@@ -1,0 +1,53 @@
+{
+  "schema_version": "e3d.skill-plan/v1",
+  "plan_id": "spl_01abcd",
+  "principal": {
+    "user_id": "user_01abcd",
+    "tenant_id": null
+  },
+  "request_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+  "steps": [
+    {
+      "step_id": "step_1",
+      "attachment_id": "att_01abcd",
+      "skill": {
+        "id": "skill.e3d.behavioral-intelligence",
+        "version": "1.0.0",
+        "hash": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      },
+      "hook": "after_synthesis",
+      "grants": [
+        {
+          "schema_version": "e3d.skill-grant/v1",
+          "grant_id": "grant_01abcd",
+          "plan_id": "spl_01abcd",
+          "capability": "brain.read",
+          "scope": "project:abc",
+          "audience": "private",
+          "resource_classes": [
+            "outcome_summary"
+          ],
+          "max_items": 20,
+          "max_bytes": 64000,
+          "expires_at": "2026-11-22T00:10:00Z"
+        }
+      ],
+      "limits": {
+        "model_calls": 1,
+        "tool_calls": 3,
+        "credits_max": 500,
+        "timeout_ms": 60000
+      }
+    }
+  ],
+  "quote": {
+    "quote_id": "q_01abcd",
+    "credits_max": 500,
+    "expires_at": "2026-11-22T00:10:00Z"
+  },
+  "approval": {
+    "required": true,
+    "approved_at": null
+  },
+  "expires_at": "2026-11-22T00:10:00Z"
+}
