@@ -48,10 +48,19 @@
   "limits": {
     "max_input_bytes": 64000,
     "max_output_bytes": 16000,
-    "max_model_calls": 1,
+    "max_model_calls": 0,
     "max_tool_calls": 0,
     "timeout_ms": 60000
   },
+  "model_hints": [
+    {
+      "provider": "grok-build",
+      "effort": "high"
+    },
+    {
+      "provider": "claude"
+    }
+  ],
   "fallback": {
     "on_unavailable_capability": "fail",
     "on_invalid_output": "return_unstructured_with_warning"
@@ -64,6 +73,6 @@
     "created_by": "e3d",
     "created_at": "2026-11-22T00:00:00Z"
   },
-  "content_hash": "sha256:506f8b7dc7b188e31316ddfdcbccd6af0cc4090af7ba8b91a70aedc3e6d3a99a",
+  "definition_hash": "sha256:cf32451a9937b80921b1278444cd19dd1c392968374dbfca34e8ea6699f64f3e",
   "signature": null
 }

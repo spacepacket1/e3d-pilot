@@ -7,7 +7,7 @@
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { contentHash, compositionProblems } from './fixtures/skills/reference.mjs';
+import { definitionHash, compositionProblems } from './fixtures/skills/reference.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const SCHEMAS = join(ROOT, 'docs/skills/schemas/v1');
@@ -59,10 +59,10 @@ export function validate(value, schema, ctx, path = '$') {
   }
   if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
     const props = s.properties ?? {};
-    for (const k of s.required ?? []) if (!(k in value)) errs.push({ path: `${path}.${k}`, code: 'skill_schema_missing_field', message: 'required' });
+    for (const k of s.required ?? []) if (!Object.hasOwn(value, k)) errs.push({ path: `${path}.${k}`, code: 'skill_schema_missing_field', message: 'required' });
     if (s.maxProperties !== undefined && Object.keys(value).length > s.maxProperties) fail('skill_schema_limit', `more than ${s.maxProperties} properties`);
     for (const k of Object.keys(value)) {
-      if (k in props) errs.push(...validate(value[k], props[k], ctx, `${path}.${k}`));
+      if (Object.hasOwn(props, k)) errs.push(...validate(value[k], props[k], ctx, `${path}.${k}`));
       else if (s.additionalProperties === false) errs.push({ path: `${path}.${k}`, code: 'skill_schema_unknown_field', message: 'unknown field' });
       else if (s.additionalProperties && typeof s.additionalProperties === 'object') errs.push(...validate(value[k], s.additionalProperties, ctx, `${path}.${k}`));
     }
@@ -93,9 +93,10 @@ export function check(name, doc) {
 // Reference semantic checks, run only after the schema passes. Returns a code or null.
 const HOOK_TARGET = { chat: ['before_response', 'after_response'], debate_seat: ['seat_prompt'], debate_observer: ['after_round', 'after_synthesis'] };
 export function semantic(kind, schema, doc) {
-  if (kind === 'hash' && schema === 'skill-definition') return contentHash(doc) === doc.content_hash ? null : 'skill_hash_mismatch';
+  if (kind === 'hash' && schema === 'skill-definition') return definitionHash(doc) === doc.definition_hash ? null : 'skill_hash_mismatch';
   if (kind === 'level' && doc.capability_level === 'instructional') return doc.requested_capabilities.length || doc.limits.max_tool_calls ? 'skill_capability_denied' : null;
   if (kind === 'composition') return compositionProblems(doc);
+  if (kind === 'evaluation') return doc.uncertainty.ci_low > doc.uncertainty.ci_high || doc.uncertainty.level < 0.8 || (doc.quality_status !== 'unknown' && !doc.rubric.approved) ? 'skill_schema_value' : null;
   if (kind === 'attachment') return HOOK_TARGET[doc.target.type].includes(doc.hook) ? null : 'skill_conflict';
   return null;
 }
@@ -107,6 +108,19 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const bad = (m) => { failures++; console.error(`FAIL: ${m}`); };
   const read = (f) => JSON.parse(readFileSync(join(FX, f), 'utf8'));
 
+  // 0. static walk of every schema file: only supported keywords anywhere, and x-code only on leaf subschemas (it overrides every error below it)
+  const walkSchema = (node, where) => {
+    if (node === null || typeof node !== 'object') return;
+    if (Array.isArray(node)) { node.forEach((n, i) => walkSchema(n, `${where}[${i}]`)); return; }
+    for (const k of Object.keys(node)) {
+      if (!SUPPORTED.has(k)) { bad(`${where}: unsupported schema keyword ${k}`); continue; }
+      if (k === 'properties' || k === '$defs') for (const [pk, pv] of Object.entries(node[k])) walkSchema(pv, `${where}.${k}.${pk}`);
+      else if (k === 'items' || k === 'not' || k === 'additionalProperties' || k === 'anyOf') walkSchema(node[k], `${where}.${k}`);
+    }
+    if (node.$ref && Object.keys(node).some((k) => k !== '$ref')) bad(`${where}: $ref must not have sibling keywords (the harness ignores them)`);
+    if (node['x-code'] && (node.properties || node.items || node.anyOf)) bad(`${where}: x-code must be on a leaf schema`);
+  };
+  for (const f of ['common', 'skill-definition', 'skill-composition', 'skill-attachment', 'skill-recommendation', 'skill-plan', 'skill-grant', 'skill-run', 'observation', 'evaluation', 'learning-proposal', 'skill-error', 'event']) walkSchema(load(`${f}.schema.json`), f);
   // 1. every schema file loads and uses only supported keywords (validate throws on the first unsupported one while walking a fixture)
   for (const v of manifest.valid) {
     const doc = read(v.file);
@@ -115,6 +129,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     if (v.schema === 'skill-definition' && semantic('hash', v.schema, doc)) bad(`${v.file}: content_hash does not match the reference canonical hash`);
     if (v.schema === 'skill-definition' && semantic('level', v.schema, doc)) bad(`${v.file}: instructional skill requests capabilities`);
     if (v.schema === 'skill-composition' && semantic('composition', v.schema, doc)) bad(`${v.file}: composition graph invalid`);
+    if (v.schema === 'evaluation' && semantic('evaluation', v.schema, doc)) bad(`${v.file}: evaluation cross-field rule`);
     if (v.schema === 'skill-attachment' && semantic('attachment', v.schema, doc)) bad(`${v.file}: hook does not fit target`);
   }
   // 2. every invalid fixture fails with exactly the listed code

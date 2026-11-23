@@ -85,7 +85,6 @@
         "before_response",
         "after_response",
         "seat_prompt",
-        "after_round",
         "after_synthesis"
       ]
     },
@@ -126,6 +125,12 @@
     },
     "enabled": {
       "type": "boolean"
+    },
+    "on_failure": {
+      "enum": [
+        "fail",
+        "plain_seat"
+      ]
     }
   }
 }

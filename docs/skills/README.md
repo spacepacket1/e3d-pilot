@@ -9,7 +9,7 @@ Source: the "E3D Pilot User-Defined Skills: Implementation Specification" (v0.1,
 | Grounding report, gap table, contradictions, phase map | [phase1/grounding-report.md](phase1/grounding-report.md) |
 | 14 ADRs (all **Proposed**) | [phase1/adr/](phase1/adr/) |
 | 12 JSON Schemas, shared definitions, stable error codes | [schemas/v1/](schemas/v1/) |
-| Fixtures (13 valid, 37 invalid) and the harness | `tests/fixtures/skills/`, `tests/skills-schemas.{sh,mjs}` |
+| Fixtures (13 valid, 45 invalid) and the harness | `tests/fixtures/skills/`, `tests/skills-schemas.{sh,mjs}` |
 | Threat model, permission matrix, privacy inventory | [phase1/threat-model.md](phase1/threat-model.md) |
 | Evaluation freeze (**proposed, not frozen**) | [phase1/evaluation-freeze.md](phase1/evaluation-freeze.md) |
 | Compatibility baseline and its tests | [phase1/compat-baseline.md](phase1/compat-baseline.md), `tests/skills-compat.sh` |

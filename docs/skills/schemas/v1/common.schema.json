@@ -7,6 +7,16 @@
       "type": "string",
       "pattern": "^sha256:[0-9a-f]{64}$"
     },
+    "hashKind": {
+      "enum": [
+        "definition",
+        "legacy_folder"
+      ]
+    },
+    "text": {
+      "type": "string",
+      "pattern": "^[^\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F\\u007F\\u200B-\\u200F\\u202A-\\u202E\\u2060-\\u2064\\u2066-\\u2069\\uFEFF]*$"
+    },
     "skillId": {
       "type": "string",
       "pattern": "^skill\\.[a-z0-9_]{2,40}\\.[a-z0-9]+(-[a-z0-9]+)*$",

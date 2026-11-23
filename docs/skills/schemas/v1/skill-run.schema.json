@@ -10,6 +10,7 @@
     "parent_run_id",
     "skill",
     "skill_source",
+    "audience_ceiling",
     "scope",
     "hook",
     "status",
@@ -48,7 +49,8 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "tier"
+        "tier",
+        "verified_hash_kind"
       ],
       "properties": {
         "tier": {
@@ -59,10 +61,16 @@
             "hosted"
           ]
         },
+        "verified_hash_kind": {
+          "$ref": "common.schema.json#/$defs/hashKind"
+        },
         "legacy_folder_hash": {
           "$ref": "common.schema.json#/$defs/hash"
         }
       }
+    },
+    "audience_ceiling": {
+      "$ref": "common.schema.json#/$defs/audience"
     },
     "scope": {
       "enum": [
@@ -78,7 +86,6 @@
         "before_response",
         "after_response",
         "seat_prompt",
-        "after_round",
         "after_synthesis",
         "recommend_plan",
         "after_outcome"
@@ -164,6 +171,7 @@
               "skill_schema_duplicate",
               "skill_schema_version_unsupported",
               "skill_version_invalid",
+              "skill_withdrawn",
               "skill_hash_mismatch",
               "skill_not_found",
               "skill_scripts_not_allowed",

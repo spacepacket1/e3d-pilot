@@ -14,3 +14,8 @@ Phase 1 proves the schemas with a harness and a small reference checker (`tests/
 | Cross-tenant ids, cache-key collision, forbidden Brain scope | `skill_tenant_denied`, `skill_memory_error`, `skill_audience_denied` | Phase 5, 7 |
 | SSRF attempt, log injection, output smuggling | `skill_tool_error`, `skill_output_invalid` | Phase 5 |
 | Quota race, duplicate publish, moderation bypass, private evidence in a public result | `skill_moderation_blocked` | Phase 7, 8 |
+| Lens containing a line `e3d.expert.hash: ...` (two lenses, one folder hash; finding F-2) | folder hash must differ | Phase 2 |
+| Non-NFC text, lone surrogate, CRLF vs LF producing two byte forms of one hash | `skill_schema_format` / hash equality | Phase 2 |
+| File swapped between validate and read (read-once rule) | `skill_hash_mismatch` | Phase 2 |
+| Withdrawn version still resolvable | `skill_withdrawn` | Phase 3, 7 |
+| Edit without a version bump (`(id, version)` with a second hash) | `skill_version_invalid` | Phase 2 |

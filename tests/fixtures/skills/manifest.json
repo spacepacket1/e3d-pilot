@@ -61,6 +61,23 @@
       "code": "skill_schema_unknown_field"
     },
     {
+      "file": "invalid/skill-definition--prototype-key.json",
+      "schema": "skill-definition",
+      "code": "skill_schema_unknown_field"
+    },
+    {
+      "file": "invalid/evaluation--inverted-interval.json",
+      "schema": "evaluation",
+      "code": "skill_schema_value",
+      "semantic": "evaluation"
+    },
+    {
+      "file": "invalid/evaluation--status-without-approved-rubric.json",
+      "schema": "evaluation",
+      "code": "skill_schema_value",
+      "semantic": "evaluation"
+    },
+    {
       "file": "invalid/skill-definition--scripts.json",
       "schema": "skill-definition",
       "code": "skill_scripts_not_allowed"
@@ -106,6 +123,31 @@
       "code": "skill_schema_format"
     },
     {
+      "file": "invalid/skill-definition--after-round-hook.json",
+      "schema": "skill-definition",
+      "code": "skill_schema_value"
+    },
+    {
+      "file": "invalid/skill-definition--bidi-override.json",
+      "schema": "skill-definition",
+      "code": "skill_schema_format"
+    },
+    {
+      "file": "invalid/skill-definition--extension-object.json",
+      "schema": "skill-definition",
+      "code": "skill_schema_type"
+    },
+    {
+      "file": "invalid/skill-definition--signature-string.json",
+      "schema": "skill-definition",
+      "code": "skill_schema_type"
+    },
+    {
+      "file": "invalid/skill-plan--no-attachment.json",
+      "schema": "skill-plan",
+      "code": "skill_schema_missing_field"
+    },
+    {
       "file": "invalid/skill-definition--hash-mismatch.json",
       "schema": "skill-definition",
       "code": "skill_hash_mismatch",
@@ -132,7 +174,7 @@
     {
       "file": "invalid/skill-composition--unknown-node.json",
       "schema": "skill-composition",
-      "code": "skill_type_incompatible",
+      "code": "skill_conflict",
       "semantic": "composition"
     },
     {

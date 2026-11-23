@@ -47,10 +47,15 @@ Prompt blocks (spec 6.4, unchanged): 1 policy, 2 task contract, 3 skill instruct
 | T11 | Marketplace manipulation (fake reactions, sybil forks) | Gallery reactions are one per account per debate (audit) | Reactions never feed evaluation or permission; rate limits; reports and appeals reuse Gallery | 8 |
 | T12 | Behavioral surveillance | None | Private default; prohibited inference list; minimum evidence and expiry in schema (`observation`); export, correct, delete; no team ranking | 5, 6 |
 | T13 | Memory poisoning | Brain writes are proposals in an inbox; secrets scrubbed on write | Knowledge status and provenance on every item; bounded retrieval; corrections append | 5 |
-| T14 | Observer or synthesis skill erases dissent | The synthesis never receives a lens | Observer is read-only, separate block; test that positions, synthesis and dissent are byte-identical with and without an observer | 3 |
+| T14 | Observer or synthesis skill erases dissent | The synthesis never receives a lens | Observer is read-only, separate block, runs after the verdict is stored; test that positions, synthesis, dissent, quote and charge are identical with and without an observer | 3 |
 | T15 | Log/metric injection and PII in telemetry | Hosted usage events per ledger transition, best effort | Event schema has no free text content (`event--raw-prompt` fixture fails); aggregates only | 5 |
 | T16 | Public result references private evidence | n/a | Publish preview scans refs; destination-aware retrieval; negative tests | 8 |
 | T17 | Unattended runner risk when building this feature | `e3d-code` defaults to `bypassPermissions` | Phase 1 did not use the runner; later phases run it only in a dedicated worktree, never in a shared checkout | process |
+| T19 | **Hash-line stripping**: lens text hidden from the folder hash (finding F-2) | **Present.** `hashed()` strips `e3d.expert.hash:` lines anywhere in SKILL.md | Strip only in frontmatter; fixture; built-in hashes unchanged (pinned) | 2 |
+| T20 | Unicode and control characters hide what the model reads (bidi override, zero-width, homoglyph, non-NFC) | Folder validation checks NUL only | Schema pattern forbids them; NFC required; fixture `bidi-override`; homoglyph risk accepted and shown in preview | 2 |
+| T21 | TOCTOU between validate, hash and read | Separate filesystem passes | Read each file once, hash and use the same bytes | 2 |
+| T22 | Referent drift behind a hashed reference (schema refs, suite refs) | n/a | `e3d://schemas/*/vN` immutable and shipped in the repo; receipts record fixture versions | 2 |
+| T23 | Withdrawn or deprecated skill still runs; mutable name or description spoofs approval | n/a | Status checked live (`skill_withdrawn`); name and description are hashed; no router reads `tags` | 3, 7 |
 | T18 | Secrets in a skill (public) | none | Publish scanner for secrets, PII, local paths, private evidence refs | 8 |
 
 ## 4. Permission matrix (v1 capability vocabulary)

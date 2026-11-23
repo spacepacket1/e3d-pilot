@@ -9,6 +9,7 @@
   "steps": [
     {
       "step_id": "step_1",
+      "attachment_id": "att_01abcd",
       "skill": {
         "id": "skill.e3d.behavioral-intelligence",
         "version": "1.0.0",

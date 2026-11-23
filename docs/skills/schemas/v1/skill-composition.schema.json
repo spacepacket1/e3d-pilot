@@ -12,7 +12,7 @@
     "edges",
     "execution",
     "limits",
-    "content_hash"
+    "definition_hash"
   ],
   "properties": {
     "schema_version": {
@@ -44,6 +44,13 @@
           },
           "skill": {
             "$ref": "common.schema.json#/$defs/skillRef"
+          },
+          "optional": {
+            "type": "boolean"
+          },
+          "fallback_node": {
+            "type": "string",
+            "pattern": "^[a-z0-9_]{1,32}$"
           }
         }
       }
@@ -132,7 +139,7 @@
         }
       }
     },
-    "content_hash": {
+    "definition_hash": {
       "$ref": "common.schema.json#/$defs/hash"
     }
   }

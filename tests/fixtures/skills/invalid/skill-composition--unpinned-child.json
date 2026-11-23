@@ -60,5 +60,5 @@
     "max_total_model_calls": 8,
     "max_total_tool_calls": 12
   },
-  "content_hash": "sha256:a7c8774297fd8ffed166a85638e8a36c0fbb83bee8b22ab4f25afdf73ba205cf"
+  "definition_hash": "sha256:a7c8774297fd8ffed166a85638e8a36c0fbb83bee8b22ab4f25afdf73ba205cf"
 }

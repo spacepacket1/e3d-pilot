@@ -9,8 +9,10 @@
   },
   "skill_source": {
     "tier": "built-in",
+    "verified_hash_kind": "definition",
     "legacy_folder_hash": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
   },
+  "audience_ceiling": "private",
   "scope": "debate_observer",
   "hook": "after_synthesis",
   "status": "completed",

@@ -17,14 +17,17 @@ diff -u "$FX/expert-baseline.json" "$TMP/now.json" > "$TMP/d.txt" || { cat "$TMP
 [[ "$(jq '[.experts[] | select(.tools != "none")] | length' "$FX/expert-baseline.json")" == 0 ]] || fail "an expert has tools other than none"
 
 # 2. MCP tool surface (names only): the no-flag server and the experts-read server. No tool may mention skills before the skills phases ship.
-tools() { # tools <env...>
-  { printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}' '{"jsonrpc":"2.0","method":"notifications/initialized"}' '{"jsonrpc":"2.0","id":2,"method":"tools/list"}'; sleep 1; } \
-    | env "HOME=$TMP" "E3D_MCP_STATE_DIR=$TMP/state" TYPESAFE_API_KEY="" E3D_MCP_PRINCIPAL="" "$@" "$ROOT/bin/e3d-mcp" 2>/dev/null | jq -c 'select(.id==2) | [.result.tools[].name] | sort'
+tools() { # tools <env...>  -> {tool: [input property names]} with a clean environment (no ambient E3D_MCP_*, PILOT_* or key variables)
+  local out
+  out="$({ printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}' '{"jsonrpc":"2.0","method":"notifications/initialized"}' '{"jsonrpc":"2.0","id":2,"method":"tools/list"}'; sleep 2; } \
+    | env -i PATH="$PATH" HOME="$TMP" E3D_MCP_STATE_DIR="$TMP/state" "$@" "$ROOT/bin/e3d-mcp" 2>/dev/null | jq -c 'select(.id==2) | [.result.tools[] | {key: .name, value: ((.inputSchema.properties // {}) | keys)}] | from_entries')"
+  [[ -n "$out" ]] || fail "e3d-mcp gave no tools/list answer (is node on PATH? config: $*)"
+  printf '%s\n' "$out"
 }
-jq -n --argjson a "$(tools)" --argjson b "$(tools E3D_MCP_EXPERTS=1)" '{note: "tools/list names with every skills/experts flag unset, and with E3D_MCP_EXPERTS=1", default: $a, experts_read: $b}' > "$TMP/tools.json"
+jq -n --argjson a "$(tools)" --argjson b "$(tools E3D_MCP_EXPERTS=1)" '{note: "tool names and their input property names, with every skills/experts flag unset and with E3D_MCP_EXPERTS=1 (clean environment)", default: $a, experts_read: $b}' > "$TMP/tools.json"
 if [[ "${1:-}" == "--write-tools" ]]; then cp "$TMP/tools.json" "$FX/mcp-tools-baseline.json"; echo "wrote mcp-tools-baseline.json"; exit 0; fi
 diff -u "$FX/mcp-tools-baseline.json" "$TMP/tools.json" >&2 || fail "the MCP tool list changed"
-jq -e '[.default[], .experts_read[]] | map(select(test("skill"))) | length == 0' "$TMP/tools.json" >/dev/null || fail "a skill tool is listed before the skills phases ship"
-jq -e '.experts_read | index("e3d_list_experts") and index("e3d_get_expert")' "$TMP/tools.json" >/dev/null || fail "E3D_MCP_EXPERTS=1 must list the two expert tools"
-jq -e '.default | (index("e3d_list_experts") | not)' "$TMP/tools.json" >/dev/null || fail "experts tools must be off by default"
+jq -e '[(.default | keys[]), (.experts_read | keys[])] | map(select(test("skill"))) | length == 0' "$TMP/tools.json" >/dev/null || fail "a skill tool is listed before the skills phases ship"
+jq -e '.experts_read | has("e3d_list_experts") and has("e3d_get_expert")' "$TMP/tools.json" >/dev/null || fail "E3D_MCP_EXPERTS=1 must list the two expert tools"
+jq -e '.default | (has("e3d_list_experts") | not)' "$TMP/tools.json" >/dev/null || fail "experts tools must be off by default"
 echo "skills-compat: PASS"

@@ -84,6 +84,6 @@
     "created_by": "user_01hxyz",
     "created_at": "2026-11-22T00:00:00Z"
   },
-  "content_hash": "sha256:computed-over-canonical-executable-fields",
+  "definition_hash": "sha256:computed-over-canonical-executable-fields",
   "signature": null
 }

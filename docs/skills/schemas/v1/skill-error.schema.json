@@ -32,6 +32,7 @@
             "skill_schema_duplicate",
             "skill_schema_version_unsupported",
             "skill_version_invalid",
+            "skill_withdrawn",
             "skill_hash_mismatch",
             "skill_not_found",
             "skill_scripts_not_allowed",
@@ -72,7 +73,8 @@
               "integer",
               "boolean",
               "null"
-            ]
+            ],
+            "maxLength": 200
           }
         },
         "next_action": {

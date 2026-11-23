@@ -84,7 +84,7 @@
     "created_by": "user_01hxyz",
     "created_at": "2026-11-22T00:00:00Z"
   },
-  "content_hash": "sha256:e0dd6bdbf714f0f4d727e6e67d81e0fb77ceea039c4acae3bee7109573273b55",
+  "definition_hash": "sha256:7a1ff32c2dad1137f78307521c5aa72ffcb4598f0c862a8346cc9a62761699fb",
   "signature": null,
   "autorun": true
 }
