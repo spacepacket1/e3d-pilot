@@ -83,3 +83,24 @@ One read-only Sonnet reviewer attacked the planner changes, the digest, the bash
 | N8 (weak plain-seat and preview tests) | nit | Fixed: the plain seat's own prompt is checked, the preview creates no output directory, and the bypass cases are covered |
 
 `tests/skills-plan.sh` now has 21 library cases plus the end-to-end cases; the eight review-finding cases fail on the code before the fixes.
+
+## Skills phase 3b (debate observer): independent review
+
+One read-only Sonnet reviewer attacked the observer: prompt and fence design, reply checks, the bash wiring, process handling, the receipt and the tests.
+
+| Finding | Severity | Disposition |
+| --- | --- | --- |
+| B1: "the observer has no tools" was only a sentence in the prompt; the `claude` adapter runs with tools on unless told otherwise, so injected debate text could reach a model with real tools | blocking | Fixed: a per-adapter tool policy (`claude` with `CLAUDE_TOOLS=""`, plain API adapters allowed, every adapter with tools refused before any call, an operator allow-list); the docs say what is enforced |
+| S1: an orphaned `sleep` after every normal run, and orphaned grandchildren after a kill | should fix | Fixed: the adapter runs under a supervisor in its own process group, killed on the deadline and after exit; tested with real grandchild processes |
+| S2: Ctrl-C did not stop the observer's tree | should fix | Fixed and tested for SIGINT and SIGTERM |
+| S3: model text starting with `## Round N -- x` could replace a participant's position or the verdict the observer sees, inflate the prompt, or fill the participant cap | should fix | Fixed: the data comes from the engine's own answer files and the synthesis, validated and bounded; participant names are checked; tested with a hostile debate |
+| S4: C1 controls, zero-width and bidirectional characters, U+2028 and a blank-looking reply passed | should fix | Fixed: all control, format, separator and zero-width characters are replaced; emptiness is checked after |
+| S5: the report on stdout changed what consumers that parse the verdict to the end of the stream see (`DISSENT:` lines in a report) | should fix | Fixed: the report goes to stderr and files; stdout is byte-identical, tested |
+| S6: `limits.max_input_bytes` was never enforced | should fix | Fixed: the prompt is cut to fit, and nothing is sent if the skill's own text is over |
+| S7: the cut report exceeded the limit by the marker | should fix | Fixed: the cut includes the marker |
+| S8: the receipt did not bind the data and the prompt the observer read | should fix | Fixed: `input_refs` carry both digests and a reproducible debate id |
+| S9: a stale report survived a failed run in a reused folder | should fix | Fixed and tested |
+| N1 (killed-by-signal ambiguity), N3 (a directory passes `-x`), N5 (shared temp name for the receipt merge) | nit | Fixed (the supervisor knows a timeout; `-f` and `-x`; a unique temporary name) |
+| N2 (the digest differs with `--seat-skill` plus `--observer`), N4 (the fence echo check is a literal substring) | nit | Accepted and documented |
+
+Test gaps closed: impersonation, huge names, C1 and zero-width characters, a whitespace-only reply, the per-token refusal (exercised through the real engine), the prompt-time pin check, a failed synthesis, no output directory, a tool-capable adapter, and leaked processes.

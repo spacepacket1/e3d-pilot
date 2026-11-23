@@ -186,7 +186,8 @@ Skills (off unless E3D_SKILLS_V1=1; docs/skills/). Pure local commands: no model
   --diff-skill <id|name|folder> <id|name|folder>   field-level difference and whether the definition hashes agree (exit 3 when they differ)
 Observer (E3D_SKILLS_V1=1 and E3D_SKILLS_OBSERVER=1; docs/skills.md):
   --observer <id|name>[@version][#sha256:hash][:provider]   one read-only call after the verdict, by a skill with the hook debate_observer/after_synthesis; writes
-                              observer-<skill>.md and an `observers` block, never changes the verdict; not available in a per-token (hosted) debate
+                              observer-<skill>.md and an `observers` block, never changes the verdict (stdout is untouched; the report goes to stderr and the files);
+                              runs only on an adapter without tools (claude, the API adapters); not available in a per-token (hosted) debate
 Skills on seats (E3D_SKILLS_V1=1 and E3D_SKILLS_SEATS=1, with E3D_SPECIALISTS=1; docs/skills.md):
   --seat-skill <id|name>[@version][#sha256:hash][:provider]   one skill per flag, beside --specialist; a pin that no longer matches stops the run before any call
   --on-seat-skill-failure fail|plain_seat   what a seat does when its skill cannot be used (default fail; plain_seat runs that seat with no lens and says so)
@@ -382,7 +383,7 @@ observer_plan() { # <pool csv>
   local raw rc=0
   raw="$(node "$OBSERVER_LIB" plan --builtin "$SPEC_BUILTIN" --user "$SPEC_USER" --repo "$SPEC_REPO" $( (( SPEC_BUILTIN_ONLY == 1 )) && echo --builtin-only ) --skill "$OBSERVER_SPEC" --pool "$1" --synthesizer "$DEBATE_SYNTHESIZER")" || rc=$?
   if (( rc != 0 )); then echo "error: observer: $(jq -r '.error | "\(.code): \(.message)"' <<< "$raw" 2>/dev/null || echo "could not plan the observer")" >&2; exit 1; fi
-  [[ -x "$PROVIDERS_DIR/$(jq -r .observer.adapter <<< "$raw")" ]] || { echo "error: observer: $(jq -r .observer.adapter <<< "$raw") is not a provider adapter" >&2; exit 1; }
+  [[ -f "$PROVIDERS_DIR/$(jq -r .observer.adapter <<< "$raw")" && -x "$PROVIDERS_DIR/$(jq -r .observer.adapter <<< "$raw")" ]] || { echo "error: observer: $(jq -r .observer.adapter <<< "$raw") is not a provider adapter" >&2; exit 1; }
   while IFS= read -r w; do echo "warning: observer: $w" >&2; done < <(jq -r '.warnings[]' <<< "$raw")
   OBSERVER_PLAN_JSON="$raw"
 }
@@ -1673,49 +1674,51 @@ fi
 # The observer (skills phase 3b; docs/skills/phase3/plan.md, ADR-0006): one read-only call, AFTER the verdict is printed and stored. It reads the finished debate as
 # data and writes a bounded report to its own file (observer-<skill>.md, observers.json) and an `observers` block in decision-log.json. It cannot change the
 # verdict, the transcript, positions, dissent, the quote or the charge; whatever goes wrong here leaves the debate, its output and its exit status as they were.
-observer_call() { # <adapter> <prompt file> <reply file> <stderr file> <seconds>: the adapter with a deadline (macOS has no `timeout`)
-  env -u E3D_PROVIDER_WEB_SEARCH -u E3D_PROVIDER_WS_OUT -u E3D_PROVIDER_WS_MAX_SEARCHES -u E3D_PROVIDER_WS_ALLOW -u E3D_PROVIDER_WS_DENY -u E3D_PROVIDER_WS_EXCERPT_CHARS -u E3D_PROVIDER_WS_TIMEOUT \
-    "$PROVIDERS_DIR/$1" "$2" > "$3" 2> "$4" &
-  local pid=$! wd rc
-  ( sleep "$5"; pkill -TERM -P "$pid" 2>/dev/null; kill -TERM "$pid" 2>/dev/null; sleep 2; pkill -KILL -P "$pid" 2>/dev/null; kill -KILL "$pid" 2>/dev/null ) >/dev/null 2>&1 &
-  wd=$!
-  wait "$pid"; rc=$?
-  kill "$wd" 2>/dev/null; wait "$wd" 2>/dev/null
-  (( rc == 143 || rc == 137 )) && rc=124   # killed by the deadline
-  return "$rc"
+# The observer's input is each participant's final answer and the verdict, taken from the engine's own files: it is never re-parsed from transcript.md, where a model's own
+# "## Round N" line could impersonate a section.
+observer_data() { # -> $work_dir/observer.data.json
+  local p r f
+  : > "$work_dir/observer.positions.jsonl"
+  for p in "${DEBATE_PROVIDERS_ALL[@]}"; do
+    f=""
+    for (( r = DEBATE_ROUNDS; r >= 1; r-- )); do if [[ -s "$work_dir/round${r}-${p}.out" ]]; then f="$work_dir/round${r}-${p}.out"; break; fi; done
+    [[ -n "$f" ]] || continue
+    jq -nc --arg who "$p" --argjson round "$r" --rawfile text "$f" '{who:$who, round:$round, text:$text}' >> "$work_dir/observer.positions.jsonl" || return 1
+  done
+  jq -n --slurpfile pos "$work_dir/observer.positions.jsonl" --rawfile syn "$synth_out" '{positions:$pos, synthesis:$syn}' > "$work_dir/observer.data.json"
 }
 run_observer() {
-  local adapter secs obs_out log attempt=1 t0 t1 rc fin status code report
-  adapter="$(jq -r .observer.adapter <<< "$OBSERVER_PLAN_JSON")"
-  secs="$(jq -r '(.observer.timeout_ms / 1000 | ceil)' <<< "$OBSERVER_PLAN_JSON")"
+  local adapter ms obs_out attempt=1 t0 t1 rc fin status code report slug sid sver
+  adapter="$(jq -r .observer.adapter <<< "$OBSERVER_PLAN_JSON")"; ms="$(jq -r .observer.timeout_ms <<< "$OBSERVER_PLAN_JSON")"
+  sid="$(jq -r .observer.skill.id <<< "$OBSERVER_PLAN_JSON")"; sver="$(jq -r .observer.skill.version <<< "$OBSERVER_PLAN_JSON")"; slug="${sid#skill.*.}"
   obs_out="${OUT_DIR:-$work_dir}"; mkdir -p "$obs_out"
-  log="$obs_out/decision-log.json"; [[ -s "$log" ]] || log="$transcript_md"
+  rm -f "$obs_out/observer-$slug.md" "$obs_out/observers.json"   # nothing from an earlier run in the same folder survives beside this run's record
   printf '%s' "$QUESTION" > "$work_dir/observer.question"
+  if ! observer_data; then echo "warning: the observer was not run (its input could not be prepared); the debate is unaffected" >&2; return 0; fi
   if ! node "$OBSERVER_LIB" prompt --builtin "$SPEC_BUILTIN" --user "$SPEC_USER" --repo "$SPEC_REPO" $( (( SPEC_BUILTIN_ONLY == 1 )) && echo --builtin-only ) --plan "$OBSERVER_PLAN_JSON" \
-       --transcript "$transcript_md" --question-file "$work_dir/observer.question" --meta-out "$work_dir/observer.meta" > "$work_dir/observer.prompt.md" 2> "$work_dir/observer.prompt.err"; then
-    echo "warning: the observer was not run (its skill no longer matches the plan); the debate is unaffected" >&2; return 0
+       --data-file "$work_dir/observer.data.json" --question-file "$work_dir/observer.question" --meta-out "$work_dir/observer.meta" > "$work_dir/observer.prompt.md" 2> "$work_dir/observer.prompt.err"; then
+    echo "warning: the observer was not run ($(jq -r '.error.code // empty' "$work_dir/observer.prompt.err" 2>/dev/null; true) its skill no longer matches the plan, or its input is over the skill's limit); the debate is unaffected" >&2; return 0
   fi
   while :; do
     t0="$(node -e 'console.log(Date.now())')"
-    rc=0; observer_call "$adapter" "$work_dir/observer.prompt.md" "$work_dir/observer.reply" "$work_dir/observer.stderr" "$secs" || rc=$?
+    rc=0; node "$OBSERVER_LIB" call --adapter "$adapter" --adapter-path "$PROVIDERS_DIR/$adapter" --prompt "$work_dir/observer.prompt.md" --reply "$work_dir/observer.reply" --stderr "$work_dir/observer.stderr" --timeout-ms "$ms" || rc=$?
     t1="$(node -e 'console.log(Date.now())')"
     fin="$(node "$OBSERVER_LIB" finalize --plan "$OBSERVER_PLAN_JSON" --meta "$work_dir/observer.meta" --reply "$work_dir/observer.reply" --rc "$rc" --latency-ms "$(( t1 - t0 ))" \
-           --attempt "$attempt" --out-dir "$obs_out" --debate-log "$log" --created-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" 2>/dev/null)" || { echo "warning: the observer reply could not be recorded; the debate is unaffected" >&2; return 0; }
+           --attempt "$attempt" --out-dir "$obs_out" --created-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" 2>/dev/null)" || { echo "warning: the observer reply could not be recorded; the debate is unaffected" >&2; return 0; }
     if [[ "$(jq -r .retry <<< "$fin")" == "true" && "$attempt" -lt 2 ]]; then attempt=$((attempt + 1)); echo "note: the observer's reply was not usable; retrying once (its skill asks for that)" >&2; continue; fi
     break
   done
   status="$(jq -r .status <<< "$fin")"; code="$(jq -r '.errors[0].code // empty' <<< "$fin")"; report="$(jq -r '.report_file // empty' <<< "$fin")"
   if [[ -n "$OUT_DIR" && -s "$OUT_DIR/decision-log.json" && -s "$OUT_DIR/observers.json" ]]; then
-    jq --slurpfile o "$OUT_DIR/observers.json" '. + {observers: $o[0]}' "$OUT_DIR/decision-log.json" > "$OUT_DIR/decision-log.json.tmp" 2>/dev/null && mv "$OUT_DIR/decision-log.json.tmp" "$OUT_DIR/decision-log.json" || rm -f "$OUT_DIR/decision-log.json.tmp"
+    local tmp; tmp="$(mktemp "$OUT_DIR/.decision-log.XXXXXX")" || return 0
+    if jq --slurpfile o "$OUT_DIR/observers.json" '. + {observers: $o[0]}' "$OUT_DIR/decision-log.json" > "$tmp" 2>/dev/null; then mv "$tmp" "$OUT_DIR/decision-log.json"; else rm -f "$tmp"; fi
   fi
-  local sid sver sad; sid="$(jq -r .observer.skill.id <<< "$OBSERVER_PLAN_JSON")"; sver="$(jq -r .observer.skill.version <<< "$OBSERVER_PLAN_JSON")"; sad="$adapter"
+  # The report goes to stderr and its files, NEVER to stdout: stdout is what consumers parse as the verdict, and it stays byte-identical to a run without an observer.
   if [[ -n "$report" && -s "$obs_out/$report" ]]; then
-    printf '\n## Observer report (%s %s on %s; read-only, not part of the verdict above)\n\n' "$sid" "$sver" "$sad"
-    cat "$obs_out/$report"
-    [[ -z "$code" ]] || printf '\n(warning: %s)\n' "$(jq -r '.errors[0].message' <<< "$fin")"
+    { printf '\n## Observer report (%s %s on %s; read-only, not part of the verdict)\n\n' "$sid" "$sver" "$adapter"; cat "$obs_out/$report"
+      [[ -z "$code" ]] || printf '\n(warning: %s)\n' "$(jq -r '.errors[0].message' <<< "$fin")"; } >&2
   else
-    printf '\nOBSERVER FAILED (%s %s on %s): %s. The verdict above is unaffected.\n' "$sid" "$sver" "$sad" "${code:-skill_provider_error}"
-    echo "warning: the observer failed (${code:-skill_provider_error}); the debate is unaffected" >&2
+    printf '\nOBSERVER FAILED (%s %s on %s): %s. The verdict is unaffected.\n' "$sid" "$sver" "$adapter" "${code:-skill_provider_error}" >&2
   fi
   return 0
 }
