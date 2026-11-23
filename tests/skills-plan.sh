@@ -57,6 +57,20 @@ D1="$(jq -r .plan_digest "$T/stdout")"
 run "${ON[@]}" -- "${ARGS[@]}" --specialist skeptic --seat-skill premortem --seat-skill steered --preview-skills --preview-json; [[ "$(jq -r .plan_digest "$T/stdout")" == "$D1" ]] || fail "the digest is stable"
 run "${ON[@]}" -- "Another question?" --providers alpha,beta,gamma --rounds 1 --synthesizer synth --min-families 1 --specialist skeptic --seat-skill premortem --seat-skill steered --preview-skills --preview-json; [[ "$(jq -r .plan_digest "$T/stdout")" != "$D1" ]] || fail "the digest follows the question"
 run "${ON[@]}" -- "${ARGS[@]}" --rounds 2 --specialist skeptic --seat-skill premortem --seat-skill steered --preview-skills --preview-json; [[ "$(jq -r .plan_digest "$T/stdout")" != "$D1" ]] || fail "the digest follows the rounds"
+run "${ON[@]}" -- "${ARGS[@]}" --specialist skeptic --seat-skill premortem --preview-skills --out-dir "$T/pv-out"
+[[ $rc -eq 0 ]] || fail "preview with --out-dir"; [[ ! -e "$T/pv-out" ]] || fail "a preview must not create the output directory"
+# settings that change the prompts or the calls are part of the digest, and --expect-plan cannot be bypassed with them
+pvd() { run "${ON[@]}" -- "${ARGS[@]}" --specialist skeptic --seat-skill premortem --seat-skill steered --preview-skills --preview-json "$@"; jq -r .plan_digest "$T/stdout"; }
+base="$(pvd)"
+for extra in "--prompts v3b" "--approach hypotheses" "--web-search off" "--recap alpha" "--jev"; do
+  [[ "$(pvd $extra)" != "$base" ]] || fail "the digest must follow: $extra"
+  run "${ON[@]}" -- "${ARGS[@]}" --specialist skeptic --seat-skill premortem --seat-skill steered --expect-plan "$base" $extra --out-dir "$T/o-bypass"
+  [[ $rc -eq 1 ]] && grep -q skill_quote_expired "$T/stderr" && nocall || fail "--expect-plan must refuse a run that changed: $extra (rc=$rc)"
+done
+rc=0; E3D_DEBATE_SYNTH_FALLBACK=off pvd >/dev/null; [[ "$(E3D_DEBATE_SYNTH_FALLBACK=off pvd)" != "$base" ]] || fail "the digest must follow the synthesis fallback setting"
+# a value the debate itself will reject does not turn the preview into a different, worse error
+run "${ON[@]}" -- "${ARGS[@]}" --specialist skeptic --specialist premortem --max-words 5 --preview-skills; [[ $rc -eq 0 ]] || fail "--max-words 5 must preview: $(cat "$T/stderr")"
+run "${ON[@]}" -- "${ARGS[@]}" --specialist skeptic --specialist premortem --rounds 99999999999999999999 --max-words 99999999999999999999 --preview-skills; [[ $rc -eq 0 ]] || fail "huge numbers must not break the preview: $(cat "$T/stderr")"
 echo "skills-plan 3 (preview): ok"
 
 # 4. a run with seat skills: lenses delivered, the receipt names each skill, the digest is in the receipt; --expect-plan binds the run to the preview
@@ -79,9 +93,24 @@ run "${ON[@]}" -- "${ARGS[@]}" --specialist skeptic --seat-skill "$BADPIN" --on-
 [[ $rc -eq 0 ]] || fail "plain_seat must let the debate run: $(cat "$T/stderr")"
 [[ "$(cat "$T"/seen-*-0.md | grep -c 'LENS-')" == 1 ]] || fail "only the skeptic seat has a lens; the failed skill's seat is plain"
 grep -q 'LENS-premortem-MARK' "$T"/seen-*.md && fail "the pinned-out skill must not reach any seat"
+PLAIN_ADAPTER="$(jq -r '.panel.plain_seats[0].adapter' "$T/o4/decision-log.json")"; SKEPTIC_ADAPTER="$(jq -r '.panel.experts[0].adapter' "$T/o4/decision-log.json")"
+[[ "$PLAIN_ADAPTER" != "$SKEPTIC_ADAPTER" ]] || fail "the plain seat sits on its own adapter in this case"
+! grep -q 'LENS-' "$T/seen-$PLAIN_ADAPTER-0.md" || fail "the plain seat's own prompt must carry no lens"
+grep -q 'LENS-skeptic-MARK' "$T/seen-$SKEPTIC_ADAPTER-0.md" || fail "the other seat keeps its lens"
 jq -e '.panel.plain_seats | length == 1 and .[0].expert == null and .[0].skill_failed.code == "skill_hash_mismatch"' "$T/out4/decision-log.json" 2>/dev/null >/dev/null || jq -e '.panel.plain_seats | length == 1 and .[0].expert == null and .[0].skill_failed.code == "skill_hash_mismatch"' "$T/o4/decision-log.json" >/dev/null || fail "the receipt records the plain seat and why"
 jq -e '.skills | map(select(.status == "failed")) | length == 1' "$T/o4/decision-log.json" >/dev/null || fail "the skills block records the failed skill"
 grep -q 'runs plain' "$T/stderr" || fail "the plain seat is announced on stderr"
+# a broken skill of the same name in a higher tier is never silently replaced by the built-in
+BRK="$T/home/.config/e3d-pilot/specialists/skeptic"; mkdir -p "$BRK/e3d"
+printf -- '---\nname: skeptic\ndescription: broken on purpose\nlicense: MIT\n---\nLENS-BROKEN-USER-MARK.\n' > "$BRK/SKILL.md"; printf '{"version":"1.0.0",' > "$BRK/e3d/skill.json"
+run "${ON[@]}" -- "${ARGS[@]}" --specialist premortem --seat-skill skeptic --out-dir "$T/o6"
+[[ $rc -eq 1 ]] && grep -q 'skill_invalid' "$T/stderr" && nocall || fail "a broken user skill must stop the run, not fall back to the built-in (rc=$rc)"
+run "${ON[@]}" -- "${ARGS[@]}" --specialist premortem --seat-skill skeptic --on-seat-skill-failure plain_seat --out-dir "$T/o7"
+[[ $rc -eq 0 ]] || fail "plain_seat must let it run: $(cat "$T/stderr")"; ! grep -q 'LENS-skeptic-MARK\|LENS-BROKEN' "$T"/seen-*.md || fail "neither the broken skill nor the built-in may sit on that seat"
+jq -e '.panel.plain_seats[0].skill_failed.code == "skill_invalid"' "$T/o7/decision-log.json" >/dev/null || fail "the receipt says skill_invalid"
+rm -rf "$BRK"
+run "${ON[@]}" -- "${ARGS[@]}" --seat-skill "skeptic#sha256:$(printf 'a%.0s' {1..64})" --seat-skill "premortem#sha256:$(printf 'b%.0s' {1..64})" --on-seat-skill-failure plain_seat
+[[ $rc -eq 1 ]] && grep -q 'every skill named with --seat-skill failed' "$T/stderr" && nocall || fail "when every skill failed nothing is run, with the real reason (rc=$rc)"
 echo "skills-plan 5 (failure policy): ok"
 
 # 6. nothing changes without the switches: a plain --specialist run's log has no skills keys and the panel keeps its shape

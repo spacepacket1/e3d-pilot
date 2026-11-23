@@ -81,11 +81,22 @@ seat's prompt is the same role block experts have always had; the id, version an
 
 **Preview before you spend.** `--preview-skills` (add `--preview-json` for JSON) prints what the run would do and exits without calling any model: each seat with its
 skill, version, hash and size, plain seats and why, vendor families, the number of model calls and a token estimate for a typical short question (an estimate, not
-a bound: credits are quoted by the hosted service), and a **plan digest**. The preview carries no instruction text.
+a bound: credits are quoted by the hosted service), and a **plan digest**. The preview carries no instruction text. The call count is the nominal one; each call
+may be retried (`E3D_DEBATE_PROVIDER_RETRIES`, default 2), and a fallback synthesis, a recap, web search and retries after an empty answer add more.
 
 **Bind a run to its preview.** Run the same command with `--expect-plan sha256:...` and the run refuses to start (`skill_quote_expired`, nothing called) if anything
-the digest covers changed: the question, rounds, word limit, synthesizer, the provider pool, a forced provider, any skill's version or text. The receipt records the
-digest as `skills_plan_digest`.
+the digest covers changed. It covers: the question, rounds, word limit, synthesizer, the provider pool as assigned, forced providers, every seat's skill (id, version,
+hash, lens size) and plain seats, and the settings `--prompts`, `--approach`, `--web-search`, `--recap`, `--jev`, `E3D_DEBATE_SYNTH_FALLBACK`,
+`E3D_DEBATE_FAST_SYNTHESIS` and `E3D_DEBATE_PROVIDER_RETRIES`. It does **not** cover other environment knobs (timeouts, per-provider settings, test seams) or what a
+provider does on its side. The receipt records the digest as `skills_plan_digest`.
+
+**Pins.** A hash pin (`#sha256:...`) is what guarantees the exact skill that runs. A bare name with only a version pin (`skeptic@1.0.0`) is satisfied by any skill of
+that name and version in the highest tier, including one of your own that shadows a built-in; name the full id (`skill.e3d.skeptic`) to select exactly one. A skill
+folder that exists but does not validate is never skipped over for another skill of the same name: the run stops with `skill_invalid` (or that seat runs plain with
+`plain_seat`).
+
+**Constraints.** A native skill's `instructions.constraints` are part of its hash but are **not sent to the model** in this release (a seat receives the instruction
+text only). The preview warns when a seat skill has any; put them in the instruction text.
 
 ## The advisory scan
 

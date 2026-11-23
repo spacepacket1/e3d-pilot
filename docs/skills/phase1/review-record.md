@@ -65,3 +65,21 @@ One read-only Sonnet reviewer attacked the runtime (loader, resolver, export, CL
 `tests/skills-runtime.sh` now has 47 library cases; the cases for these findings fail on the code before the fixes.
 
 **Not independently reviewed:** the advisory scanner (`lib/skills/scan.mjs` and its wiring into the commands and MCP tools) was added after this review, at the owner's request (ADR-0015 item 6). It is tested (82 library cases: every rule, benign near-misses, the ten built-ins scanning clean, worst-case inputs at the size limit, and the wiring), but no separate reviewer has attacked it. Because it is advisory and never blocks, its failure modes are false negatives and false positives, not a bypass of a control.
+
+## Skills phase 3a (plan layer, seat skills, preview, plan digest): independent review
+
+One read-only Sonnet reviewer attacked the planner changes, the digest, the bash wiring and the receipts.
+
+| Finding | Severity | Disposition |
+| --- | --- | --- |
+| B1: a broken user or repo skill was silently replaced by the built-in of the same name, with the run reporting success (the fail-by-default policy did not apply) | blocking | Fixed: `skill_invalid` (a new stable code) names the broken folder and the run stops, or that seat runs plain under `plain_seat`; a merely invalid skill is no longer reported as "not found" |
+| S1: the digest ignored `--prompts`, `--approach`, `--web-search`, `--recap`, `--jev` and the synthesis settings, so `--expect-plan` could be bypassed | should fix | Fixed: those settings are in the digest; the docs list what is and is not covered |
+| S2: `E3D_SKILLS_V1=1` made previously valid runs fail (`--max-words 5`, `--rounds 11`, a synthesizer name with an underscore, huge numbers) | should fix | Fixed: the preview never fails on request values the debate checks itself; schema ranges widened; bad values are replaced by defaults with a warning |
+| S3: the call estimate looked like a bound but ignored retries | should fix | Fixed: nominal calls, the real retries per call and what adds more are shown |
+| S4: folder names with escape sequences and newlines reached the readable preview | should fix | Fixed: warnings and conflict text are reduced to printable ASCII |
+| S5: when every seat skill failed under plain_seat the error was misleading | should fix | Fixed: an explicit refusal naming the codes |
+| N1 (`--lens-bytes-max` with seat skills), N2 (version-only pin caveat), N6 (constraints not sent) | nit | Fixed or documented, with a preview warning for N6 |
+| N3 (lens size clamp), N4 (failed skills digest alike), N5 (plain seats count toward families), N7 (named-twice message) | nit | Accepted: the digest stays safe, the run is identical, and plain seats are real seats on real providers |
+| N8 (weak plain-seat and preview tests) | nit | Fixed: the plain seat's own prompt is checked, the preview creates no output directory, and the bypass cases are covered |
+
+`tests/skills-plan.sh` now has 21 library cases plus the end-to-end cases; the eight review-finding cases fail on the code before the fixes.

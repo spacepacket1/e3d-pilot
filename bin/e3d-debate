@@ -393,7 +393,12 @@ if [[ -n "$SPEC_PANEL" ]] || (( ${#SPEC_LIST[@]} > 0 || ${#SEAT_SKILLS[@]} > 0 )
   for s in ${SPEC_PINS[@]+"${SPEC_PINS[@]}"}; do spec_plan_args+=(--expert-pin "$s"); done
   if [[ "${E3D_SKILLS_V1:-0}" == "1" ]]; then
     # the receipt then names each expert as a skill (id, version, definition_hash, use_id) and the plan carries a preview with a digest of what would run
-    spec_plan_args+=(--skills --rounds "$DEBATE_ROUNDS" --max-words "$DEBATE_MAX_WORDS" --synthesizer "$DEBATE_SYNTHESIZER")
+    spec_plan_args+=(--skills --synthesizer "$DEBATE_SYNTHESIZER")
+    # numbers the debate itself checks later are passed only when they are plain integers, so a bad value never changes the error a person gets
+    [[ ! "$DEBATE_ROUNDS" =~ ^[0-9]{1,6}$ ]] || spec_plan_args+=(--rounds "$DEBATE_ROUNDS")
+    [[ ! "$DEBATE_MAX_WORDS" =~ ^[0-9]{1,6}$ ]] || spec_plan_args+=(--max-words "$DEBATE_MAX_WORDS")
+    # everything that changes the prompts or the calls beyond the seats is part of the plan digest
+    spec_plan_args+=(--settings-json "$(jq -nc --arg prompts "$DEBATE_PROMPT_VERSION" --arg approach "$APPROACH" --argjson ws "${WEB_SEARCH_REQUESTED:-1}" --arg recap "$RECAP_PROVIDER" --argjson jev "$JEV_FORCE" --arg sf "$DEBATE_SYNTH_FALLBACK" --arg fast "$FAST_SYNTHESIS" --argjson retries "$DEBATE_PROVIDER_RETRIES" '{prompts:$prompts, approach:$approach, web_search:$ws, recap:$recap, jev:$jev, synth_fallback:$sf, fast_synthesis:$fast, provider_retries:$retries}')")
     [[ -z "$QUESTION" ]] || spec_plan_args+=(--question-sha "sha256:$(printf '%s' "$QUESTION" | { shasum -a 256 2>/dev/null || sha256sum; } | awk '{print $1}')")
   fi
   spec_rc=0; PLAN_JSON="$(node "$SPEC_CLI" "${spec_plan_args[@]}")" || spec_rc=$?
