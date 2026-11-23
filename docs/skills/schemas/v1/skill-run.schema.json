@@ -1,0 +1,201 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "skill-run.schema.json",
+  "title": "SkillRunReceipt v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "run_id",
+    "parent_run_id",
+    "skill",
+    "skill_source",
+    "scope",
+    "hook",
+    "status",
+    "input_refs",
+    "output_ref",
+    "grants_used",
+    "provider",
+    "metrics",
+    "errors",
+    "created_at"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "e3d.skill-run/v1",
+      "x-code": "skill_schema_version_unsupported"
+    },
+    "run_id": {
+      "type": "string",
+      "pattern": "^skr_[0-9a-zA-Z]{4,40}$"
+    },
+    "parent_run_id": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "common.schema.json#/$defs/prefixedId"
+        }
+      ]
+    },
+    "skill": {
+      "$ref": "common.schema.json#/$defs/skillRef"
+    },
+    "skill_source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tier"
+      ],
+      "properties": {
+        "tier": {
+          "enum": [
+            "built-in",
+            "user",
+            "repo",
+            "hosted"
+          ]
+        },
+        "legacy_folder_hash": {
+          "$ref": "common.schema.json#/$defs/hash"
+        }
+      }
+    },
+    "scope": {
+      "enum": [
+        "chat",
+        "debate_seat",
+        "debate_observer",
+        "router",
+        "evaluation"
+      ]
+    },
+    "hook": {
+      "enum": [
+        "before_response",
+        "after_response",
+        "seat_prompt",
+        "after_round",
+        "after_synthesis",
+        "recommend_plan",
+        "after_outcome"
+      ]
+    },
+    "status": {
+      "enum": [
+        "queued",
+        "running",
+        "completed",
+        "failed",
+        "cancelled",
+        "skipped"
+      ]
+    },
+    "input_refs": {
+      "type": "array",
+      "maxItems": 16,
+      "items": {
+        "$ref": "common.schema.json#/$defs/artifactRef"
+      }
+    },
+    "output_ref": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "common.schema.json#/$defs/artifactRef"
+        }
+      ]
+    },
+    "grants_used": {
+      "type": "array",
+      "maxItems": 9,
+      "items": {
+        "type": "string",
+        "pattern": "^grant_[0-9a-zA-Z]{4,40}$"
+      }
+    },
+    "provider": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "family",
+        "model"
+      ],
+      "properties": {
+        "family": {
+          "type": "string",
+          "maxLength": 32
+        },
+        "model": {
+          "type": "string",
+          "maxLength": 80
+        }
+      }
+    },
+    "metrics": {
+      "$ref": "common.schema.json#/$defs/metrics"
+    },
+    "errors": {
+      "type": "array",
+      "maxItems": 16,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "code",
+          "message"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "enum": [
+              "skill_schema_invalid",
+              "skill_schema_type",
+              "skill_schema_missing_field",
+              "skill_schema_unknown_field",
+              "skill_schema_value",
+              "skill_schema_format",
+              "skill_schema_limit",
+              "skill_schema_duplicate",
+              "skill_schema_version_unsupported",
+              "skill_version_invalid",
+              "skill_hash_mismatch",
+              "skill_not_found",
+              "skill_scripts_not_allowed",
+              "skill_too_large",
+              "skill_composition_cycle",
+              "skill_type_incompatible",
+              "skill_conflict",
+              "skill_capability_unknown",
+              "skill_capability_denied",
+              "skill_audience_denied",
+              "skill_quote_required",
+              "skill_quote_expired",
+              "skill_approval_required",
+              "skill_budget_exceeded",
+              "skill_timeout",
+              "skill_provider_error",
+              "skill_tool_error",
+              "skill_memory_error",
+              "skill_output_invalid",
+              "skill_moderation_blocked",
+              "skill_tenant_denied"
+            ]
+          },
+          "message": {
+            "type": "string",
+            "maxLength": 300
+          }
+        }
+      }
+    },
+    "created_at": {
+      "$ref": "common.schema.json#/$defs/time"
+    }
+  }
+}

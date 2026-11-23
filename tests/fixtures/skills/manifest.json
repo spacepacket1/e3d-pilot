@@ -1,0 +1,251 @@
+{
+  "note": "Every valid fixture must validate and (for skill-definition and skill-composition) pass the reference semantic checks. Every invalid fixture must fail with exactly the listed code. Cases marked phase>1 need runtime code and are listed in docs/skills/phase1/deferred-fixtures.md.",
+  "valid": [
+    {
+      "file": "valid/skill-definition--builtin-skeptic.json",
+      "schema": "skill-definition"
+    },
+    {
+      "file": "valid/skill-definition--behavioral-intelligence.json",
+      "schema": "skill-definition"
+    },
+    {
+      "file": "valid/skill-composition--architecture-review.json",
+      "schema": "skill-composition"
+    },
+    {
+      "file": "valid/skill-attachment--seat.json",
+      "schema": "skill-attachment"
+    },
+    {
+      "file": "valid/skill-recommendation--debate.json",
+      "schema": "skill-recommendation"
+    },
+    {
+      "file": "valid/skill-grant--brain-read.json",
+      "schema": "skill-grant"
+    },
+    {
+      "file": "valid/skill-plan--observer.json",
+      "schema": "skill-plan"
+    },
+    {
+      "file": "valid/skill-run--observer.json",
+      "schema": "skill-run"
+    },
+    {
+      "file": "valid/observation--hypothesis.json",
+      "schema": "observation"
+    },
+    {
+      "file": "valid/evaluation--dev-split.json",
+      "schema": "evaluation"
+    },
+    {
+      "file": "valid/learning-proposal--skeptic.json",
+      "schema": "learning-proposal"
+    },
+    {
+      "file": "valid/skill-error--capability-denied.json",
+      "schema": "skill-error"
+    },
+    {
+      "file": "valid/event--step-completed.json",
+      "schema": "event"
+    }
+  ],
+  "invalid": [
+    {
+      "file": "invalid/skill-definition--unknown-field.json",
+      "schema": "skill-definition",
+      "code": "skill_schema_unknown_field"
+    },
+    {
+      "file": "invalid/skill-definition--scripts.json",
+      "schema": "skill-definition",
+      "code": "skill_scripts_not_allowed"
+    },
+    {
+      "file": "invalid/skill-definition--mcp-server.json",
+      "schema": "skill-definition",
+      "code": "skill_scripts_not_allowed"
+    },
+    {
+      "file": "invalid/skill-definition--network.json",
+      "schema": "skill-definition",
+      "code": "skill_scripts_not_allowed"
+    },
+    {
+      "file": "invalid/skill-definition--future-schema.json",
+      "schema": "skill-definition",
+      "code": "skill_schema_version_unsupported"
+    },
+    {
+      "file": "invalid/skill-definition--shell-capability.json",
+      "schema": "skill-definition",
+      "code": "skill_capability_unknown"
+    },
+    {
+      "file": "invalid/skill-definition--oversized-instructions.json",
+      "schema": "skill-definition",
+      "code": "skill_schema_limit"
+    },
+    {
+      "file": "invalid/skill-definition--file-schema-ref.json",
+      "schema": "skill-definition",
+      "code": "skill_schema_format"
+    },
+    {
+      "file": "invalid/skill-definition--bad-hash-format.json",
+      "schema": "skill-definition",
+      "code": "skill_schema_format"
+    },
+    {
+      "file": "invalid/skill-definition--bad-version.json",
+      "schema": "skill-definition",
+      "code": "skill_schema_format"
+    },
+    {
+      "file": "invalid/skill-definition--hash-mismatch.json",
+      "schema": "skill-definition",
+      "code": "skill_hash_mismatch",
+      "semantic": "hash"
+    },
+    {
+      "file": "invalid/skill-definition--instructional-with-tools.json",
+      "schema": "skill-definition",
+      "code": "skill_capability_denied",
+      "semantic": "level"
+    },
+    {
+      "file": "invalid/skill-composition--cycle.json",
+      "schema": "skill-composition",
+      "code": "skill_composition_cycle",
+      "semantic": "composition"
+    },
+    {
+      "file": "invalid/skill-composition--self-edge.json",
+      "schema": "skill-composition",
+      "code": "skill_composition_cycle",
+      "semantic": "composition"
+    },
+    {
+      "file": "invalid/skill-composition--unknown-node.json",
+      "schema": "skill-composition",
+      "code": "skill_type_incompatible",
+      "semantic": "composition"
+    },
+    {
+      "file": "invalid/skill-composition--duplicate-node.json",
+      "schema": "skill-composition",
+      "code": "skill_conflict",
+      "semantic": "composition"
+    },
+    {
+      "file": "invalid/skill-composition--unpinned-child.json",
+      "schema": "skill-composition",
+      "code": "skill_schema_missing_field"
+    },
+    {
+      "file": "invalid/skill-composition--too-many-nodes.json",
+      "schema": "skill-composition",
+      "code": "skill_schema_limit"
+    },
+    {
+      "file": "invalid/skill-attachment--hook-target-mismatch.json",
+      "schema": "skill-attachment",
+      "code": "skill_conflict",
+      "semantic": "attachment"
+    },
+    {
+      "file": "invalid/skill-attachment--bad-enabled.json",
+      "schema": "skill-attachment",
+      "code": "skill_schema_type"
+    },
+    {
+      "file": "invalid/skill-recommendation--confidence-range.json",
+      "schema": "skill-recommendation",
+      "code": "skill_schema_limit"
+    },
+    {
+      "file": "invalid/skill-recommendation--unknown-mode.json",
+      "schema": "skill-recommendation",
+      "code": "skill_schema_value"
+    },
+    {
+      "file": "invalid/skill-grant--wildcard-scope.json",
+      "schema": "skill-grant",
+      "code": "skill_schema_format"
+    },
+    {
+      "file": "invalid/skill-grant--write-capability.json",
+      "schema": "skill-grant",
+      "code": "skill_capability_unknown"
+    },
+    {
+      "file": "invalid/skill-grant--no-expiry.json",
+      "schema": "skill-grant",
+      "code": "skill_schema_missing_field"
+    },
+    {
+      "file": "invalid/skill-plan--no-quote.json",
+      "schema": "skill-plan",
+      "code": "skill_schema_missing_field"
+    },
+    {
+      "file": "invalid/skill-run--bad-status.json",
+      "schema": "skill-run",
+      "code": "skill_schema_value"
+    },
+    {
+      "file": "invalid/observation--no-expiry.json",
+      "schema": "observation",
+      "code": "skill_schema_missing_field"
+    },
+    {
+      "file": "invalid/observation--zero-sample.json",
+      "schema": "observation",
+      "code": "skill_schema_limit"
+    },
+    {
+      "file": "invalid/observation--no-evidence.json",
+      "schema": "observation",
+      "code": "skill_schema_limit"
+    },
+    {
+      "file": "invalid/evaluation--no-interval.json",
+      "schema": "evaluation",
+      "code": "skill_schema_missing_field"
+    },
+    {
+      "file": "invalid/evaluation--bad-split.json",
+      "schema": "evaluation",
+      "code": "skill_schema_value"
+    },
+    {
+      "file": "invalid/learning-proposal--no-counterevidence.json",
+      "schema": "learning-proposal",
+      "code": "skill_schema_missing_field"
+    },
+    {
+      "file": "invalid/learning-proposal--no-evaluations.json",
+      "schema": "learning-proposal",
+      "code": "skill_schema_limit"
+    },
+    {
+      "file": "invalid/skill-error--unknown-code.json",
+      "schema": "skill-error",
+      "code": "skill_schema_value"
+    },
+    {
+      "file": "invalid/event--unknown-type.json",
+      "schema": "event",
+      "code": "skill_schema_value"
+    },
+    {
+      "file": "invalid/event--raw-prompt.json",
+      "schema": "event",
+      "code": "skill_schema_unknown_field"
+    }
+  ]
+}

@@ -1,0 +1,20 @@
+{
+  "schema_version": "e3d.skill-attachment/v1",
+  "attachment_id": "att_01abcd",
+  "target": {
+    "type": "debate_seat",
+    "debate_id": "dbt_01abcd",
+    "seat": "seat_2"
+  },
+  "hook": "after_response",
+  "skill_ref": {
+    "id": "skill.user_01hxyz.skeptic",
+    "version": "2.1.0",
+    "hash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+  },
+  "parameters": {
+    "risk_focus": "authorization"
+  },
+  "priority": 100,
+  "enabled": true
+}

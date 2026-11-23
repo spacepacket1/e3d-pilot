@@ -1,0 +1,13 @@
+{
+  "schema_version": "e3d.skill-grant/v1",
+  "grant_id": "grant_01abcd",
+  "plan_id": "spl_01abcd",
+  "capability": "brain.read",
+  "scope": "project:abc",
+  "audience": "private",
+  "resource_classes": [
+    "outcome_summary"
+  ],
+  "max_items": 20,
+  "max_bytes": 64000
+}

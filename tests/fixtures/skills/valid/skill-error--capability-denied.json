@@ -1,0 +1,13 @@
+{
+  "error": {
+    "code": "skill_capability_denied",
+    "message": "The skill requested brain.read outside the approved project scope.",
+    "retryable": false,
+    "details": {
+      "skill_id": "skill.user_01hxyz.behavioral-intelligence",
+      "capability": "brain.read",
+      "requested_scope": "user:all"
+    },
+    "next_action": "Remove the request or ask the user to approve an eligible scope."
+  }
+}

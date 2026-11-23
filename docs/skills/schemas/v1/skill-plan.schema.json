@@ -1,0 +1,176 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "skill-plan.schema.json",
+  "title": "ExecutionPlan v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "plan_id",
+    "principal",
+    "request_digest",
+    "steps",
+    "quote",
+    "approval",
+    "expires_at"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "e3d.skill-plan/v1",
+      "x-code": "skill_schema_version_unsupported"
+    },
+    "plan_id": {
+      "type": "string",
+      "pattern": "^spl_[0-9a-zA-Z]{4,40}$"
+    },
+    "principal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "user_id",
+        "tenant_id"
+      ],
+      "properties": {
+        "user_id": {
+          "$ref": "common.schema.json#/$defs/principalRef"
+        },
+        "tenant_id": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "common.schema.json#/$defs/principalRef"
+            }
+          ]
+        }
+      }
+    },
+    "request_digest": {
+      "$ref": "common.schema.json#/$defs/hash"
+    },
+    "steps": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 16,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "step_id",
+          "skill",
+          "hook",
+          "grants",
+          "limits"
+        ],
+        "properties": {
+          "step_id": {
+            "type": "string",
+            "pattern": "^step_[0-9a-z]{1,8}$"
+          },
+          "skill": {
+            "$ref": "common.schema.json#/$defs/skillRef"
+          },
+          "hook": {
+            "enum": [
+              "before_response",
+              "after_response",
+              "seat_prompt",
+              "after_round",
+              "after_synthesis",
+              "recommend_plan",
+              "after_outcome"
+            ]
+          },
+          "grants": {
+            "type": "array",
+            "maxItems": 9,
+            "items": {
+              "$ref": "skill-grant.schema.json"
+            }
+          },
+          "limits": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "model_calls",
+              "tool_calls",
+              "credits_max",
+              "timeout_ms"
+            ],
+            "properties": {
+              "model_calls": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 8
+              },
+              "tool_calls": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 12
+              },
+              "credits_max": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "timeout_ms": {
+                "type": "integer",
+                "minimum": 1000,
+                "maximum": 300000
+              }
+            }
+          }
+        }
+      }
+    },
+    "quote": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "quote_id",
+        "credits_max",
+        "expires_at"
+      ],
+      "properties": {
+        "quote_id": {
+          "type": "string",
+          "pattern": "^q_[0-9a-zA-Z]{4,40}$"
+        },
+        "credits_max": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "expires_at": {
+          "$ref": "common.schema.json#/$defs/time"
+        }
+      }
+    },
+    "approval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "required",
+        "approved_at"
+      ],
+      "properties": {
+        "required": {
+          "type": "boolean"
+        },
+        "approved_at": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "common.schema.json#/$defs/time"
+            }
+          ]
+        }
+      }
+    },
+    "expires_at": {
+      "$ref": "common.schema.json#/$defs/time"
+    }
+  }
+}

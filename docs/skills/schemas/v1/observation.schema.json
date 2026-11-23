@@ -1,0 +1,129 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "observation.schema.json",
+  "title": "Observation v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "observation_id",
+    "subject",
+    "claim",
+    "status",
+    "evidence_refs",
+    "counterevidence_refs",
+    "scope",
+    "sensitivity",
+    "valid_from",
+    "expires_at",
+    "sample_size",
+    "confidence",
+    "created_by_run"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "e3d.observation/v1",
+      "x-code": "skill_schema_version_unsupported"
+    },
+    "observation_id": {
+      "type": "string",
+      "pattern": "^obs_[0-9a-zA-Z]{4,40}$"
+    },
+    "subject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "id"
+      ],
+      "properties": {
+        "type": {
+          "enum": [
+            "workflow",
+            "debate",
+            "skill",
+            "model_version",
+            "user_correction"
+          ]
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        }
+      }
+    },
+    "claim": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "statement"
+      ],
+      "properties": {
+        "type": {
+          "type": "string",
+          "pattern": "^[a-z_]{3,40}$"
+        },
+        "statement": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        }
+      }
+    },
+    "status": {
+      "enum": [
+        "event",
+        "hypothesis",
+        "interpretation",
+        "verified"
+      ]
+    },
+    "evidence_refs": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 50,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 80
+      }
+    },
+    "counterevidence_refs": {
+      "type": "array",
+      "maxItems": 50,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 80
+      }
+    },
+    "scope": {
+      "$ref": "common.schema.json#/$defs/scopeRef"
+    },
+    "sensitivity": {
+      "$ref": "common.schema.json#/$defs/sensitivity"
+    },
+    "valid_from": {
+      "$ref": "common.schema.json#/$defs/time"
+    },
+    "expires_at": {
+      "$ref": "common.schema.json#/$defs/time"
+    },
+    "sample_size": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "created_by_run": {
+      "type": "string",
+      "pattern": "^skr_[0-9a-zA-Z]{4,40}$"
+    }
+  }
+}

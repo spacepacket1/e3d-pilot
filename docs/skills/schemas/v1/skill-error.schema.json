@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "skill-error.schema.json",
+  "title": "Error envelope v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "error"
+  ],
+  "properties": {
+    "error": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "message",
+        "retryable",
+        "details",
+        "next_action"
+      ],
+      "properties": {
+        "code": {
+          "type": "string",
+          "enum": [
+            "skill_schema_invalid",
+            "skill_schema_type",
+            "skill_schema_missing_field",
+            "skill_schema_unknown_field",
+            "skill_schema_value",
+            "skill_schema_format",
+            "skill_schema_limit",
+            "skill_schema_duplicate",
+            "skill_schema_version_unsupported",
+            "skill_version_invalid",
+            "skill_hash_mismatch",
+            "skill_not_found",
+            "skill_scripts_not_allowed",
+            "skill_too_large",
+            "skill_composition_cycle",
+            "skill_type_incompatible",
+            "skill_conflict",
+            "skill_capability_unknown",
+            "skill_capability_denied",
+            "skill_audience_denied",
+            "skill_quote_required",
+            "skill_quote_expired",
+            "skill_approval_required",
+            "skill_budget_exceeded",
+            "skill_timeout",
+            "skill_provider_error",
+            "skill_tool_error",
+            "skill_memory_error",
+            "skill_output_invalid",
+            "skill_moderation_blocked",
+            "skill_tenant_denied"
+          ]
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 400
+        },
+        "retryable": {
+          "type": "boolean"
+        },
+        "details": {
+          "type": "object",
+          "maxProperties": 20,
+          "additionalProperties": {
+            "type": [
+              "string",
+              "integer",
+              "boolean",
+              "null"
+            ]
+          }
+        },
+        "next_action": {
+          "type": "string",
+          "maxLength": 300
+        }
+      }
+    }
+  }
+}

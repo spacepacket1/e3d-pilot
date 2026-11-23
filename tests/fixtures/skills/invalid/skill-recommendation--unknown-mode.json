@@ -1,0 +1,40 @@
+{
+  "schema_version": "e3d.skill-recommendation/v1",
+  "recommendation_id": "rec_01abcd",
+  "skill": {
+    "id": "skill.e3d.metacognition",
+    "version": "1.0.0",
+    "hash": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+  },
+  "strategy": {
+    "mode": "execute_now",
+    "panel_size": 3,
+    "expert_skills": [
+      "skill.e3d.architect@1.0.0",
+      "skill.e3d.security-review@1.0.0",
+      "skill.e3d.skeptic@1.0.0"
+    ],
+    "observer_skills": [
+      "skill.e3d.behavioral-intelligence@1.0.0"
+    ],
+    "tool_requests": [],
+    "stop_conditions": [
+      "consensus_full",
+      "budget_exhausted"
+    ]
+  },
+  "reason_codes": [
+    "HIGH_IMPACT",
+    "SECURITY_SENSITIVE",
+    "CONTESTABLE"
+  ],
+  "explanation": "Independent security and architecture review is warranted.",
+  "confidence": 0.84,
+  "uncertainties": [
+    "Repository scope not yet inspected"
+  ],
+  "estimated_budget": {
+    "credits_max": 4000,
+    "latency_ms_p95": 120000
+  }
+}

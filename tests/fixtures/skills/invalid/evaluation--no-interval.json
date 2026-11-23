@@ -1,0 +1,42 @@
+{
+  "schema_version": "e3d.evaluation/v1",
+  "evaluation_id": "evl_01abcd",
+  "subject": {
+    "id": "skill.e3d.skeptic",
+    "version": "1.0.0",
+    "hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "task": {
+    "task_class": "planted_errors",
+    "fixture_version": "fixture://planted-errors/v1"
+  },
+  "rubric": {
+    "rubric_id": "planted-error-catch",
+    "rubric_version": "1.0.0",
+    "approved": false,
+    "grader": {
+      "type": "mechanical",
+      "provenance": "experiments/fve scorer",
+      "blind": false
+    }
+  },
+  "baseline_run_ids": [
+    "skr_01base1"
+  ],
+  "results": {
+    "verified_positives": 21,
+    "false_positives": 0,
+    "abstentions": 0,
+    "missing_evidence": 0
+  },
+  "cost": {
+    "credits": 900,
+    "latency_ms_p50": 40000,
+    "latency_ms_p95": 90000
+  },
+  "sample_size": 12,
+  "data_split": "development",
+  "corrections": [],
+  "visibility": "private",
+  "quality_status": "unknown"
+}
