@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Experts, Phase 1.3: the eight built-in experts and three presets in lib/specialists (docs/specs/experts-phase1-private-experts-spec.md section 7).
+# Experts, Phase 1.3: the ten built-in experts and four presets in lib/specialists (docs/specs/experts-phase1-private-experts-spec.md section 7).
 # Reads the real catalogue; the stub debates use fake provider adapters, so no model and no network are involved.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
