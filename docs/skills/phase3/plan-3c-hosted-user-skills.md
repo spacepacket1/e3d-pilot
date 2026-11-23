@@ -1,6 +1,6 @@
 # Phase 3c plan: hosted user skills (private only first)
 
-Status: **proposed, for owner sign-off. No code yet.** Scope: users create, version and run their **own private** skills on the hosted Pilot service, as debate seat skills and debate observers. This is the hosted form of the vision (create, manage, run, keep the record). Companion to `plan.md` (3a, 3b merged) and to `docs/skills-hosted-spec.md` in the cloud repo (observer pricing contract, section 2.4).
+Status: **approved by the owner on 2026-11-23 with the recommended defaults for D1 to D7.** Scope: users create, version and run their **own private** skills on the hosted Pilot service, as debate seat skills and debate observers. This is the hosted form of the vision (create, manage, run, keep the record). Companion to `plan.md` (3a, 3b merged) and to `docs/skills-hosted-spec.md` in the cloud repo (observer pricing contract, section 2.4).
 
 ## 1. What is in and out
 

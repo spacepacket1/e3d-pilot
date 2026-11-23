@@ -68,6 +68,16 @@ Prompt blocks (spec 6.4, unchanged): 1 policy, 2 task contract, 3 skill instruct
 | C-T9 | Free text leaks into records | n/a | Schema has no text field (`outcome--free-text-note` fails) | calibration 2 |
 | T24 | **Served skill injects the host agent**: a skill fetched over MCP instructs a tool-capable agent (shell, files) to act | None (no skill tools yet) | Serve as labelled data only; instructional only; never install or run; scanner for host-directed instruction patterns; user sees hash and source; host keeps its own permissions (cannot be enforced by Pilot) **Partly built in 2b:** served as labelled data in a fenced block; an advisory pattern scan (`lib/skills/scan.mjs`) shows findings to the user and the agent; nothing auto-installed. Still true: Pilot cannot enforce the host agent's own permissions, and the scan matches words, not intent. | 2, calibration 3 |
 | T25 | Outcome poisoning: fake or self-serving use and outcome reports | n/a | Server-issued `use_id`; per-principal records; tiers displayed; aggregation only with opt-in, minimum group size and source diversity; reactions never count | calibration 3, 7 |
+| T-H1 | Hosted: stored prompt injection, a saved skill text steers its model | n/a (hosted, 3c) | Private only (the author is the only reader and victim); fenced prompts; observer without tools; no extra permissions (ADR-0024) | 3c |
+| T-H2 | Hosted: tenant isolation failure, one user reads or runs another's skill | n/a | One owner-check function on every route, cache and log; attach checked at quote and at run; the engine binds owner to the authenticated principal (`intakeSkill`) | 3c |
+| T-H3 | Hosted: definition smuggling (extra fields, huge or deep JSON, unicode tricks, `__proto__`, cycles) | n/a | `intakeSkill`: size cap before the shape walk, depth, key and string caps, plain objects only, strict schema, text hygiene as a local SKILL.md | 3c H1 |
+| T-H4 | Hosted: hash confusion or a change between quote and run | n/a | The engine recomputes the hash and refuses a mismatch; owner, status and visibility (not hashed) are checked separately; plan digest and pins in the receipt | 3c H1/H2 |
+| T-H5 | Hosted: observer output rendered as HTML (stored XSS) | n/a | Escape on every render; hostile-markup test in the UI PR | 3c C3 |
+| T-H6 | Hosted: cost abuse (huge skills, many observers, retries) | n/a | Caps, reserve inside `max_credits`, idempotency covering the observer line, per-user quotas and rate limits | 3c C2 |
+| T-H7 | Hosted: skill text leaking into logs, analytics, error messages | n/a | Never log definitions; `intakeDigest` (no text) in logs and receipts; redaction test | 3c |
+| T-H8 | Hosted: an adapter with tools enabled reachable by a seat or observer | Seats fixed in engine #98; observer per-adapter policy | Audit the production adapter list before launch | 3c final |
+| T-H9 | Hosted: resource exhaustion in the engine process | n/a | Caps before parsing, per-run memory budget, deadlines, supervised calls | 3c H2 |
+| T-H10 | Hosted: a poisoned shared skill reaches other users | n/a | **Out of scope**: no sharing path in the first release (ADR-0024) | later |
 
 ## 4. Permission matrix (v1 capability vocabulary)
 
