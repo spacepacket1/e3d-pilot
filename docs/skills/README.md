@@ -11,6 +11,7 @@ Source: the "E3D Pilot User-Defined Skills: Implementation Specification" (v0.1,
 | Grounding report, gap table, contradictions, phase map | [phase1/grounding-report.md](phase1/grounding-report.md) |
 | 21 ADRs: 0001-0015 **Proposed**; 0016-0021 (calibration) **owner-decided 2026-11-23**, awaiting reviewer sign-off | [phase1/adr/](phase1/adr/) |
 | User guide for the local skills commands (phase 2b) | [../skills.md](../skills.md) |
+| Phase 3 plan (seat, observer and chat attachment runtime), for review | [phase3/plan.md](phase3/plan.md) |
 | 12 JSON Schemas, shared definitions, stable error codes | [schemas/v1/](schemas/v1/) |
 | Fixtures (19 valid, 56 invalid; 16 schemas including the calibration records) and the harness | `tests/fixtures/skills/`, `tests/skills-schemas.{sh,mjs}` |
 | Threat model, permission matrix, privacy inventory | [phase1/threat-model.md](phase1/threat-model.md) |
