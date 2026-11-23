@@ -1,10 +1,11 @@
-# E3D Pilot User-Defined Skills — Implementation Specification
+# E3D Pilot User-Defined Skills — Engine Specification (part 1 of 2)
 
-**Version:** 0.2
+**Version:** 0.2 (split 2026-11-23)
 **Date:** 2026-11-23
 **Supersedes:** v0.1 (2026-11-22). v0.1 is kept unchanged in Drive for history.
 **Status:** Implementation proposal, reconciled with the four repositories on fresh `main` (Phase 1 grounding, draft PR `spacepacket1/e3d-pilot#92`). ADRs 0001-0014 are **Proposed** and need human approval before Phase 2 starts. Facts about the code carry a commit; everything else is still a proposal.
-**Primary repositories:** `spacepacket1/e3d-pilot`, `spacepacket1/e3d-pilot-cloud`
+**Scope:** the engine (`spacepacket1/e3d-pilot`, public): contracts, local runtime, security, evaluation, phases 1 to 6. **Hosted companion (part 2):** `spacepacket1/e3d-pilot-cloud` `docs/skills-hosted-spec.md` (private): hosted registry, API, UI, migrations, publishing, adapter PRs for phases 3 and 5, and phases 7 and 8.
+**Contracts version:** v1 (owned by this document; the companion cites it).
 **Companion repositories:** `spacepacket1/e3d-code`, `spacepacket1/e3d-brain`
 **Audience:** E3D maintainers and e3d-code implementation agents
 
@@ -31,6 +32,7 @@ v0.2 changes only what Phase 1 showed to be wrong, missing or unrunnable. Sectio
 | Evaluation | at least 50 tasks | 90 tasks, one primary test, thresholds proposed (not frozen until a human approves and the signed tag exists) | `evaluation-freeze.md` |
 | Existing defects | not known | hash-line stripping (F-2) and lens delimiter spoofing (T3) are in the engine today; fixed first in Phase 2 | 0003, threat model |
 | Runner | e3d-code runs this file | the v0.1 heading "1.2 ... Phase 1 must resolve" made e3d-code stop with `duplicate phase number`; fixed here (see section 16) | n/a |
+| Structure | one document for both repositories | split: engine spec (this file) and a private hosted companion; a runner executes inside one repository | n/a |
 
 ## 0. Executive decision
 
@@ -537,15 +539,9 @@ Names below are **proposals for the hosted phase**, not commitments. Settled (AD
 | `POST /v1/skill-plans/preview` / `e3d_preview_skills` | Resolve attachments/composition, show grants, order, prompts summary, worst-case spend, conflicts, and required approval. |
 | `GET /v1/skill-runs/{run_id}` / `e3d_skill_run` | Read authorized receipt/artifacts with redaction. |
 
-### 7.2 Private lifecycle writes
+### 7.2 Hosted lifecycle and publishing
 
-| Operation | Safety contract |
-|---|---|
-| `POST /v1/skills` / `e3d_create_skill` | Creates private draft only; idempotency required. |
-| `POST /v1/skills/{id}/versions` / `e3d_create_skill_version` | New immutable version; never in-place executable edit. |
-| `POST /v1/skills/{id}/tests:run` / `e3d_test_skill` | Quote before paid calls; fixture inputs isolated; results private by default. |
-| `POST /v1/skills/{id}:deprecate` | Marks version/alias; preserves receipts and lineage. |
-| `POST /v1/compositions` | Creates private composition after DAG/type/budget validation. |
+Private lifecycle writes (create, version, test, deprecate, compositions) and publish/fork operations are hosted and are specified in the hosted companion spec (`e3d-pilot-cloud/docs/skills-hosted-spec.md`, private). The engine's local equivalents are the Phase 2 CLI verbs.
 
 ### 7.3 Execution extensions
 
@@ -564,18 +560,6 @@ Existing chat/debate requests gain optional additive fields:
 
 Debate supports separate `seat_skills` and `observer_skills`. Existing `experts` remains accepted and maps through a compatibility adapter to `debate_seat/seat_prompt`. Do not rename or remove it in v1.
 
-### 7.4 Publish/fork operations
-
-| Operation | Required controls |
-|---|---|
-| `POST /v1/skills/{id}/publish-preview` | Exact content hash, audience, license, public fields, scanner findings, lineage, and irreversible disclosures. |
-| `POST /v1/skills/{id}/publish` / `e3d_publish_skill` | Auth, idempotency, exact preview token, explicit confirmation/elicitation, moderation state. |
-| `POST /v1/skills/{id}/fork` / `e3d_fork_skill` | Creates private draft with exact parent version/hash and license attribution. |
-| `POST /v1/skills/{id}/reactions` | Community signal only; rate limited; never changes evaluation score. |
-| `POST /v1/skills/{id}/reports` | Abuse/security/license report with moderation audit trail. |
-
-MCP hosts may draft or preview publication. They may publish only through an unspoofable human confirmation supported by the host or an out-of-band web/CLI action. A phrase visible to the model is not sufficient authorization.
-
 ### 7.5 Error envelope
 
 ```json
@@ -592,53 +576,9 @@ MCP hosts may draft or preview publication. They may publish only through an uns
 
 Stable codes are lower-case snake case with the prefix `skill_` and live in `docs/skills/schemas/v1/error-codes.json` (schema, hash, version, cycle, type, conflict, capability, audience, quote, approval, budget, timeout, provider, tool, memory, output, moderation, tenant, withdrawn). They match the codes the engine and hosted service already return (`invalid_experts`, `quote_mismatch`); a code is never renamed or reused. The error object carries `retryable` and a next step, as today. Upper-case names in earlier drafts map one to one and are accepted in prose only.
 
-## 8. UI/UX specification
+## 8. Operator surfaces
 
-### 8.1 Skill Library
-
-Tabs: **Mine**, **Team**, **E3D built-ins**, **Saved**, **Marketplace** (when enabled). Each card shows name, owner, current visible version, capability level, compatible scopes, requested permissions, evaluation status/sample size, community signals, license, and update status.
-
-Filters: chat/debate seat/observer/router/evaluation; task; instructional/tool/learning; permission class; public/private; verified/experimental/unknown; free/paid; compatible with current mode.
-
-### 8.2 Skill detail
-
-Display exact version and hash, description, full instructions (unless a legitimate private authoring boundary applies), hooks, input/output schemas, requested capabilities, memory policy, limits, tests, evaluation evidence and uncertainty, changelog, provenance/fork graph, license, moderation state, known risks, and compatible Pilot versions.
-
-Never label a skill “best,” “accurate,” or “verified” without the definition and sample basis of that label.
-
-### 8.3 Create/edit flow
-
-1. Describe desired capability conversationally or start from template.
-2. Pilot creates a **private draft**.
-3. Structured editor separates method, constraints, inputs, outputs, hooks, tools, memory, limits, and tests.
-4. Validation shows errors and effective capability ceiling.
-5. Preview shows exact prompt blocks, requested grants, data that may leave scope, and worst-case cost.
-6. Test against fixtures/baseline.
-7. Activate privately or create a publish preview.
-
-Natural-language authoring is assistive. The user approves the structured definition; generated text never becomes public automatically.
-
-### 8.4 Chat composer
-
-Add a **Skills** control with selected chips. Selecting a skill shows scope, version policy, permissions, and estimated cost. Incompatible choices are disabled with reasons. “Recommended” suggestions remain advisory and explain why. The sent message records exact versions.
-
-### 8.5 Debate builder
-
-Three visually distinct zones:
-
-- **Seats:** one expert skill per model seat; show provider assignment only after Pilot resolves it.
-- **Observers:** debate-wide skills; show hook and whether they can affect later rounds (v1: no).
-- **Council recipe/composition:** optional reusable assembly.
-
-Preview shows family independence, plain seats, skill-to-seat mapping, observer schedule, cost, rounds, web/tool access, and fallback behavior. Results show original seat positions, synthesis, dissent, then observer reports—never merge observer judgments invisibly into the verdict.
-
-### 8.6 Run inspector
-
-Timeline: resolution → policy → approval → each skill/model/tool/memory step → synthesis → observer → evaluation. Each event exposes version/hash, input/output refs, grants used, cost/latency, redactions, errors, and fallback. Provide export as a portable redacted receipt.
-
-### 8.7 Behavioral intelligence controls
-
-Users can view, correct, expire, export, or delete eligible personal behavioral observations. UI distinguishes event, hypothesis, interpretation, and verified outcome. Sensitive-trait inference is prohibited, not merely hidden. Team/org views require a separate aggregation and privacy design; no employee leaderboard in v1.
+The hosted Skill Library, editor, chat composer, debate builder and run inspector are specified in the hosted companion spec. The engine owns what they read: the exact-version preview (`--show-panel` and its Phase 3 successor), the receipt, and the redacted portable receipt export. Rules the engine enforces for every surface: never label a skill "best", "accurate" or "verified" without the definition and sample basis; results show original seat positions, synthesis, dissent, then observer reports, never merged; sensitive-trait inference is prohibited, not hidden.
 
 ## 9. E3D Brain integration
 
@@ -836,7 +776,7 @@ Events carry no free-text content fields (the schema rejects them; fixture `even
 - Attachment/observer: original seat outputs/dissent preserved; observer failure cannot invalidate debate; scope auth tests pass.
 - Tool/Brain: zero cross-tenant fixture leaks; no raw credential access; denied capability never reaches adapter.
 - Showcase claims: the pre-registered study in `docs/skills/phase1/evaluation-freeze.md` (90 tasks in six categories, 36 held out, 24 of those with ground-truth issues; one primary test, H1: skill lenses on council seats versus the same council without them). Cost and false-claim share are reported; inconclusive is reported as inconclusive. With 24 holdout tasks the smallest lift detectable at 80% power is about 8.6 points; smaller real effects will read as inconclusive.
-- Public marketplace: private-to-public negative tests, secret/PII/license scan, fork attribution, withdrawal, moderation/appeal, and abuse throttles pass.
+- Public marketplace: gates are defined in the hosted companion spec.
 - Learning/default routing: prospective shadow evaluation before any recommendation affects defaults; human override and instant rollback required.
 
 Threshold values for quality lift and acceptable cost must be approved before any holdout result exists. They are **proposed, not frozen**: +5.0 points, cost ratio at most 1.25, token ceiling 9M. The freeze takes effect only when a named human approves it and the commit is marked with the signed tag `skills-eval-freeze-v1`; the grader pool, the salt and the analysis script are produced in Phase 6.
@@ -851,20 +791,9 @@ Threshold values for quality lift and acceptable cost must be approved before an
 - Add a dry-run migration/export command that prints projected skill definition and any lossy fields.
 - Only after parity tests may maintainers offer an explicit conversion command that writes new files with backups and never deletes originals.
 
-### 14.2 Database migrations
+### 14.2 Hosted data migrations
 
-Hosted storage is MongoDB with no migration framework: indexes are created idempotently at start-up and data changes are one-off scripts that are dry-run by default and need `--apply --i-have-a-backup` (ADR-0009). The additive-first discipline stays; the vocabulary changes:
-
-1. add **new collections** (registry, versions, compositions, attachments, runs, grants, evaluations, lineage) and declare their indexes in the existing index list; nothing existing is altered;
-2. deploy dual-read compatibility for built-ins and existing hosted experts;
-3. run the backfill script (built-in catalogue into the registry, hashes) dry-run first, in bounded batches, idempotent, resumable after partial failure;
-4. verify counts, hashes, visibility, ownership and sample reads from the dry-run report;
-5. enable dual-write only where necessary;
-6. switch read paths behind a per-team flag (`tenant_id` is a nullable team id; there is no other tenant concept, and team features are themselves flag-gated and default off);
-7. keep the rollback read path through the observation window;
-8. remove legacy paths only in a separate approved release.
-
-Every data change ships its dry-run output, a backup and restore test, the inverse script (or an explicit statement that the change is additive and reversible by ignoring the collection), lock and runtime estimate, idempotency proof, partial-failure recovery and an isolation check. No destructive change in the same release as cutover. Phase 7 cannot start until team and audience tests exist.
+Specified in the hosted companion spec (MongoDB, additive collections, dry-run backfill). The engine keeps files only (`decision-log.json`, state dir) and never migrates hosted data.
 
 ### 14.3 API compatibility
 
@@ -920,8 +849,8 @@ Each phase is independently reviewable and must end in one or more PRs. Cross-re
 
 **Runner notes (verified against e3d-code `0.4.0`).**
 
-- A phase starts at any heading (levels 1 to 6) that contains `Phase <number>`. **No other heading in this file may contain that pattern**; v0.1 had one (`1.2 ... Phase 1 must resolve`) and e3d-code refused the file with `duplicate phase number in spec: 1`. Keep prose references to phases in body text, not headings. Before using the runner, `bin/e3d-code <this file> --list` must show exactly the eight phases.
-- The runner executes at most eight phases per run; this file has eight. Run one phase at a time and stop for approval between phases.
+- This file holds phases 1 to 6; the hosted phases are in the companion. A phase starts at any heading (levels 1 to 6) that contains `Phase <number>`. **No other heading in this file may contain that pattern**; v0.1 had one (`1.2 ... Phase 1 must resolve`) and e3d-code refused the file with `duplicate phase number in spec: 1`. Keep prose references to phases in body text, not headings. Before using the runner, `bin/e3d-code <this file> --list` must show exactly the six phases.
+- Run one phase at a time and stop for approval between phases.
 - The runner's default permission mode is `bypassPermissions` (unattended, no per-call guard). Run it only in a dedicated worktree on a dedicated branch, never in a shared checkout, and set a stricter `CLAUDE_PERMISSION_MODE` where the phase does not need to write outside the worktree.
 - Phase 1 was carried out by following this workflow by hand (the runner could not parse v0.1).
 
@@ -1023,7 +952,7 @@ Security review of parser/resolver; compatibility sign-off; flag remains off in 
 <!-- runner:verify=bash tests/debate-specialists.sh -->
 
 **Dependencies:** Phase 2.
-**Primary repos:** `e3d-pilot`, then `e3d-pilot-cloud` adapter only if required.
+**Primary repo:** `e3d-pilot`; the hosted adapter for this phase is in the companion spec.
 **Flags:** scope-specific, default off.
 
 ### Work
@@ -1033,7 +962,7 @@ Security review of parser/resolver; compatibility sign-off; flag remains off in 
 3. Implement prompt trust zones, input/output schema validation, explicit ordering, per-step limits, cancellation, fallback, and receipts. The observer runs after the verdict is stored and is read-only; a test proves positions, synthesis, dissent, quote and charge are identical with and without an observer.
 4. Add preview API/CLI showing exact versions, prompt summaries, conflicts, observer schedule, provider-family independence, and worst-case calls/cost.
 5. Map legacy `experts` to seat attachments. Keep old request/result contracts.
-6. Update web chat/debate builder and run inspector behind flags.
+6. Expose the data the hosted web chat/debate builder and run inspector need (preview and receipt); the hosted UI itself is in the companion spec.
 
 ### Acceptance criteria
 
@@ -1096,7 +1025,7 @@ Performance/cost review and chaos test pass; keep public sharing disabled.
 <!-- runner:verify=bash tests/debate-specialists.sh -->
 
 **Dependencies:** Phases 3–4.
-**Primary repos:** `e3d-pilot`; `e3d-brain` only if an ADR requires it; cloud policy adapter if hosted.
+**Primary repo:** `e3d-pilot`; `e3d-brain` only if an ADR requires it; the hosted policy adapter for this phase is in the companion spec.
 **Flags:** each capability adapter separately off.
 
 ### Work
@@ -1156,83 +1085,20 @@ Dedicated security/privacy review, backup/restore test, and internal red-team. N
 
 Human review of study and privacy impacts. Default-routing influence requires a separate explicit approval and instant rollback flag.
 
-## Phase 7 - Hosted user lifecycle, immutable registry, migrations, and private team use
+## Hosted phases (specified elsewhere)
 
-<!-- runner:model=high -->
-<!-- runner:read=docs/skills/README.md -->
-<!-- runner:read=docs/skills/phase1/adr/0004-immutable-storage.md -->
-<!-- runner:read=docs/skills/phase1/adr/0005-api-names.md -->
-<!-- runner:read=docs/skills/phase1/adr/0009-registry-owner.md -->
-<!-- runner:read=docs/skills/phase1/adr/0011-retention.md -->
-<!-- runner:read=docs/skills/phase1/adr/0012-aliases.md -->
-<!-- runner:verify=bash tests/skills-schemas.sh -->
-<!-- runner:verify=bash tests/skills-compat.sh -->
-<!-- runner:verify=bash tests/debate-specialists.sh -->
+Skills phases 7 (hosted lifecycle and registry) and 8 (publishing, forking, discovery, governed learning), and the hosted adapter PRs for phases 3 and 5, are in the hosted companion spec `e3d-pilot-cloud/docs/skills-hosted-spec.md` (private repository). They depend on the engine contracts below and may start only after the engine phase they cite has merged.
 
-**Dependencies:** Phases 2–6 and successful internal canary.
-**Primary repo:** `e3d-pilot-cloud`, then thin engine/API adapters.
-**Rollout:** private drafts first; team scope after auth tests.
+### Hosted adapter contract
 
-### Work
+What the engine promises the hosted service, so the two specs cannot drift (contracts v1):
 
-1. Add the registry/version/composition/attachment/run/evaluation/lineage collections and indexes with a dry-run backfill, verification, rollback and legacy dual-read, following section 14.2 (MongoDB; `tenant_id` is a nullable team id). Add `e3d_list_skills` and `e3d_get_skill` as supersets of the expert tools and settle the hosted route names with the cloud owner.
-2. Implement authenticated create/version/test/deprecate, alias/update policies, quotas, idempotency, and per-tenant isolation.
-3. Implement hosted preview/quote/approval and UI Library/detail/editor/chat/debate/run-inspector surfaces.
-4. Reuse existing identity, tenant, billing, moderation primitives and Gallery data patterns; do not create duplicate account/reaction ledgers.
-5. Add team-private sharing only after audience/Brain destination tests; include audit/export/deletion.
-6. Canary by tenant; monitor migration, auth, cost, and error telemetry; document rollback.
-
-### Acceptance criteria
-
-- Migration/backfill is idempotent and reconciles counts/hashes/visibility/owners.
-- Old hosted built-in skill/debate flows remain compatible.
-- Private drafts are invisible to anonymous/other-tenant requests, search, caches, logs, and analytics.
-- Quote/idempotency prevents double spend; quotas race safely.
-- Account/team lifecycle, export, deletion, and retention behave as documented.
-- Canary meets agreed error/latency/cost/security thresholds through observation window.
-
-### Exit gate
-
-Production-readiness review and explicit deployment approval. Public publishing remains off.
-
-## Phase 8 - Publishing, forking, Gallery/marketplace discovery, and governed learning
-
-<!-- runner:model=high -->
-<!-- runner:read=docs/skills/README.md -->
-<!-- runner:read=docs/skills/phase1/adr/0010-license.md -->
-<!-- runner:read=docs/skills/phase1/adr/0011-retention.md -->
-<!-- runner:verify=bash tests/skills-schemas.sh -->
-<!-- runner:verify=bash tests/skills-compat.sh -->
-<!-- runner:verify=bash tests/debate-specialists.sh -->
-
-**Dependencies:** Phase 7; Phase 6 evaluation and Phase 5 security gates.
-**Primary repo:** `e3d-pilot-cloud`; engine adapters as separate PR.
-**Rollout:** curated experimental public catalogue; economics/payouts excluded.
-
-### Work
-
-1. Implement exact-hash publish preview/confirmation, audience/license choice, secret/PII/license scan, moderation state, withdrawal, reports, appeals, and immutable public versions.
-2. Implement private fork with exact lineage/attribution/license, version comparisons, and update notifications without auto-upgrade.
-3. Extend Gallery/search/categories/profile pages to skills/compositions and link consenting debate runs to exact versions.
-4. Reuse reactions/saves with anti-abuse controls; display them separately from evaluation evidence.
-5. Implement ranking that defaults to relevance/safety/compatibility and exposes performance only with task-matched sample/uncertainty. Popularity must not influence security permission or “verified” status.
-6. Enable learning proposals for authors/router maintainers: evidence-linked diff, counterevidence, review, test, canary, rollback. No silent self-update.
-7. Run curated creator/user pilot; measure reuse, fork success, moderation load, safety events, and verified task value.
-8. Produce a separate go/no-go ADR for paid marketplace, payouts, cross-user aggregate learning, and broader public submission.
-
-### Acceptance criteria
-
-- Public transition cannot occur without exact unspoofable human consent.
-- Scanner/moderation/auth negative tests pass; public artifact contains no private evidence references.
-- Fork attribution and license survive export/versioning; withdrawal semantics are clear.
-- Votes cannot alter evaluation records, permissions, or verified badges.
-- Learning proposal application creates a reviewed immutable version and supports rollback.
-- Public pages disclose experimental/unknown quality and sample sizes accurately.
-- No payouts or paid creator economics ship in this phase.
-
-### Exit gate
-
-Security, privacy, moderation, legal/license, product, and evaluation reviews approve continued public operation. Otherwise return catalogue to curated/private mode without breaking existing pinned runs.
+- Experts keep arriving as `--specialist` / `--expert-pin` with `{id, hash}` pins, and a hash mismatch is refused before spend.
+- New skill requests add only optional fields (`skill_attachments`, `skill_plan_token`); no field is renamed or removed; absent fields mean the unchanged path.
+- The receipt gains a `skills` block only when skills were used. `hash` in any reference means `definition_hash`; the folder hash is `legacy_folder_hash`.
+- Error codes are the lower-case `skill_*` set in `docs/skills/schemas/v1/error-codes.json`; the `retryable` and next-step fields are kept.
+- The engine never reads operator home directories on hosted runs (`--builtin-only`) and never receives credentials.
+- Contract changes are made by an ADR and bump `contracts v1` to `contracts v2`; the hosted spec names the contracts version it needs.
 
 ## 17. PR, review, and deployment protocol
 
@@ -1296,7 +1162,7 @@ Maintain this table in the repository after Phase 1:
 | Hosted user lifecycle | proposed (MongoDB collections, team id as tenant) | tenant canary | cloud | ADR-0009 | 2026-11-22 |
 | Public catalogue/forking | proposed | public flag | cloud | ADR-0010 | 2026-11-22 |
 
-The live copy of this table is `docs/skills/README.md` in the repository; update that one.
+The live copy of this table is `docs/skills/README.md` in the repository; update that one. Hosted rows are tracked in the companion spec.
 
 ## Appendix C - Source references used for this proposal
 
