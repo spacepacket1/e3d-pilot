@@ -30,6 +30,18 @@ Request fields (all strict; unknown keys refused):
 - `skill_bytes`: the total instruction bytes the cloud priced (like `lens_bytes`); the engine refuses a run whose actual bytes exceed it.
 - Observer: `observer_reserve` fields exactly as quoted (model, output cap, input bound) so the engine can refuse a run that would exceed them.
 
+### Listener fields (final names, PR H2c)
+
+Capability `skills_v1`, advertised only with `E3D_MCP_SKILLS_RUN=1`, `E3D_SKILLS_V1=1`, `E3D_SKILLS_HOSTED=1` and `E3D_MCP_PRICING=per_token` (`E3D_SKILLS_SEATS=1` and `E3D_SKILLS_OBSERVER=1` enable the two hooks; an attachment whose switch is off is refused). The fields come together, only with the per-token fields (`rounds`, `max_words`, `max_tokens`, `answer_bytes`), and all are strict (unknown keys, wrong types, floats, control characters and oversize are refused 400 `invalid`; no error echoes a value from the request). They differ from the sketch above in three places, all decided in H2c:
+
+- `skill_attachments`: 1 to 4 objects with exactly the keys `hook` (`"seat"` or `"observer"`), `target` (a provider name from the request's `providers`; required for a seat, forbidden for an observer) and `definition` (the full definition object, at most 48 KiB raw; the engine's intake validates it deeply). There is no `attachment_id` (the plan digest and the definition hash identify what ran). At most one observer attachment; seat targets distinct; a seat attachment needs `providers` in the request; 0 or at least 2 seat attachments (the engine seats skills like experts); the same skill on at most one seat, and a skill may be a seat and the observer.
+- `skills_principal`: string matching `^u_[a-z0-9]{6,36}$`, the owner every definition must carry (`owner_ref`). The listener owner of the run is still whatever authorize-run says.
+- `skill_bytes`: integer 1 to 32768, the TOTAL instruction bytes the quote priced (the sum of `instructions.method` over the distinct skills of the run); more is refused. It is also passed as `--lens-bytes-max` for the seats.
+- `observer`: `{ provider, max_tokens, input_bytes }`, required if and only if there is an observer attachment. `provider` is an API adapter name with an output-limit setting (`anthropic-api`, `openai-api`, `gemini-api`, `xai-api`, or `or-<voice>`; never `claude`) that the server can price per token; `max_tokens` 1 to 4096; `input_bytes` 1 to 256000 (these become `E3D_DEBATE_OBSERVER_MAX_TOKENS` and `E3D_DEBATE_OBSERVER_INPUT_BYTES_MAX`).
+- `experts` and `skill_attachments` in one request are refused (400 `invalid`) in this PR.
+- The idempotency key (sha256 of the canonical request) covers all five fields, so an identical retry returns the existing run (200) and a changed definition, `skill_bytes`, order, principal or observer limit is a conflict (409).
+- The observer's usage row is `observer:<skill name>` in the same usage report as the seats' rows; the billing service must accept that key. The engine refuses a definition before any model call, and the listener does so before anything is held (400 `invalid` with `skill_*` codes only).
+
 Engine rules (the engine is the authority, the cloud's hash is a claim):
 
 1. Recompute `definition_hash` from the received fields (canonical form); mismatch means refuse **before any model call**.

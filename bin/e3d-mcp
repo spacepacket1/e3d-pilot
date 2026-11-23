@@ -14,7 +14,7 @@
 // rounds/providers/concurrency are capped (E3D_MCP_MAX_ROUNDS, E3D_MCP_MAX_PROVIDERS,
 // E3D_MCP_MAX_CONCURRENT, E3D_MCP_TIMEOUT_SEC). Nothing here writes to a repo.
 
-import { mkdtemp, writeFile, readFile, rm, stat } from 'node:fs/promises';
+import { mkdtemp, writeFile, readFile, readdir, lstat, rm, stat } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -38,9 +38,11 @@ import { listPrompts, getPrompt } from '../lib/mcp/prompts.js';
 import { chooseVoices, independence, isSampling } from '../lib/mcp/voices.js';
 import { startHttpServer } from '../lib/mcp/http.js';
 import { createSlots } from '../lib/mcp/slots.js';
-import { createUsage, usageFromTranscript, worstCase, usageTool, usageHandler } from '../lib/mcp/usage.js';
+import { createUsage, usageFromTranscript, worstCase, skillsExtra, usageTool, usageHandler } from '../lib/mcp/usage.js';
 import { webSearchConfig, sanitizeText, cleanUrl, hostOf, API_PROVIDERS, PRIVACY_NOTICE, searchAvailability, stripAnswerPrefix } from '../lib/debate/websearch.mjs';
-import { createExternalAuth, validateConfig as validateAuthConfig } from '../lib/mcp/external-auth.js';
+import { createExternalAuth, validateConfig as validateAuthConfig, canonicalJson } from '../lib/mcp/external-auth.js';
+import { intakeSkill, intakeDigest } from '../lib/skills/intake.mjs';
+import { parseSeatSkill, expertFromSkill } from '../lib/skills/plan.mjs';
 import { createOutbox, outboxStatus, outboxExport, outboxRetryDead } from '../lib/mcp/outbox.js';
 import { createMetering, createReadiness, modelsFromTranscript, orphanPolicy } from '../lib/mcp/metering.js';
 import { createHash, randomUUID } from 'node:crypto';
@@ -50,7 +52,7 @@ import { createRecapRunner, recapConfigFrom } from '../lib/mcp/recap-runner.js';
 import { createChatRunner, chatConfigFrom } from '../lib/mcp/chat-runner.js';
 import { normalizeRounds } from '../lib/debate/recap.mjs';
 import { CASE_SYNTH_EXTRA_TOKENS } from '../lib/debate/case.mjs';
-import { validatePricingConfig, createPricingClient, limitsForPlan, pricedError, debateEnvFor, readUsageRows, searchCapable, searchCapFromEnv, requestedSearches, expertsRunFrom } from '../lib/mcp/pricing.js';
+import { validatePricingConfig, createPricingClient, limitsForPlan, pricedError, debateEnvFor, readUsageRows, searchCapable, searchCapFromEnv, requestedSearches, expertsRunFrom, skillsRunFrom } from '../lib/mcp/pricing.js';
 import { loadExperts } from '../lib/debate/specialists.mjs';
 import { lensBlock } from '../lib/debate/specialists-plan.mjs';
 import { galleryFrom, createGalleryRead, GALLERY_INSTRUCTION } from '../lib/mcp/gallery-read.js';
@@ -68,6 +70,9 @@ const PRICING_CONFIG = validatePricingConfig(process.env, { http: HTTP_MODE, hoo
 // E3D_MCP_EXPERTS_RUN=1 (docs/specs/experts-phase2b1-hosted-lenses-spec.md section 2): the run listener advertises experts_v1 and runs the built-in
 // experts of a web run, one per vendor. Unset or 0: the fields are refused and nothing else changes.
 const EXPERTS_RUN = expertsRunFrom(process.env, { mode: PRICING_CONFIG.mode });
+// E3D_MCP_SKILLS_RUN=1 (docs/skills/phase3/plan-3c-hosted-user-skills.md, "Listener fields"): the run listener advertises skills_v1 (only with E3D_SKILLS_V1=1, E3D_SKILLS_HOSTED=1 and
+// per-token pricing) and runs hosted user skills as seats (E3D_SKILLS_SEATS=1) and as the observer (E3D_SKILLS_OBSERVER=1). Unset or 0: the fields are refused and nothing else changes.
+const SKILLS_RUN = skillsRunFrom(process.env, { mode: PRICING_CONFIG.mode });
 // the recap job (docs/debate-recap.md): off unless E3D_MCP_RECAP=1, which also needs E3D_MCP_RECAP_PROVIDERS
 const RECAP_CONFIG = recapConfigFrom(process.env);
 // the single-model chat run (docs/chat-run.md): off unless E3D_MCP_CHAT=1, which also needs E3D_MCP_CHAT_PROVIDERS
@@ -366,8 +371,14 @@ function searchPlan(providers, webSearch) {
   if (PRICING_CONFIG.mode === 'per_token') return { searchProviders: webSearch && searchCapable(process.env) ? searching.length : 0, maxSearchesPerCall: searchCapFromEnv(process.env) };
   return { searchProviders: searching.length, maxSearchesPerCall: cfg.maxSearches };
 }
-const worstFor = (plan) => worstCase({ providers: plan.providers.length, rounds: plan.rounds, maxWords: plan.maxWords, questionChars: plan.question.length,
-  searchProviders: plan.searchProviders ?? 0, maxSearchesPerCall: plan.maxSearchesPerCall ?? 0, caseExtraTokens: plan.case ? CASE_SYNTH_EXTRA_TOKENS : 0 });
+const worstFor = (plan) => {
+  const w = worstCase({ providers: plan.providers.length, rounds: plan.rounds, maxWords: plan.maxWords, questionChars: plan.question.length,
+    searchProviders: plan.searchProviders ?? 0, maxSearchesPerCall: plan.maxSearchesPerCall ?? 0, caseExtraTokens: plan.case ? CASE_SYNTH_EXTRA_TOKENS : 0 });
+  const sk = plan.skills;
+  if (!sk) return w;
+  const x = skillsExtra({ skillBytes: sk.skillBytes, seats: sk.seats.length, rounds: plan.rounds, observer: sk.observer });
+  return { ...w, calls: w.calls + x.calls, tokens: w.tokens + x.tokens };
+};
 
 // The web-search part of a debate's result, from the out/web-search.json bin/e3d-debate writes. Everything is re-checked and
 // re-sanitised here: titles and excerpts are page text, so they are bounded and stripped of markup; URLs are http(s) with no
@@ -626,9 +637,9 @@ async function agentPrepare(args, plan, principal) {
 // Sends usage.json (bin/e3d-debate: one row per attempted call) to billing's POST /usage/v1/report, before finalize. Retries 5xx, 429 and
 // transport failures with the same body; a refusal (400, 409) or a failure after the retries is logged and the debate is still
 // finalized: billing then prices the v1 totals (and alarms), so a lost report never loses the charge or blocks the answer.
-async function reportUsage(handle, file) {
+async function reportUsage(handle, file, { observer = false } = {}) {
   if (!pricingClient || !handle.finalize) return;
-  const u = await readUsageRows(file);
+  const u = await readUsageRows(file, { observer });
   if (!u.present) { log(`pricing: no usage.json for debate_id=${handle.debate_id}; finalizing without a usage report`); return; }
   if (u.dropped) log(`pricing: ${u.dropped} malformed usage row(s) dropped debate_id=${handle.debate_id}`);
   const r = await pricingClient.report({ reservation_id: handle.reservation_id, debate_id: handle.debate_id, rows: u.rows });
@@ -652,6 +663,10 @@ async function executeDebate(plan, handle, ctx, { progress, onStarted, signal } 
   let ran = false;
   let lastRun = null;
   let dir = null;
+  let hostedFile = null;
+  const sk = plan.skills ?? null;
+  // a run accepted before a restart does not run skills if the operator has since switched them off: the switch is a kill switch for accepted runs too (nothing was started)
+  if (sk && !SKILLS_RUN.on) { log('hosted skills are switched off; a run accepted earlier with skills is not run'); return { startFailed: true }; }
   const started = Date.now();
   try {
     dir = await mkdtemp(join(tmpdir(), 'e3d-mcp-'));
@@ -667,6 +682,17 @@ async function executeDebate(plan, handle, ctx, { progress, onStarted, signal } 
       for (const e of ex.list) cliArgs.push('--specialist', e.id);
       cliArgs.push('--builtin-only', '--fill-pool', '--lens-bytes-max', String(ex.lensBytes));
       for (const e of ex.list) cliArgs.push('--expert-pin', `${e.id}=${e.hash}`);
+    }
+    // A web run with hosted user skills (planWebRun, skills_v1): ONE private file { principal, skills } in this run's 0700 directory, read by bin/e3d-debate (--hosted-skills, which
+    // recomputes every hash and refuses before any call); seats by id@version#hash and their provider, the observer the same, the pool otherwise plain seats. Removed in every exit below.
+    if (sk) {
+      hostedFile = join(dir, 'hosted-skills.json');
+      await writeFile(hostedFile, JSON.stringify({ principal: sk.principal, skills: sk.definitions }), { mode: 0o600 });
+      cliArgs.push('--builtin-only', '--hosted-skills', hostedFile);
+      for (const x of sk.seats) cliArgs.push('--seat-skill', `${x.spec}:${x.target}`);
+      if (sk.observer) cliArgs.push('--observer', `${sk.observer.spec}:${sk.observer.provider}`);
+      if (sk.seats.length) cliArgs.push('--fill-pool', '--lens-bytes-max', String(sk.skillBytes));
+      log(`skills: hosted run seats=${sk.seats.length} observer=${sk.observer ? 1 : 0} skills=${sk.definitions.length} digest=${sk.digest}`);
     }
     // An opted-in web run (jev: true): one unpriced Jev pre-screen call, record only (bin/e3d-debate --jev).
     if (plan.jev) cliArgs.push('--jev');
@@ -689,15 +715,17 @@ async function executeDebate(plan, handle, ctx, { progress, onStarted, signal } 
     await onStarted?.();
     const r = await run(debateBin, cliArgs, {
       timeoutMs, signal,
-      env: { ...process.env, ...samplingEnv, ...debateEnvFor(limits), ...(ex ? { E3D_SPECIALISTS: '1' } : {}), E3D_DEBATE_TIMEOUT_SEC: String(Math.max(Math.floor(timeoutMs / 1000), 1)) },
+      env: withSkillsEnv(sk, { ...process.env, ...samplingEnv, ...debateEnvFor(limits), ...(ex ? { E3D_SPECIALISTS: '1' } : {}), E3D_DEBATE_TIMEOUT_SEC: String(Math.max(Math.floor(timeoutMs / 1000), 1)) }),
       onStderr: (s) => { for (const m of s.matchAll(/^=== (.+?) ===$/gm)) progress?.(++step, m[1]); },
     });
     lastRun = r;
+    // the skill file is not needed once the engine has exited: remove it now, whatever the outcome (the directory goes in the finally below)
+    if (hostedFile) await rm(hostedFile, { force: true }).catch(() => {});
     // The engine's own `warning:` lines (never its question or answer text): logged, bounded, and kept for the result.
     const engineWarnings = engineWarningsOf(r.err);
     for (const w of engineWarnings) log(`engine warning: ${w}`);
     // Token pricing: the vendor-reported usage of every attempted call goes to billing BEFORE finalize (a stopped debate included).
-    if (limits) await reportUsage(handle, join(dir, 'out', 'usage.json'));
+    if (limits) await reportUsage(handle, join(dir, 'out', 'usage.json'), { observer: Boolean(sk?.observer) });
     // Calls that actually ran are counted from the transcript, whether or not the debate succeeded.
     const transcript = await readFile(join(dir, 'out', 'transcript.md'), 'utf8').catch(() => '');
     const webSearch = readWebSearch(await readFile(join(dir, 'out', 'web-search.json'), 'utf8').catch(() => ''), webSearchRequested,
@@ -773,8 +801,18 @@ async function executeDebate(plan, handle, ctx, { progress, onStarted, signal } 
       const spent = usageFromTranscript(t, question, { synthesized: /\n## Synthesis/.test(t) || (lastRun ? !lastRun.timedOut : false) });
       await metering.commit(handle, spent, { outcome: 'error', duration_ms: Date.now() - started, models: modelsFromTranscript(t, { synthesizer, calls: spent.calls }), ...(handle.finalize ? { transcript: t || null } : {}) }).catch(() => {});
     }
-    if (dir) rm(dir, { recursive: true, force: true }).catch(() => {});
+    if (dir) { const gone = rm(dir, { recursive: true, force: true }).catch(() => {}); if (sk) await gone; }
   }
+}
+
+// The environment a hosted-skills debate needs on top of the plan's limits. Switches this run does not use are removed, so the engine never sees a setting the host happened to have.
+function withSkillsEnv(sk, env) {
+  if (!sk) return env;
+  for (const k of ['E3D_SKILLS_SEATS', 'E3D_SKILLS_OBSERVER', 'E3D_DEBATE_OBSERVER_MAX_TOKENS', 'E3D_DEBATE_OBSERVER_INPUT_BYTES_MAX']) delete env[k];
+  Object.assign(env, { E3D_SPECIALISTS: '1', E3D_SKILLS_V1: '1', E3D_SKILLS_HOSTED: '1' });
+  if (sk.seats.length) env.E3D_SKILLS_SEATS = '1';
+  if (sk.observer) Object.assign(env, { E3D_SKILLS_OBSERVER: '1', E3D_DEBATE_OBSERVER_MAX_TOKENS: String(sk.observer.maxTokens), E3D_DEBATE_OBSERVER_INPUT_BYTES_MAX: String(sk.observer.inputBytes) });
+  return env;
 }
 
 // Token pricing (interface section 6): the billing object of a per_token debate gains quote_credits, charged_credits and the usage
@@ -1462,6 +1500,10 @@ if (!EXPERTS_RUN.ok) {
   process.stderr.write(`[e3d-mcp] refusing to start: ${EXPERTS_RUN.errors.join('; ')}\n`);
   process.exit(2);
 }
+if (!SKILLS_RUN.ok) {
+  process.stderr.write(`[e3d-mcp] refusing to start: ${SKILLS_RUN.errors.join('; ')}\n`);
+  process.exit(2);
+}
 if (PANEL_CONFIG.panel && !HTTP_MODE) {
   process.stderr.write('[e3d-mcp] E3D_MCP_PANEL is only supported in hosted mode (--http) with E3D_MCP_AUTH_URL; unset it for stdio.\n');
   process.exit(2);
@@ -1507,7 +1549,53 @@ function expertsPlan(experts, providers) {
   return { experts: { list: experts.list.map((e) => ({ id: e.id, hash: e.hash })), lensBytes: experts.lens_bytes } };
 }
 
-async function planWebRun(fields, { perToken = null, experts = null } = {}) {
+// skills (a listener with skills_v1; shape validated by run-server.js): { attachments: [{hook, target?, definition}], principal, skill_bytes, observer }. Everything below is refused
+// 400 invalid before anything runs and nothing is held: a definition the engine's own intake refuses (bad hash, wrong owner, tools requested, hidden characters, too large), a
+// definition without the hook it is attached for, the same skill on two seats or two different definitions of one id, a target that is not a provider of the plan, more instruction
+// bytes than skill_bytes, an observer adapter that cannot be priced per token. Errors carry stable skill_* codes only, never a value or a word of the definition. bin/e3d-debate
+// runs the same intake again when it starts, so a definition changed in between is refused there too, before any model call.
+const SKILL_CODE = /^skill_[a-z_]{1,40}$/;
+function skillsPlan(skills, providers) {
+  const refuse = (why) => ({ error: `error: invalid: skills: ${why}; nothing was run` });
+  const byId = new Map();
+  const seats = [];
+  let observer = null;
+  const seen = new Set();
+  const HOOK_SCOPE = { seat: 'debate_seat', observer: 'debate_observer' };
+  for (const a of skills.attachments) {
+    const x = intakeSkill(a.definition, { principal: skills.principal });
+    if (!x.ok) { const codes = [...new Set(x.errors.map((e) => e.code).filter((c) => typeof c === 'string' && SKILL_CODE.test(c)))].slice(0, 4); return refuse(`a definition was refused (${codes.join(', ') || 'skill_invalid'})`); }
+    const d = x.definition;
+    if (!d.hooks.some((h) => h.scope === HOOK_SCOPE[a.hook])) return refuse(`a definition has no ${a.hook} hook (skill_scope_denied)`);
+    const spec = `${d.id}@${d.version}#${d.definition_hash}`;
+    const p = parseSeatSkill(spec);
+    if (!p || p.ref !== d.id || p.version !== d.version || p.hash !== d.definition_hash) return refuse('a definition id, version or hash cannot be used as a pin (skill_schema_value)');
+    const prior = byId.get(d.id);
+    if (prior && canonicalJson(prior.def) !== canonicalJson(a.definition)) return refuse('one skill id is attached with two different definitions (skill_conflict)');
+    if (!prior) byId.set(d.id, { def: a.definition, intake: d, entry: x.entry });
+    if (a.hook === 'seat') {
+      if (!providers.includes(a.target)) return refuse('a seat target is not a provider of this run');
+      if (seen.has(`seat:${d.id}`)) return refuse('one skill is attached to two seats (skill_conflict)');
+      seen.add(`seat:${d.id}`);
+      // the engine refuses a seat whose lens block (the instruction text AND its wrapper) is over --lens-bytes-max: refuse here, before anything is held, what it would refuse after
+      if (Buffer.byteLength(lensBlock(expertFromSkill(x.entry)), 'utf8') > skills.skill_bytes) return refuse('a seat skill with its prompt wrapper is larger than skill_bytes (skill_too_large)');
+      seats.push({ spec, target: a.target });
+    } else {
+      // the observer's usage row is keyed observer:<name>; billing drops a key it cannot read, so a name that does not fit is refused up front
+      if (!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(d.id.split('.').slice(2).join('.'))) return refuse('the observer skill name is longer than 64 characters or has a character the usage report cannot carry (skill_schema_value)');
+      observer = { spec, provider: skills.observer.provider, maxTokens: skills.observer.max_tokens, inputBytes: skills.observer.input_bytes };
+    }
+  }
+  // the instruction bytes the quote priced: the sum over the distinct skills of the run (a skill that is a seat and the observer counts once)
+  const bytes = [...byId.values()].reduce((n, v) => n + Buffer.byteLength(v.intake.instructions.method, 'utf8'), 0);
+  if (bytes > skills.skill_bytes) return refuse('the instruction text is larger than skill_bytes (skill_too_large)');
+  if (observer) { const bad = pricedError([observer.provider], { env: process.env }); if (bad) return refuse('the observer provider cannot be priced per token'); }
+  const defs = [...byId.values()];
+  const digest = createHash('sha256').update(defs.map((v) => intakeDigest(v.intake)).join('\n')).digest('hex').slice(0, 16);
+  return { skills: { principal: skills.principal, skillBytes: skills.skill_bytes, definitions: defs.map((v) => v.def), seats, observer, digest } };
+}
+
+async function planWebRun(fields, { perToken = null, experts = null, skills = null } = {}) {
   const ctx = { session: { clientInfo: null, capabilities: {}, rootsReady: null }, principal: null };
   const clamp = perToken ? { ...runsConfig.customer, rounds: Infinity, max_words: Infinity } : runsConfig.customer;
   const plan = await planDebate({ question: fields.question, providers: fields.providers, rounds: fields.rounds, max_words: fields.max_words, web_search: perToken ? Boolean(perToken.max_searches) : fields.web_search }, ctx, { clamp, web: true });
@@ -1520,10 +1608,32 @@ async function planWebRun(fields, { perToken = null, experts = null } = {}) {
     const searchPart = caps ? { webSearch: true, searchProviders: Object.keys(caps).length, maxSearchesPerCall: Math.max(...Object.values(caps)) } : { webSearch: false, searchProviders: 0, maxSearchesPerCall: 0 };
     const x = experts ? expertsPlan(experts, plan.providers) : null;
     if (x?.error) return x;
-    const priced = { ...plan, ...searchPart, perToken: limits, ...(x ? { experts: x.experts } : {}), ...(fields.jev === true ? { jev: true } : {}), ...(fields.investigate === true ? { case: { investigate: true } } : {}) };
+    const sk = skills ? skillsPlan(skills, plan.providers) : null;
+    if (sk?.error) return sk;
+    const priced = { ...plan, ...searchPart, perToken: limits, ...(x ? { experts: x.experts } : {}), ...(sk ? { skills: sk.skills } : {}), ...(fields.jev === true ? { jev: true } : {}), ...(fields.investigate === true ? { case: { investigate: true } } : {}) };
     return { plan: priced, worst: worstFor(priced) };
   }
   return { plan: { ...plan, ...(fields.jev === true ? { jev: true } : {}), ...(fields.investigate === true ? { case: { investigate: true } } : {}) }, worst: worstFor(plan) };
+}
+
+// A process killed in the middle of a skills run (SIGKILL, power loss) can leave its private hosted-skills file in a temporary run directory. At start the file (never the
+// directory, never anything else) is removed from run directories of this user, private (0700) and older than the longest a run can last plus a margin.
+async function sweepStaleHostedFiles() {
+  const base = tmpdir();
+  const maxAgeMs = 6 * 3600 * 1000;
+  let removed = 0;
+  try {
+    for (const name of await readdir(base)) {
+      if (!/^e3d-mcp-[A-Za-z0-9]{6}$/.test(name)) continue;
+      const d = join(base, name);
+      const st = await lstat(d).catch(() => null);
+      if (!st || !st.isDirectory() || st.uid !== process.getuid() || (st.mode & 0o077) !== 0 || Date.now() - st.mtimeMs < maxAgeMs) continue;
+      const f = join(d, 'hosted-skills.json');
+      const fs = await lstat(f).catch(() => null);
+      if (fs && fs.isFile()) { await rm(f, { force: true }); removed += 1; }
+    }
+  } catch { /* nothing to sweep */ }
+  if (removed) log(`swept ${removed} stale hosted-skills file${removed === 1 ? '' : 's'} left by an earlier process`);
 }
 
 // The external hook: validate everything, then recover crashed work and start outbox delivery BEFORE listening.
@@ -1544,6 +1654,7 @@ async function startAuthHook() {
   // E3D_MCP_PANEL=1: every hosted debate asks billing for the account's panel first (refused on any failure).
   if (PANEL_CONFIG.panel) panelClient = createPanelClient({ log });
   if (PRICING_CONFIG.mode === 'per_token') pricingClient = createPricingClient({ log });
+  if (SKILLS_RUN.on) await sweepStaleHostedFiles();
   const outbox = createOutbox({ dir: usage.dir, auth: external, log });
   external.attachOutbox(outbox);
   metering = createMetering({ localUsage: usage, external, outbox, log, dir: usage.dir });
@@ -1586,7 +1697,7 @@ if (HTTP_MODE) {
     // a separate loopback-only listener; the public one above never serves /internal/*
     if (hook && RUN_SERVER.enabled) {
       runServer = await startRunServer({ port: RUN_SERVER.config.port, token: RUN_SERVER.config.token, failsPerMin: RUN_SERVER.config.failsPerMin,
-        runs, external: hook.external, plan: planWebRun, log, pricing: { mode: PRICING_CONFIG.mode, customer: runsConfig.customer, search: searchCapable(process.env, { mode: PRICING_CONFIG.mode }), experts: EXPERTS_RUN.on },
+        runs, external: hook.external, plan: planWebRun, log, pricing: { mode: PRICING_CONFIG.mode, customer: runsConfig.customer, search: searchCapable(process.env, { mode: PRICING_CONFIG.mode }), experts: EXPERTS_RUN.on, skills: SKILLS_RUN.on ? { seats: SKILLS_RUN.seats, observer: SKILLS_RUN.observer } : false },
         recap: RECAP_CONFIG.on ? createRecapRunner({ providersDir: fileURLToPath(new URL('../lib/providers', import.meta.url)), providers: RECAP_CONFIG.providers, log }) : null,
         chat: CHAT_CONFIG.on ? createChatRunner({ providersDir: fileURLToPath(new URL('../lib/providers', import.meta.url)), providers: CHAT_CONFIG.providers, log, ...(EXPERTS_RUN.on ? { expertsDir: BUILTIN_EXPERTS_DIR } : {}) }) : null });
     }
