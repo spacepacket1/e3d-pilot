@@ -1,0 +1,508 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "skill-definition.schema.json",
+  "title": "SkillDefinition v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "id",
+    "version",
+    "name",
+    "description",
+    "owner_ref",
+    "visibility",
+    "status",
+    "capability_level",
+    "license",
+    "hooks",
+    "instructions",
+    "input_schema_ref",
+    "output_schema_ref",
+    "requested_capabilities",
+    "memory_policy",
+    "limits",
+    "fallback",
+    "provenance",
+    "definition_hash"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "e3d.skill/v1",
+      "x-code": "skill_schema_version_unsupported"
+    },
+    "id": {
+      "$ref": "common.schema.json#/$defs/skillId"
+    },
+    "version": {
+      "$ref": "common.schema.json#/$defs/semver"
+    },
+    "name": {
+      "type": "string",
+      "pattern": "^(?![\\s\\S]*\\uDB40[\\uDC00-\\uDC7F\\uDD00-\\uDDEF])[^\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F\\u007F-\\u009F\\u00AD\\u034F\\u061C\\u115F\\u1160\\u180E\\u200B-\\u200F\\u2028-\\u202E\\u2060-\\u2069\\u3164\\uFE00-\\uFE0D\\uFEFF\\uFFF9-\\uFFFC]*$",
+      "minLength": 1,
+      "maxLength": 80
+    },
+    "description": {
+      "type": "string",
+      "pattern": "^(?![\\s\\S]*\\uDB40[\\uDC00-\\uDC7F\\uDD00-\\uDDEF])[^\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F\\u007F-\\u009F\\u00AD\\u034F\\u061C\\u115F\\u1160\\u180E\\u200B-\\u200F\\u2028-\\u202E\\u2060-\\u2069\\u3164\\uFE00-\\uFE0D\\uFEFF\\uFFF9-\\uFFFC]*$",
+      "minLength": 1,
+      "maxLength": 1024
+    },
+    "owner_ref": {
+      "$ref": "common.schema.json#/$defs/principalRef"
+    },
+    "visibility": {
+      "enum": [
+        "private",
+        "team",
+        "unlisted",
+        "public"
+      ]
+    },
+    "status": {
+      "enum": [
+        "draft",
+        "active",
+        "deprecated",
+        "withdrawn"
+      ]
+    },
+    "capability_level": {
+      "enum": [
+        "instructional",
+        "tool_enabled",
+        "learning"
+      ]
+    },
+    "license": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "tags": {
+      "type": "array",
+      "maxItems": 20,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+        "maxLength": 40
+      }
+    },
+    "tasks": {
+      "type": "array",
+      "maxItems": 50,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 64
+      }
+    },
+    "model_hints": {
+      "type": "array",
+      "maxItems": 50,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "provider"
+        ],
+        "properties": {
+          "provider": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]{0,31}$"
+          },
+          "effort": {
+            "enum": [
+              "low",
+              "medium",
+              "high"
+            ]
+          }
+        }
+      }
+    },
+    "hooks": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 6,
+      "items": {
+        "anyOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "scope",
+              "event"
+            ],
+            "properties": {
+              "scope": {
+                "const": "chat"
+              },
+              "event": {
+                "const": "before_response"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "scope",
+              "event"
+            ],
+            "properties": {
+              "scope": {
+                "const": "chat"
+              },
+              "event": {
+                "const": "after_response"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "scope",
+              "event"
+            ],
+            "properties": {
+              "scope": {
+                "const": "debate_seat"
+              },
+              "event": {
+                "const": "seat_prompt"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "scope",
+              "event"
+            ],
+            "properties": {
+              "scope": {
+                "const": "debate_observer"
+              },
+              "event": {
+                "const": "after_synthesis"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "scope",
+              "event"
+            ],
+            "properties": {
+              "scope": {
+                "const": "router"
+              },
+              "event": {
+                "const": "recommend_plan"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "scope",
+              "event"
+            ],
+            "properties": {
+              "scope": {
+                "const": "evaluation"
+              },
+              "event": {
+                "const": "after_outcome"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "instructions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "method",
+        "constraints"
+      ],
+      "properties": {
+        "method": {
+          "type": "string",
+          "pattern": "^(?![\\s\\S]*\\uDB40[\\uDC00-\\uDC7F\\uDD00-\\uDDEF])[^\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F\\u007F-\\u009F\\u00AD\\u034F\\u061C\\u115F\\u1160\\u180E\\u200B-\\u200F\\u2028-\\u202E\\u2060-\\u2069\\u3164\\uFE00-\\uFE0D\\uFEFF\\uFFF9-\\uFFFC]*$",
+          "minLength": 1,
+          "maxLength": 8000
+        },
+        "constraints": {
+          "type": "array",
+          "maxItems": 20,
+          "items": {
+            "type": "string",
+            "pattern": "^(?![\\s\\S]*\\uDB40[\\uDC00-\\uDC7F\\uDD00-\\uDDEF])[^\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F\\u007F-\\u009F\\u00AD\\u034F\\u061C\\u115F\\u1160\\u180E\\u200B-\\u200F\\u2028-\\u202E\\u2060-\\u2069\\u3164\\uFE00-\\uFE0D\\uFEFF\\uFFF9-\\uFFFC]*$",
+            "minLength": 1,
+            "maxLength": 500
+          }
+        }
+      }
+    },
+    "input_schema_ref": {
+      "type": "string",
+      "pattern": "^e3d://schemas/[a-z0-9-]+/v[0-9]+$"
+    },
+    "output_schema_ref": {
+      "type": "string",
+      "pattern": "^e3d://schemas/[a-z0-9-]+/v[0-9]+$"
+    },
+    "requested_capabilities": {
+      "type": "array",
+      "maxItems": 9,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "capability",
+          "purpose"
+        ],
+        "properties": {
+          "capability": {
+            "$ref": "common.schema.json#/$defs/capability"
+          },
+          "purpose": {
+            "type": "string",
+            "pattern": "^(?![\\s\\S]*\\uDB40[\\uDC00-\\uDC7F\\uDD00-\\uDDEF])[^\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F\\u007F-\\u009F\\u00AD\\u034F\\u061C\\u115F\\u1160\\u180E\\u200B-\\u200F\\u2028-\\u202E\\u2060-\\u2069\\u3164\\uFE00-\\uFE0D\\uFEFF\\uFFF9-\\uFFFC]*$",
+            "minLength": 1,
+            "maxLength": 300
+          },
+          "required": {
+            "type": "boolean"
+          },
+          "resource_classes": {
+            "type": "array",
+            "maxItems": 8,
+            "uniqueItems": true,
+            "items": {
+              "enum": [
+                "outcome_summary",
+                "user_correction",
+                "debate_receipt",
+                "claim",
+                "artifact"
+              ]
+            }
+          }
+        }
+      }
+    },
+    "memory_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "read",
+        "write",
+        "max_items",
+        "allowed_scopes"
+      ],
+      "properties": {
+        "read": {
+          "enum": [
+            "none",
+            "explicit"
+          ]
+        },
+        "write": {
+          "enum": [
+            "none",
+            "propose_only"
+          ]
+        },
+        "max_items": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 50
+        },
+        "allowed_scopes": {
+          "type": "array",
+          "maxItems": 3,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "current_user",
+              "current_project",
+              "current_conversation"
+            ]
+          }
+        }
+      }
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "max_input_bytes",
+        "max_output_bytes",
+        "max_model_calls",
+        "max_tool_calls",
+        "timeout_ms"
+      ],
+      "properties": {
+        "max_input_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 256000
+        },
+        "max_output_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 64000
+        },
+        "max_model_calls": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 8
+        },
+        "max_tool_calls": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 12
+        },
+        "timeout_ms": {
+          "type": "integer",
+          "minimum": 1000,
+          "maximum": 300000
+        },
+        "max_words": {
+          "type": "integer",
+          "minimum": 20,
+          "maximum": 2000
+        }
+      }
+    },
+    "fallback": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "on_unavailable_capability",
+        "on_invalid_output"
+      ],
+      "properties": {
+        "on_unavailable_capability": {
+          "enum": [
+            "skip_with_notice",
+            "fail"
+          ]
+        },
+        "on_invalid_output": {
+          "enum": [
+            "return_unstructured_with_warning",
+            "retry_once",
+            "fail"
+          ]
+        }
+      }
+    },
+    "tests": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "suite_refs": {
+          "type": "array",
+          "maxItems": 10,
+          "items": {
+            "type": "string",
+            "pattern": "^fixture://[a-z0-9-]+/v[0-9]+$"
+          }
+        }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "parent",
+        "forked_from",
+        "source_format",
+        "created_by",
+        "created_at"
+      ],
+      "properties": {
+        "parent": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "common.schema.json#/$defs/skillRef"
+            }
+          ]
+        },
+        "forked_from": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "common.schema.json#/$defs/skillRef"
+            }
+          ]
+        },
+        "source_format": {
+          "enum": [
+            "e3d-native",
+            "expert-v1-projection",
+            "agent-skills-import"
+          ]
+        },
+        "legacy_folder_hash": {
+          "$ref": "common.schema.json#/$defs/hash"
+        },
+        "created_by": {
+          "$ref": "common.schema.json#/$defs/principalRef"
+        },
+        "created_at": {
+          "$ref": "common.schema.json#/$defs/time"
+        }
+      }
+    },
+    "extensions": {
+      "type": "object",
+      "maxProperties": 20,
+      "additionalProperties": {
+        "type": "string",
+        "maxLength": 200
+      }
+    },
+    "definition_hash": {
+      "$ref": "common.schema.json#/$defs/hash"
+    },
+    "signature": {
+      "type": "null"
+    },
+    "scripts": {
+      "x-code": "skill_scripts_not_allowed",
+      "not": {}
+    },
+    "install": {
+      "x-code": "skill_scripts_not_allowed",
+      "not": {}
+    },
+    "mcp_servers": {
+      "x-code": "skill_scripts_not_allowed",
+      "not": {}
+    },
+    "network": {
+      "x-code": "skill_scripts_not_allowed",
+      "not": {}
+    }
+  }
+}

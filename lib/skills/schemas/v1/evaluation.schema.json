@@ -1,0 +1,222 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "evaluation.schema.json",
+  "title": "EvaluationRecord v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "evaluation_id",
+    "subject",
+    "task",
+    "rubric",
+    "baseline_run_ids",
+    "results",
+    "cost",
+    "sample_size",
+    "uncertainty",
+    "data_split",
+    "corrections",
+    "visibility",
+    "quality_status"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "e3d.evaluation/v1",
+      "x-code": "skill_schema_version_unsupported"
+    },
+    "evaluation_id": {
+      "type": "string",
+      "pattern": "^evl_[0-9a-zA-Z]{4,40}$"
+    },
+    "subject": {
+      "$ref": "common.schema.json#/$defs/skillRef"
+    },
+    "task": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "task_class",
+        "fixture_version"
+      ],
+      "properties": {
+        "task_class": {
+          "type": "string",
+          "pattern": "^[a-z0-9_]{3,40}$"
+        },
+        "fixture_version": {
+          "type": "string",
+          "pattern": "^fixture://[a-z0-9-]+/v[0-9]+$"
+        }
+      }
+    },
+    "rubric": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "rubric_id",
+        "rubric_version",
+        "approved",
+        "grader"
+      ],
+      "properties": {
+        "rubric_id": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "rubric_version": {
+          "$ref": "common.schema.json#/$defs/semver"
+        },
+        "approved": {
+          "type": "boolean"
+        },
+        "grader": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "provenance"
+          ],
+          "properties": {
+            "type": {
+              "enum": [
+                "human",
+                "model",
+                "mechanical"
+              ]
+            },
+            "provenance": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "blind": {
+              "type": "boolean"
+            }
+          }
+        }
+      }
+    },
+    "baseline_run_ids": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 200,
+      "items": {
+        "type": "string",
+        "pattern": "^skr_[0-9a-zA-Z]{4,40}$"
+      }
+    },
+    "results": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "verified_positives",
+        "false_positives",
+        "abstentions",
+        "missing_evidence"
+      ],
+      "properties": {
+        "verified_positives": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "false_positives": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "abstentions": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "missing_evidence": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "cost": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "credits",
+        "latency_ms_p50",
+        "latency_ms_p95"
+      ],
+      "properties": {
+        "credits": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "latency_ms_p50": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "latency_ms_p95": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "sample_size": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "uncertainty": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "method",
+        "level",
+        "ci_low",
+        "ci_high"
+      ],
+      "properties": {
+        "method": {
+          "enum": [
+            "bootstrap_paired",
+            "wilson",
+            "none"
+          ]
+        },
+        "level": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "ci_low": {
+          "type": "number"
+        },
+        "ci_high": {
+          "type": "number"
+        }
+      }
+    },
+    "data_split": {
+      "enum": [
+        "development",
+        "validation",
+        "holdout"
+      ]
+    },
+    "corrections": {
+      "type": "array",
+      "maxItems": 50,
+      "items": {
+        "type": "string",
+        "pattern": "^evl_[0-9a-zA-Z]{4,40}$"
+      }
+    },
+    "visibility": {
+      "$ref": "common.schema.json#/$defs/sensitivity"
+    },
+    "quality_status": {
+      "enum": [
+        "unknown",
+        "supported",
+        "unsupported",
+        "inconclusive"
+      ]
+    }
+  }
+}

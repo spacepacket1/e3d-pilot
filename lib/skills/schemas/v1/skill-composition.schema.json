@@ -1,0 +1,146 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "skill-composition.schema.json",
+  "title": "SkillComposition v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "id",
+    "version",
+    "nodes",
+    "edges",
+    "execution",
+    "limits",
+    "definition_hash"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "e3d.skill-composition/v1",
+      "x-code": "skill_schema_version_unsupported"
+    },
+    "id": {
+      "$ref": "common.schema.json#/$defs/compositionId"
+    },
+    "version": {
+      "$ref": "common.schema.json#/$defs/semver"
+    },
+    "nodes": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 16,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "node_id",
+          "skill"
+        ],
+        "properties": {
+          "node_id": {
+            "type": "string",
+            "pattern": "^[a-z0-9_]{1,32}$"
+          },
+          "skill": {
+            "$ref": "common.schema.json#/$defs/skillRef"
+          },
+          "optional": {
+            "type": "boolean"
+          },
+          "fallback_node": {
+            "type": "string",
+            "pattern": "^[a-z0-9_]{1,32}$"
+          }
+        }
+      }
+    },
+    "edges": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "from",
+          "to"
+        ],
+        "properties": {
+          "from": {
+            "type": "string",
+            "pattern": "^[a-z0-9_]{1,32}\\.[a-z0-9_]{1,32}$"
+          },
+          "to": {
+            "type": "string",
+            "pattern": "^[a-z0-9_]{1,32}\\.[a-z0-9_]{1,32}$"
+          }
+        }
+      }
+    },
+    "execution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "failure_policy",
+        "max_parallel"
+      ],
+      "properties": {
+        "mode": {
+          "enum": [
+            "single",
+            "sequential",
+            "parallel_then_reduce"
+          ]
+        },
+        "failure_policy": {
+          "enum": [
+            "fail_fast",
+            "continue_optional",
+            "fallback_node"
+          ]
+        },
+        "max_parallel": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4
+        }
+      }
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "max_nodes",
+        "max_depth",
+        "max_total_model_calls",
+        "max_total_tool_calls"
+      ],
+      "properties": {
+        "max_nodes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16
+        },
+        "max_depth": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8
+        },
+        "max_total_model_calls": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 32
+        },
+        "max_total_tool_calls": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 48
+        }
+      }
+    },
+    "definition_hash": {
+      "$ref": "common.schema.json#/$defs/hash"
+    }
+  }
+}

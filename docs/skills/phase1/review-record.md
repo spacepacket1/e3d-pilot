@@ -41,3 +41,27 @@ One read-only Sonnet reviewer tried to break the change (F-2, T3, T20, T21). Fin
 | N1 to N5 | nit | N1 (misleading `missing_skill_md`), N2 (growing file), N4 (Windows caveat documented), N5 (brittle and missing tests) addressed |
 
 `tests/specialists-hardening.sh` has 56 cases; 30 of the cases for the review findings fail on the code before the fixes.
+
+## Skills phase 2b (local skills runtime): independent review
+
+One read-only Sonnet reviewer attacked the runtime (loader, resolver, export, CLI wiring, stdio MCP tools, receipt). No blocking finding on the flags-off path. Findings and dispositions:
+
+| Finding | Severity | Disposition |
+| --- | --- | --- |
+| S1: a skill's text could forge a list row or a fake notice in the MCP answer, and close its own `"""` frame | should fix | Fixed: one-line descriptions, a fence longer than any backtick run in the text, notice before and after |
+| S2: a repo folder could choose `owner_ref` (lookalikes of `e3d`, `local-user` vs `local_user`, `__proto__`) and shadow another tier's id | should fix | Fixed: the owner belongs to the tier; a folder may only restate it; export omits `owner_ref` |
+| S3: `tool_enabled` and `learning` skills accepted, and the tool text said "requests no capability" | should fix | Fixed: only `instructional` is accepted in this release (`skill_capability_denied`); the text is built from the data |
+| S4: every MCP call rescanned all folders without a cap | should fix | Fixed: 200 folders per tier, 100 skills per list, 3 s catalogue cache |
+| S5: a long name leaked a temp path in an error | should fix | Fixed: name length checked, fixed error message |
+| S6: an empty `--skill-hash ""` silently dropped the pin | should fix | Fixed: pins are validated and an empty pin is refused |
+| S7: a bare name resolved to a folder in the current directory | should fix | Fixed: only path-like arguments are folders |
+| S8: the receipt re-read the folder | should fix | Fixed: the entry says `changed_since_load` when the bytes differ from those the panel was planned from |
+| S9: withdrawn skills still resolved; pins do not cover `status` | should fix | Fixed: `skill_withdrawn` refuses them, `deprecated` is flagged; documented that pins cover meaning, not status |
+| N1 N2 N3 N4 N5 N6 N7 | nit | Fixed (safe printing, name not an id, normalised empty lists, missing-value messages, `--` before values, pin/action check, lazy import of the MCP tools) |
+| N8 tier directory that is a symlink is followed | nit | Accepted: users symlink their skills folder from a dotfiles repo; only skill-shaped folders are read |
+| N9 `readOnlyHint` on validate/export (they use a temp folder) | nit | Accepted: they change nothing the user owns |
+| N10 export leaves a folder on a round-trip failure | nit | Accepted: the error says where, for inspection |
+
+`tests/skills-runtime.sh` now has 47 library cases; the cases for these findings fail on the code before the fixes.
+
+**Not independently reviewed:** the advisory scanner (`lib/skills/scan.mjs` and its wiring into the commands and MCP tools) was added after this review, at the owner's request (ADR-0015 item 6). It is tested (82 library cases: every rule, benign near-misses, the ten built-ins scanning clean, worst-case inputs at the size limit, and the wiring), but no separate reviewer has attacked it. Because it is advisory and never blocks, its failure modes are false negatives and false positives, not a bypass of a control.

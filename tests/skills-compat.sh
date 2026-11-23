@@ -24,10 +24,12 @@ tools() { # tools <env...>  -> {tool: [input property names]} with a clean envir
   [[ -n "$out" ]] || fail "e3d-mcp gave no tools/list answer (is node on PATH? config: $*)"
   printf '%s\n' "$out"
 }
-jq -n --argjson a "$(tools)" --argjson b "$(tools E3D_MCP_EXPERTS=1)" '{note: "tool names and their input property names, with every skills/experts flag unset and with E3D_MCP_EXPERTS=1 (clean environment)", default: $a, experts_read: $b}' > "$TMP/tools.json"
+jq -n --argjson a "$(tools)" --argjson b "$(tools E3D_MCP_EXPERTS=1)" --argjson c "$(tools E3D_MCP_SKILLS=1)" '{note: "tool names and their input property names, with every skills/experts flag unset, with E3D_MCP_EXPERTS=1 and with E3D_MCP_SKILLS=1 (clean environment)", default: $a, experts_read: $b, skills_read: $c}' > "$TMP/tools.json"
 if [[ "${1:-}" == "--write-tools" ]]; then cp "$TMP/tools.json" "$FX/mcp-tools-baseline.json"; echo "wrote mcp-tools-baseline.json"; exit 0; fi
 diff -u "$FX/mcp-tools-baseline.json" "$TMP/tools.json" >&2 || fail "the MCP tool list changed"
-jq -e '[(.default | keys[]), (.experts_read | keys[])] | map(select(test("skill"))) | length == 0' "$TMP/tools.json" >/dev/null || fail "a skill tool is listed before the skills phases ship"
+jq -e '[(.default | keys[]), (.experts_read | keys[])] | map(select(test("skill"))) | length == 0' "$TMP/tools.json" >/dev/null || fail "a skill tool is listed without E3D_MCP_SKILLS=1"
 jq -e '.experts_read | has("e3d_list_experts") and has("e3d_get_expert")' "$TMP/tools.json" >/dev/null || fail "E3D_MCP_EXPERTS=1 must list the two expert tools"
 jq -e '.default | (has("e3d_list_experts") | not)' "$TMP/tools.json" >/dev/null || fail "experts tools must be off by default"
+jq -e '.skills_read | (keys | map(select(test("skill"))) | sort) == ["e3d_export_skill","e3d_get_skill","e3d_list_skills","e3d_validate_skill"]' "$TMP/tools.json" >/dev/null || fail "E3D_MCP_SKILLS=1 must list exactly the four skill tools"
+jq -e '. as $r | ($r.skills_read | with_entries(select(.key | test("skill") | not))) == $r.default' "$TMP/tools.json" >/dev/null || fail "E3D_MCP_SKILLS=1 must add the four skill tools and change nothing else"
 echo "skills-compat: PASS"

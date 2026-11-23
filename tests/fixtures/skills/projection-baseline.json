@@ -1,0 +1,55 @@
+{
+  "note": "id, version, definition_hash and legacy folder hash of every built-in expert projected to a skill (docs/skills ADR-0002, ADR-0003). A change here means a built-in expert changed meaning or the projection changed: regenerate ON PURPOSE (node tests/fixtures/skills/projection-snapshot.mjs --write) and say so in the PR.",
+  "skills": {
+    "skill.e3d.agent-diagnosis": {
+      "version": "1.0.0",
+      "definition_hash": "sha256:47aa601db8e93455f0a4279cf9cfc5d68abf5485484039f2179bbf15fb2e3db0",
+      "legacy_folder_hash": "sha256:4f5f29a1796b690f8d3fb634fd446753f257161d0d797f263cfd7913fe13d4da"
+    },
+    "skill.e3d.architect": {
+      "version": "1.0.0",
+      "definition_hash": "sha256:dec334d172e52f485773659d76a0a50585204a6460acf4abb8ba84f0a3090b3a",
+      "legacy_folder_hash": "sha256:190d62538003ad177c1e7f5e6bc3cbf097035ebef6acfca951cfc43c566ddba2"
+    },
+    "skill.e3d.compliance": {
+      "version": "1.0.0",
+      "definition_hash": "sha256:58dc1bd861e84cdf34ecf16a1c871f5c4272ba116c7fabd5138e33c1454043f7",
+      "legacy_folder_hash": "sha256:e312b9c206e9b0034d0c855990be8c14efbde7542d1cc84efab82b04d4cb7feb"
+    },
+    "skill.e3d.customer": {
+      "version": "1.0.0",
+      "definition_hash": "sha256:660719efdafb3cdf0cf9582ef12222435cc647ed4cac8e285514b7a0e26e7602",
+      "legacy_folder_hash": "sha256:53ed1613a7c0082fcb2dbaa5ba9f8d44eee76affcc2b3b2f124e7e4f56ea35b7"
+    },
+    "skill.e3d.facilitator": {
+      "version": "1.0.0",
+      "definition_hash": "sha256:00b8c1652f51f0e6d05a135d8e5e1603f245204990dabfd16ec0d4c992d60142",
+      "legacy_folder_hash": "sha256:7ef075b50cb2223bcd81303faa09b4e53cbc3777a4543c3b7f00921e1869d38c"
+    },
+    "skill.e3d.factchecker": {
+      "version": "2.0.0",
+      "definition_hash": "sha256:80514f258189043e89e43b5e53c27cc153577e5e253a22fb344386f9e36b8875",
+      "legacy_folder_hash": "sha256:70e73c0e4650417cc2463d79ee6d5bb98de9cb4b1fc730765a683b8c0dfa3b97"
+    },
+    "skill.e3d.implementer": {
+      "version": "1.0.0",
+      "definition_hash": "sha256:aefb95f3db9bb76fde5778e852fae8479dd2acf5955cb4a0bf77072e3b729da7",
+      "legacy_folder_hash": "sha256:0981bc9abb2271ffd75c585509ffc768f876a7652619e5f3eef917f2ded72c71"
+    },
+    "skill.e3d.macro-market-analyst": {
+      "version": "1.0.0",
+      "definition_hash": "sha256:b088ac94413c50b029980ab2ffc242adc2d2f54ef86df9b15b764258ec6aa02a",
+      "legacy_folder_hash": "sha256:fe5508e7672d3d630a8e3b1a8fa67fe615af0921945397a62809924608e2c9aa"
+    },
+    "skill.e3d.premortem": {
+      "version": "1.0.0",
+      "definition_hash": "sha256:6af8c668cddc8f04244026f6569b7668cde45c460793fe1cb3e7adee24cf4cef",
+      "legacy_folder_hash": "sha256:6c9b1cf7d45a67e9cab225cd6611d79c3d7e10e89d1135b52feb92f747152f9f"
+    },
+    "skill.e3d.skeptic": {
+      "version": "1.0.0",
+      "definition_hash": "sha256:5e807bc273d2b5848df2d8212cd40d7a390d4db12ee7e7633566f166cfb627a7",
+      "legacy_folder_hash": "sha256:e0d2f4a4052443a4942f62c5963742f22cabd5c8e57833e8ea91705b64990b11"
+    }
+  }
+}

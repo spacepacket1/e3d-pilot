@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "skill-grant.schema.json",
+  "title": "PermissionGrant v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "grant_id",
+    "plan_id",
+    "capability",
+    "scope",
+    "audience",
+    "resource_classes",
+    "max_items",
+    "max_bytes",
+    "expires_at"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "e3d.skill-grant/v1",
+      "x-code": "skill_schema_version_unsupported"
+    },
+    "grant_id": {
+      "type": "string",
+      "pattern": "^grant_[0-9a-zA-Z]{4,40}$"
+    },
+    "plan_id": {
+      "type": "string",
+      "pattern": "^spl_[0-9a-zA-Z]{4,40}$"
+    },
+    "capability": {
+      "$ref": "common.schema.json#/$defs/capability"
+    },
+    "scope": {
+      "$ref": "common.schema.json#/$defs/scopeRef"
+    },
+    "audience": {
+      "$ref": "common.schema.json#/$defs/audience"
+    },
+    "resource_classes": {
+      "type": "array",
+      "maxItems": 8,
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "outcome_summary",
+          "user_correction",
+          "debate_receipt",
+          "claim",
+          "artifact"
+        ]
+      }
+    },
+    "max_items": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 50
+    },
+    "max_bytes": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 256000
+    },
+    "expires_at": {
+      "$ref": "common.schema.json#/$defs/time"
+    }
+  }
+}
