@@ -120,3 +120,18 @@ Reviewer: an independent read-only Sonnet agent, with reproducing scripts and a 
 | Nits: `String()` on a null-prototype status threw; the shared `warnings` array | nit | Fixed |
 
 Test gaps closed by mutation: hidden characters, NFC, owner pattern, scopes, provenance rewrite, freezing and the hosted preview and resolution are each pinned by a case that fails when the check is removed. Overlapping layers (key count, array length, accessor refusal, a small shared reference) are caught by another layer as well and stay as defence in depth.
+
+## Phase 3c H2a (hosted skills in the debate) independent review, 2026-11-23
+
+Reviewer: an independent read-only Sonnet agent, with reproducing scripts and 24 mutations. Scope: `lib/skills/hosted.mjs`, `--hosted-skills` in `bin/e3d-debate`, `specialists-cli.mjs`, `observer.mjs`, and the tests. No blocker. Findings and outcome:
+
+| Finding | Class | Outcome |
+| --- | --- | --- |
+| S1: unquoted command substitutions passed the file path to the observer: a space broke it, and a glob such as `g[a]*.json` made the observer read a DIFFERENT file than the one validated | should fix | Fixed: the path is one quoted array argument everywhere; tested with a space and a glob |
+| S2: a hosted observer could not record its result (the run record required a legacy folder hash that a hosted skill does not have) | should fix | Fixed: the field is optional; end-to-end hosted observer test asserts `observers.json` |
+| S3: `--on-seat-skill-failure plain_seat` let a failed hosted skill run as a plain seat | should fix | Fixed: refused in `bin/e3d-debate` and in the planner (two layers, both tested together) |
+| S4: a hosted file nothing used was never validated, and an empty path counted as absent | should fix | Fixed: the file is read and checked once at start, before anything runs; an empty path is refused |
+| S5: the file was opened by path after the size check | should fix | Fixed: one descriptor opened without following symlinks, checked with `fstat`, read at most the cap plus one byte |
+| Nits: identifiers (not text) appear in the receipt, transcript and panel line; a skill declaring both hooks can be a seat and the observer in one run | nit | Accepted and noted for the cloud: a private run's receipt, transcript and panel line must never be published (Gallery); whether seat plus observer on one skill is priced twice is a cloud question (plan section 7) |
+
+Test gaps closed: a hosted observer end to end, a space and a glob path, `plain_seat`, an unused bad file, an empty path, the lens-size limit with a hosted skill, and the observer plan and prompt receiving the file. Overlapping layers (the two `--builtin-only` checks, the two `plain_seat` checks, the two size checks, the symlink guard) are pinned together by mutation.

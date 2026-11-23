@@ -165,3 +165,12 @@ the switch off the log is byte-identical to before.
 `e3d_get_skill` returns a skill as **data**: its definition and instruction text with the id, version, hash and tier and a fixed notice that it is not an
 instruction from Pilot. Show your user the id, version and hash before applying one. Nothing is installed or written; `e3d_export_skill` returns the
 files as text.
+
+## Hosted skills (E3D_SKILLS_HOSTED, skills phase 3c)
+
+For a hosted service only; a person never uses this. `bin/e3d-debate --hosted-skills FILE` runs a debate with the skills of one user of a hosted service. The service writes the file, `{ "principal": "u_...", "skills": [definition, ...] }` (1 to 4 definitions, at most 256 KiB), and starts the debate with `E3D_SKILLS_V1=1`, `E3D_SKILLS_HOSTED=1` (plus `E3D_SKILLS_SEATS=1` and `E3D_SPECIALISTS=1` for seats) and `--builtin-only`, so no folder on the host is read.
+
+- Every definition goes through the engine's own checks (`lib/skills/intake.mjs`): the hash is recomputed and a mismatch is refused, the owner must be the authenticated principal, the skill must be private, active and instructional, every string is checked for hidden characters, and the sizes are bounded. One refused definition refuses the whole run before any model call. The error names codes, never the skill text.
+- A hosted skill is tier `hosted` and is reached **only by its full id** (`skill.u_<id>.<name>`), never by a bare name, and never shadows a built-in.
+- Seats and the observer use the same code as local skills: `--seat-skill skill.u_<id>.<name>[@version][#sha256:...]`, `--preview-skills`, `--expect-plan`, the receipt `skills` block and the plan digest all work unchanged.
+- A debate in per-token (hosted) pricing still refuses `--observer`: its call has no quoted limit until the observer line of the pricing contract is built (a later PR).

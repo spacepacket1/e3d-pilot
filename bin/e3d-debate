@@ -43,7 +43,7 @@ SPEC_ARG1=""
 SPEC_ARG2=""
 SPEC_NO_SIDECAR=0
 # hosted runs (docs/specs/experts-phase2b1-hosted-lenses-spec.md section 2.2): see the --builtin-only / --fill-pool / --expert-pin / --lens-bytes-max help
-SPEC_BUILTIN_ONLY=0; SPEC_FILL_POOL=0; SPEC_LENS_MAX=""; SPEC_PINS=()
+HOSTED_SKILLS_FILE=""; HOSTED_SKILLS_SET=0; HOSTED_ARGS=(); SPEC_BUILTIN_ONLY=0; SPEC_FILL_POOL=0; SPEC_LENS_MAX=""; SPEC_PINS=()
 SUGGEST=0; SUGGEST_RULES=0; SUGGEST_TASK=""
 SPEC_FLAG_USED=0
 SPEC_CLI="$REPO_ROOT/lib/debate/specialists-cli.mjs"
@@ -230,6 +230,7 @@ while [[ $# -gt 0 ]]; do
     --skill-version) [[ $# -ge 2 ]] || { echo "error: --skill-version needs a value like 1.0.0" >&2; exit 1; }; SKILL_VERSION="$2"; SKILL_PIN_GIVEN=1; shift 2 ;;
     --skill-hash) [[ $# -ge 2 ]] || { echo "error: --skill-hash needs sha256:<64 hex characters>" >&2; exit 1; }; SKILL_HASH="$2"; SKILL_PIN_GIVEN=1; shift 2 ;;
     --builtin-only) SPEC_BUILTIN_ONLY=1; SPEC_FLAG_USED=1; shift ;;
+    --hosted-skills) [[ $# -ge 2 ]] || { echo "error: --hosted-skills needs a file" >&2; exit 1; }; HOSTED_SKILLS_FILE="$2"; HOSTED_SKILLS_SET=1; shift 2 ;;
     --fill-pool) SPEC_FILL_POOL=1; SPEC_FLAG_USED=1; shift ;;
     --expert-pin) SPEC_PINS+=("${2:-}"); SPEC_FLAG_USED=1; shift 2 ;;
     --lens-bytes-max) SPEC_LENS_MAX="${2:-}"; SPEC_FLAG_USED=1; shift 2 ;;
@@ -286,6 +287,18 @@ if [[ -n "${E3D_SKILLS_OBSERVER+x}" ]]; then
 fi
 if [[ -n "$OBSERVER_SPEC" ]]; then
   [[ "${E3D_SKILLS_V1:-0}" == "1" && "${E3D_SKILLS_OBSERVER:-0}" == "1" ]] || { echo "error: observers are off. Set E3D_SKILLS_V1=1 and E3D_SKILLS_OBSERVER=1 to use --observer." >&2; exit 1; }
+fi
+if (( HOSTED_SKILLS_SET == 1 )); then
+  # hosted skills of one run (skills phase 3c): written by the hosted listener, never by a person; off unless E3D_SKILLS_HOSTED=1
+  case "${E3D_SKILLS_HOSTED:-0}" in 0|'') echo "error: hosted skills are off. Set E3D_SKILLS_HOSTED=1 (with E3D_SKILLS_V1=1) to use --hosted-skills." >&2; exit 1 ;; 1) ;; *) echo "error: E3D_SKILLS_HOSTED must be 0 or 1" >&2; exit 2 ;; esac
+  [[ "${E3D_SKILLS_V1:-0}" == "1" ]] || { echo "error: --hosted-skills needs E3D_SKILLS_V1=1" >&2; exit 1; }
+  (( SPEC_BUILTIN_ONLY == 1 )) || { echo "error: --hosted-skills needs --builtin-only (a hosted run never reads a folder found on the host)" >&2; exit 1; }
+  [[ -n "$HOSTED_SKILLS_FILE" && -f "$HOSTED_SKILLS_FILE" && ! -L "$HOSTED_SKILLS_FILE" ]] || { echo "error: --hosted-skills must name a regular file" >&2; exit 1; }
+  [[ "$SEAT_SKILL_POLICY" != plain_seat ]] || { echo "error: --hosted-skills does not allow --on-seat-skill-failure plain_seat: a skill that cannot run refuses the run before any call" >&2; exit 1; }
+  command -v node >/dev/null 2>&1 || { echo "error: node is required for hosted skills" >&2; exit 1; }
+  # the file is read and checked ONCE, here, before anything runs (even when nothing in the run uses it); every later reader gets the same path as a quoted argument
+  node "$SKILLS_CLI" hosted-check "$HOSTED_SKILLS_FILE" || exit 1
+  HOSTED_ARGS=(--hosted-skills "$HOSTED_SKILLS_FILE")
 fi
 if (( ${#SEAT_SKILLS[@]} > 0 )) || [[ -n "$SEAT_SKILL_POLICY" ]]; then
   [[ "${E3D_SKILLS_V1:-0}" == "1" && "${E3D_SKILLS_SEATS:-0}" == "1" ]] || { echo "error: skills on seats are off. Set E3D_SKILLS_V1=1 and E3D_SKILLS_SEATS=1 to use --seat-skill and --on-seat-skill-failure." >&2; exit 1; }
@@ -381,7 +394,7 @@ fi
 # synthesis) and its adapter must exist. Anything wrong stops the run here, with nothing spent.
 observer_plan() { # <pool csv>
   local raw rc=0
-  raw="$(node "$OBSERVER_LIB" plan --builtin "$SPEC_BUILTIN" --user "$SPEC_USER" --repo "$SPEC_REPO" $( (( SPEC_BUILTIN_ONLY == 1 )) && echo --builtin-only ) --skill "$OBSERVER_SPEC" --pool "$1" --synthesizer "$DEBATE_SYNTHESIZER")" || rc=$?
+  raw="$(node "$OBSERVER_LIB" plan --builtin "$SPEC_BUILTIN" --user "$SPEC_USER" --repo "$SPEC_REPO" $( (( SPEC_BUILTIN_ONLY == 1 )) && echo --builtin-only ) ${HOSTED_ARGS[@]+"${HOSTED_ARGS[@]}"} --skill "$OBSERVER_SPEC" --pool "$1" --synthesizer "$DEBATE_SYNTHESIZER")" || rc=$?
   if (( rc != 0 )); then echo "error: observer: $(jq -r '.error | "\(.code): \(.message)"' <<< "$raw" 2>/dev/null || echo "could not plan the observer")" >&2; exit 1; fi
   [[ -f "$PROVIDERS_DIR/$(jq -r .observer.adapter <<< "$raw")" && -x "$PROVIDERS_DIR/$(jq -r .observer.adapter <<< "$raw")" ]] || { echo "error: observer: $(jq -r .observer.adapter <<< "$raw") is not a provider adapter" >&2; exit 1; }
   while IFS= read -r w; do echo "warning: observer: $w" >&2; done < <(jq -r '.warnings[]' <<< "$raw")
@@ -417,6 +430,7 @@ if [[ -n "$SPEC_PANEL" ]] || (( ${#SPEC_LIST[@]} > 0 || ${#SEAT_SKILLS[@]} > 0 )
   for s in ${SEAT_SKILLS[@]+"${SEAT_SKILLS[@]}"}; do spec_plan_args+=(--seat-skill "$s"); done
   [[ -z "$SEAT_SKILL_POLICY" ]] || spec_plan_args+=(--on-seat-skill-failure "$SEAT_SKILL_POLICY")
   (( SPEC_BUILTIN_ONLY == 0 )) || spec_plan_args+=(--builtin-only)
+  spec_plan_args+=(${HOSTED_ARGS[@]+"${HOSTED_ARGS[@]}"})
   (( SPEC_FILL_POOL == 0 )) || spec_plan_args+=(--fill-pool)
   [[ -z "$SPEC_LENS_MAX" ]] || spec_plan_args+=(--lens-bytes-max "$SPEC_LENS_MAX")
   for s in ${SPEC_PINS[@]+"${SPEC_PINS[@]}"}; do spec_plan_args+=(--expert-pin "$s"); done
@@ -1705,7 +1719,7 @@ run_observer() {
   rm -f "$obs_out/observer-$slug.md" "$obs_out/observers.json"   # nothing from an earlier run in the same folder survives beside this run's record
   printf '%s' "$QUESTION" > "$work_dir/observer.question"
   if ! observer_data; then echo "warning: the observer was not run (its input could not be prepared); the debate is unaffected" >&2; return 0; fi
-  if ! node "$OBSERVER_LIB" prompt --builtin "$SPEC_BUILTIN" --user "$SPEC_USER" --repo "$SPEC_REPO" $( (( SPEC_BUILTIN_ONLY == 1 )) && echo --builtin-only ) --plan "$OBSERVER_PLAN_JSON" \
+  if ! node "$OBSERVER_LIB" prompt --builtin "$SPEC_BUILTIN" --user "$SPEC_USER" --repo "$SPEC_REPO" $( (( SPEC_BUILTIN_ONLY == 1 )) && echo --builtin-only ) ${HOSTED_ARGS[@]+"${HOSTED_ARGS[@]}"} --plan "$OBSERVER_PLAN_JSON" \
        --data-file "$work_dir/observer.data.json" --question-file "$work_dir/observer.question" --meta-out "$work_dir/observer.meta" > "$work_dir/observer.prompt.md" 2> "$work_dir/observer.prompt.err"; then
     echo "warning: the observer was not run ($(jq -r '.error.code // empty' "$work_dir/observer.prompt.err" 2>/dev/null; true) its skill no longer matches the plan, or its input is over the skill's limit); the debate is unaffected" >&2; return 0
   fi
