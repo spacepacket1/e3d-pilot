@@ -104,3 +104,19 @@ One read-only Sonnet reviewer attacked the observer: prompt and fence design, re
 | N2 (the digest differs with `--seat-skill` plus `--observer`), N4 (the fence echo check is a literal substring) | nit | Accepted and documented |
 
 Test gaps closed: impersonation, huge names, C1 and zero-width characters, a whitespace-only reply, the per-token refusal (exercised through the real engine), the prompt-time pin check, a failed synthesis, no output directory, a tool-capable adapter, and leaked processes.
+
+## Phase 3c H1 (hosted skill intake) independent review, 2026-11-23
+
+Reviewer: an independent read-only Sonnet agent, with reproducing scripts and a mutation run. Scope: `lib/skills/intake.mjs`, its tests, and the export of `hasHiddenCharacters`. No blocker. Should-fix findings and outcome:
+
+| Finding | Class | Outcome |
+| --- | --- | --- |
+| S1: the accepted entry kept the caller's own object, which every check read again (a getter or a later mutation could change what was accepted) | should fix | Fixed: one pass bounds and copies the value; every check and the entry use the frozen copy; accessors, holes and Proxies are refused |
+| S2: `JSON.stringify` ran before any cap (a shared-reference DAG or a huge sparse array cost seconds and memory) | should fix | Fixed: the bounded copy runs first, counts nodes and bytes, and refuses shared references; tested for a DAG and a sparse array |
+| S3: the `scopes` argument was not validated (a string or an object with `includes` admitted anything) | should fix | Fixed: a non-empty list drawn from the two known scopes, else `skill_scope_denied`; `null` options no longer throw |
+| S4: hidden characters, non-NFC text and lone surrogates passed in unhashed fields (extensions, license, tasks, provenance); a sender could choose provenance and a legacy folder hash that reached the observer plan | should fix | Fixed: every string and key in the copy is checked; provenance is rewritten by the engine |
+| S5: a hosted entry did not work with the plan preview (the tier was not in the preview schema) and `findSkill` keyed on provenance | should fix | Fixed: `hosted` added to the preview schema (both copies kept identical); `findSkill` matches a hosted skill on its own recomputed hash |
+| S6: a hosted skill could be reached by a bare name, and two owners with one slug resolved by array order | should fix | Fixed: a hosted skill resolves only by its full id; a multi-owner catalogue still must not be built |
+| Nits: `String()` on a null-prototype status threw; the shared `warnings` array | nit | Fixed |
+
+Test gaps closed by mutation: hidden characters, NFC, owner pattern, scopes, provenance rewrite, freezing and the hosted preview and resolution are each pinned by a case that fails when the check is removed. Overlapping layers (key count, array length, accessor refusal, a small shared reference) are caught by another layer as well and stay as defence in depth.

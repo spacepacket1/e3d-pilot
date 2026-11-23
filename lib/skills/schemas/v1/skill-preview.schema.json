@@ -173,7 +173,8 @@
             "enum": [
               "built-in",
               "user",
-              "repo"
+              "repo",
+              "hosted"
             ]
           },
           "lens_block_bytes": {
