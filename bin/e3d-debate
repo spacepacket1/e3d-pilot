@@ -618,8 +618,18 @@ ws_call_timeout() {
   printf '120'
 }
 # A call without search never sees any of the search settings.
-no_search_env() { env -u E3D_PROVIDER_WEB_SEARCH -u E3D_PROVIDER_WS_OUT -u E3D_PROVIDER_WS_MAX_SEARCHES -u E3D_PROVIDER_WS_ALLOW \
-  -u E3D_PROVIDER_WS_DENY -u E3D_PROVIDER_WS_EXCERPT_CHARS -u E3D_PROVIDER_WS_TIMEOUT "$@"; }
+# Seats, synthesis and recap get a self-contained prompt and need no tools, so the claude adapter runs with its tools off (CLAUDE_TOOLS="",
+# a no-op for every other adapter). Without this the CLI's tools are on and a seat steered by injected text could run commands.
+# E3D_DEBATE_SEAT_TOOLS=1 is the explicit opt-in to leave them on (cloud issue 476).
+no_search_env() {
+  if [[ "${E3D_DEBATE_SEAT_TOOLS:-0}" == "1" ]]; then
+    env -u E3D_PROVIDER_WEB_SEARCH -u E3D_PROVIDER_WS_OUT -u E3D_PROVIDER_WS_MAX_SEARCHES -u E3D_PROVIDER_WS_ALLOW \
+      -u E3D_PROVIDER_WS_DENY -u E3D_PROVIDER_WS_EXCERPT_CHARS -u E3D_PROVIDER_WS_TIMEOUT "$@"
+  else
+    env -u E3D_PROVIDER_WEB_SEARCH -u E3D_PROVIDER_WS_OUT -u E3D_PROVIDER_WS_MAX_SEARCHES -u E3D_PROVIDER_WS_ALLOW \
+      -u E3D_PROVIDER_WS_DENY -u E3D_PROVIDER_WS_EXCERPT_CHARS -u E3D_PROVIDER_WS_TIMEOUT CLAUDE_TOOLS="" "$@"
+  fi
+}
 # ---- retries (docs/seat-reliability.md) ----
 # Every provider call (a round answer, a search call, its no-search fallback, the synthesis) follows one rule. Retryable: a transient
 # vendor failure (HTTP 429/500/502/503/504, a timeout; DEBATE_PROVIDER_RETRIES, none in a per-token debate) and a call that answered 200
