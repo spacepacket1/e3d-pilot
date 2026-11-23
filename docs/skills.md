@@ -64,6 +64,29 @@ so on, for example:
 The id, description, license and instruction text come from `SKILL.md`; `provenance`, `id` and `definition_hash` are set by the loader and may not be written
 in the file. The schemas are in `docs/skills/schemas/v1`.
 
+## Skills on seats, the preview and the plan digest
+
+A skill can sit on a debate seat. This needs `E3D_SKILLS_V1=1`, `E3D_SKILLS_SEATS=1` and `E3D_SPECIALISTS=1` (it runs a debate):
+
+```
+E3D_SPECIALISTS=1 E3D_SKILLS_V1=1 E3D_SKILLS_SEATS=1 e3d-debate "Should we ship it?" \
+  --specialist skeptic --seat-skill 'premortem@2.0.0' --seat-skill 'my-review#sha256:...:codex'
+```
+
+`--seat-skill <id|name>[@version][#sha256:hash][:provider]` sits beside `--specialist` and takes any skill: a built-in, or a native one from your folders. A pin
+(`@version`, `#hash`) that no longer matches stops the run **before any model call**; so does an unknown or withdrawn skill, or one that does not declare the
+`debate_seat/seat_prompt` hook. A seat only runs without its skill if you say `--on-seat-skill-failure plain_seat`: that seat then sends no lens and is recorded
+as a plain seat with the failure code, in the receipt, the preview and on stderr. A skill's `model_hints` steer which provider it gets; `:provider` forces one. The
+seat's prompt is the same role block experts have always had; the id, version and hash are in the receipt (`skills`, with a `use_id` and an `attachment_id` per seat).
+
+**Preview before you spend.** `--preview-skills` (add `--preview-json` for JSON) prints what the run would do and exits without calling any model: each seat with its
+skill, version, hash and size, plain seats and why, vendor families, the number of model calls and a token estimate for a typical short question (an estimate, not
+a bound: credits are quoted by the hosted service), and a **plan digest**. The preview carries no instruction text.
+
+**Bind a run to its preview.** Run the same command with `--expect-plan sha256:...` and the run refuses to start (`skill_quote_expired`, nothing called) if anything
+the digest covers changed: the question, rounds, word limit, synthesizer, the provider pool, a forced provider, any skill's version or text. The receipt records the
+digest as `skills_plan_digest`.
+
 ## The advisory scan
 
 Every skill is scanned for patterns aimed at the **agent** that will read it: asking it to ignore its rules or hide something from its user, to act without

@@ -29,7 +29,7 @@ build_root() {
   cp "$script" "$T/bin/e3d-debate"
   cp "$H_ROOT/lib/providers/jev.sh" "$H_ROOT/lib/providers/common.sh" "$T/lib/providers/"
   cp "$H_ROOT/lib/mcp/voices.js" "$T/lib/mcp/"
-  for f in specialists.mjs specialists-plan.mjs specialists-cli.mjs; do [[ -f "$H_ROOT/lib/debate/$f" ]] && cp "$H_ROOT/lib/debate/$f" "$T/lib/debate/" || true; done
+  for f in specialists.mjs specialists-plan.mjs specialists-cli.mjs cost-model.mjs; do [[ -f "$H_ROOT/lib/debate/$f" ]] && cp "$H_ROOT/lib/debate/$f" "$T/lib/debate/" || true; done
   [[ -d "$H_ROOT/lib/skills" ]] && cp -R "$H_ROOT/lib/skills" "$T/lib/" || true   # only used with E3D_SKILLS_V1=1; a plain run never loads it
   [[ -f "$H_ROOT/lib/specialists/panels.json" ]] && cp "$H_ROOT/lib/specialists/panels.json" "$T/lib/specialists/" || true
   local n

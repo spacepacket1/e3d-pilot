@@ -49,6 +49,8 @@ SPEC_FLAG_USED=0
 SPEC_CLI="$REPO_ROOT/lib/debate/specialists-cli.mjs"
 # Skills (docs/skills/): off unless E3D_SKILLS_V1=1. Pure local commands (no model, no network); a debate is not changed by these flags.
 SKILL_ACTION=""; SKILL_ARG1=""; SKILL_ARG2=""; SKILL_VERSION=""; SKILL_HASH=""; SKILL_PIN_GIVEN=0
+# skills on seats (skills phase 3a): --seat-skill needs E3D_SKILLS_V1=1 and E3D_SKILLS_SEATS=1; the preview and the plan digest need E3D_SKILLS_V1=1
+SEAT_SKILLS=(); SEAT_SKILL_POLICY=""; SKILL_PREVIEW=0; SKILL_PREVIEW_JSON=0; SKILL_EXPECT_PLAN=""
 SKILLS_CLI="$REPO_ROOT/lib/skills/cli.mjs"
 PLAN_JSON=""
 LENS_DIR=""
@@ -180,6 +182,11 @@ Skills (off unless E3D_SKILLS_V1=1; docs/skills/). Pure local commands: no model
   --list-skills | --show-skill <id|name> [--skill-version V] [--skill-hash H] | --validate-skill <folder> | --project-expert <name|folder>
   --export-skill <id|name> <new folder>   writes a native skill folder (a built-in is exported as a local copy); never overwrites
   --diff-skill <id|name|folder> <id|name|folder>   field-level difference and whether the definition hashes agree (exit 3 when they differ)
+Skills on seats (E3D_SKILLS_V1=1 and E3D_SKILLS_SEATS=1, with E3D_SPECIALISTS=1; docs/skills.md):
+  --seat-skill <id|name>[@version][#sha256:hash][:provider]   one skill per flag, beside --specialist; a pin that no longer matches stops the run before any call
+  --on-seat-skill-failure fail|plain_seat   what a seat does when its skill cannot be used (default fail; plain_seat runs that seat with no lens and says so)
+  --preview-skills [--preview-json]   print the plan (seats, skills, hashes, families, estimate, digest) and exit: no model call (E3D_SKILLS_V1=1)
+  --expect-plan sha256:...   refuse to run unless the plan still has the digest --preview-skills printed
 Nothing is changed when none of these is given.
 EOF
 }
@@ -208,6 +215,11 @@ while [[ $# -gt 0 ]]; do
     --diff-skill)
       [[ $# -ge 3 ]] || { echo "error: --diff-skill needs two skill ids, names or folders" >&2; exit 1; }
       SKILL_ACTION=diff; SKILL_ARG1="$2"; SKILL_ARG2="$3"; shift 3 ;;
+    --seat-skill) [[ $# -ge 2 ]] || { echo "error: --seat-skill needs <id|name>[@version][#sha256:hash][:provider]" >&2; exit 1; }; SEAT_SKILLS+=("$2"); SPEC_FLAG_USED=1; shift 2 ;;
+    --on-seat-skill-failure) [[ $# -ge 2 ]] || { echo "error: --on-seat-skill-failure needs fail or plain_seat" >&2; exit 1; }; SEAT_SKILL_POLICY="$2"; shift 2 ;;
+    --preview-skills) SKILL_PREVIEW=1; shift ;;
+    --preview-json) SKILL_PREVIEW_JSON=1; shift ;;
+    --expect-plan) [[ $# -ge 2 ]] || { echo "error: --expect-plan needs the plan digest printed by --preview-skills" >&2; exit 1; }; SKILL_EXPECT_PLAN="$2"; shift 2 ;;
     --skill-version) [[ $# -ge 2 ]] || { echo "error: --skill-version needs a value like 1.0.0" >&2; exit 1; }; SKILL_VERSION="$2"; SKILL_PIN_GIVEN=1; shift 2 ;;
     --skill-hash) [[ $# -ge 2 ]] || { echo "error: --skill-hash needs sha256:<64 hex characters>" >&2; exit 1; }; SKILL_HASH="$2"; SKILL_PIN_GIVEN=1; shift 2 ;;
     --builtin-only) SPEC_BUILTIN_ONLY=1; SPEC_FLAG_USED=1; shift ;;
@@ -259,16 +271,30 @@ if [[ "$SKILL_PIN_GIVEN" == 1 ]]; then
   [[ -z "$SKILL_HASH" || "$SKILL_HASH" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "error: --skill-hash must be sha256: followed by 64 hex characters" >&2; exit 1; }
   [[ -n "$SKILL_VERSION$SKILL_HASH" ]] || { echo "error: --skill-version/--skill-hash were given with an empty value" >&2; exit 1; }
 fi
+if [[ -n "${E3D_SKILLS_SEATS+x}" ]]; then
+  case "$E3D_SKILLS_SEATS" in ''|0|1) ;; *) echo "error: E3D_SKILLS_SEATS must be 0 or 1" >&2; exit 2 ;; esac
+fi
+if (( ${#SEAT_SKILLS[@]} > 0 )) || [[ -n "$SEAT_SKILL_POLICY" ]]; then
+  [[ "${E3D_SKILLS_V1:-0}" == "1" && "${E3D_SKILLS_SEATS:-0}" == "1" ]] || { echo "error: skills on seats are off. Set E3D_SKILLS_V1=1 and E3D_SKILLS_SEATS=1 to use --seat-skill and --on-seat-skill-failure." >&2; exit 1; }
+  (( ${#SEAT_SKILLS[@]} > 0 )) || { echo "error: --on-seat-skill-failure applies to --seat-skill" >&2; exit 1; }
+  [[ -z "$SEAT_SKILL_POLICY" || "$SEAT_SKILL_POLICY" == fail || "$SEAT_SKILL_POLICY" == plain_seat ]] || { echo "error: --on-seat-skill-failure must be fail or plain_seat" >&2; exit 1; }
+fi
+if (( SKILL_PREVIEW == 1 || SKILL_PREVIEW_JSON == 1 )) || [[ -n "$SKILL_EXPECT_PLAN" ]]; then
+  [[ "${E3D_SKILLS_V1:-0}" == "1" ]] || { echo "error: skills are off. Set E3D_SKILLS_V1=1 to use --preview-skills, --preview-json and --expect-plan." >&2; exit 1; }
+  [[ -n "$SPEC_PANEL" ]] || (( ${#SPEC_LIST[@]} > 0 || ${#SEAT_SKILLS[@]} > 0 )) || { echo "error: --preview-skills, --preview-json and --expect-plan apply to a panel; give --panel, --specialist or --seat-skill" >&2; exit 1; }
+  (( SKILL_PREVIEW_JSON == 0 )) || (( SKILL_PREVIEW == 1 )) || { echo "error: --preview-json modifies --preview-skills" >&2; exit 1; }
+  [[ -z "$SKILL_EXPECT_PLAN" || "$SKILL_EXPECT_PLAN" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "error: --expect-plan must be sha256: followed by 64 hex characters" >&2; exit 1; }
+fi
 if (( SPEC_FLAG_USED == 1 )) && [[ "${E3D_SPECIALISTS:-0}" != "1" ]]; then
   echo "error: experts are off. Set E3D_SPECIALISTS=1 to use --panel, --specialist, --min-families and the --list/--show/--validate/--export-specialist commands." >&2
   exit 1
 fi
 if (( SPEC_FILL_POOL == 1 || ${#SPEC_PINS[@]} > 0 )) || [[ -n "$SPEC_LENS_MAX" ]]; then
-  (( ${#SPEC_LIST[@]} > 0 )) || { echo "error: --fill-pool, --expert-pin and --lens-bytes-max apply to --specialist experts" >&2; exit 1; }
+  (( ${#SPEC_LIST[@]} > 0 || ${#SEAT_SKILLS[@]} > 0 )) || { echo "error: --fill-pool, --expert-pin and --lens-bytes-max apply to --specialist and --seat-skill experts" >&2; exit 1; }
 fi
 if (( SPEC_MIN_SET == 1 )); then
   [[ "$SPEC_MIN_FAMILIES" =~ ^[1-9][0-9]?$ ]] || { echo "error: --min-families must be a whole number of at least 1" >&2; exit 1; }
-  [[ -n "$SPEC_PANEL" ]] || (( ${#SPEC_LIST[@]} > 0 )) || [[ -n "$SPEC_ACTION" ]] || { echo "error: --min-families applies to a panel; give --panel or --specialist" >&2; exit 1; }
+  [[ -n "$SPEC_PANEL" ]] || (( ${#SPEC_LIST[@]} > 0 || ${#SEAT_SKILLS[@]} > 0 )) || [[ -n "$SPEC_ACTION" ]] || { echo "error: --min-families applies to a panel; give --panel or --specialist" >&2; exit 1; }
 fi
 SPEC_BUILTIN="$REPO_ROOT/lib/specialists"
 SPEC_USER="${HOME:-/nonexistent}/.config/e3d-pilot/specialists"
@@ -338,7 +364,7 @@ if [[ -n "$JEV_PROPOSITIONS_FILE" ]]; then
   source "$REPO_ROOT/lib/debate/jev-council.sh"
   jev_council_validate "$JEV_PROPOSITIONS_FILE" || exit 1   # a bad file fails here, before any paid call
 fi
-if [[ -n "$SPEC_PANEL" ]] || (( ${#SPEC_LIST[@]} > 0 )); then
+if [[ -n "$SPEC_PANEL" ]] || (( ${#SPEC_LIST[@]} > 0 || ${#SEAT_SKILLS[@]} > 0 )); then
   # A council is chosen by experts, not models: the engine assigns a provider to each expert from a pool of usable providers.
   command -v jq >/dev/null 2>&1 || { echo "error: jq is required for --panel and --specialist" >&2; exit 1; }
   command -v node >/dev/null 2>&1 || { echo "error: node is required for experts" >&2; exit 1; }
@@ -359,18 +385,35 @@ if [[ -n "$SPEC_PANEL" ]] || (( ${#SPEC_LIST[@]} > 0 )); then
   [[ -z "$SPEC_PANEL" ]] || spec_plan_args+=(--panel "$SPEC_PANEL")
   [[ -z "$SPEC_MIN_FAMILIES" ]] || spec_plan_args+=(--min-families "$SPEC_MIN_FAMILIES")
   for s in ${SPEC_LIST[@]+"${SPEC_LIST[@]}"}; do spec_plan_args+=(--specialist "$s"); done
+  for s in ${SEAT_SKILLS[@]+"${SEAT_SKILLS[@]}"}; do spec_plan_args+=(--seat-skill "$s"); done
+  [[ -z "$SEAT_SKILL_POLICY" ]] || spec_plan_args+=(--on-seat-skill-failure "$SEAT_SKILL_POLICY")
   (( SPEC_BUILTIN_ONLY == 0 )) || spec_plan_args+=(--builtin-only)
   (( SPEC_FILL_POOL == 0 )) || spec_plan_args+=(--fill-pool)
   [[ -z "$SPEC_LENS_MAX" ]] || spec_plan_args+=(--lens-bytes-max "$SPEC_LENS_MAX")
   for s in ${SPEC_PINS[@]+"${SPEC_PINS[@]}"}; do spec_plan_args+=(--expert-pin "$s"); done
-  [[ "${E3D_SKILLS_V1:-0}" != "1" ]] || spec_plan_args+=(--skills)   # the receipt then names each expert as a skill (id, version, definition_hash, use_id)
+  if [[ "${E3D_SKILLS_V1:-0}" == "1" ]]; then
+    # the receipt then names each expert as a skill (id, version, definition_hash, use_id) and the plan carries a preview with a digest of what would run
+    spec_plan_args+=(--skills --rounds "$DEBATE_ROUNDS" --max-words "$DEBATE_MAX_WORDS" --synthesizer "$DEBATE_SYNTHESIZER")
+    [[ -z "$QUESTION" ]] || spec_plan_args+=(--question-sha "sha256:$(printf '%s' "$QUESTION" | { shasum -a 256 2>/dev/null || sha256sum; } | awk '{print $1}')")
+  fi
   spec_rc=0; PLAN_JSON="$(node "$SPEC_CLI" "${spec_plan_args[@]}")" || spec_rc=$?
   if (( spec_rc != 0 )); then echo "error: $(jq -r '.error // "could not plan the panel"' <<< "$PLAN_JSON" 2>/dev/null || echo "could not plan the panel")" >&2; exit 1; fi
   while IFS= read -r w; do echo "warning: $w" >&2; done < <(jq -r '.warnings[]' <<< "$PLAN_JSON")
   DEBATE_PROVIDERS=()
   while IFS= read -r p; do DEBATE_PROVIDERS+=("$p"); done < <(jq -r '.providers[]' <<< "$PLAN_JSON")
   # a second seat on one adapter is `adapter.2` (docs/specs/experts-phase2a-seats-and-suggest-spec.md D10); the plan says which adapter answers
-  while IFS=$'\t' read -r _s _a; do SEAT_ADAPTER[$_s]="$_a"; done < <(jq -r '.panel.experts[] | [.seat, .adapter] | @tsv' <<< "$PLAN_JSON")
+  while IFS=$'\t' read -r _s _a; do SEAT_ADAPTER[$_s]="$_a"; done < <(jq -r '(.panel.experts[], (.panel.plain_seats // [])[]) | [.seat, .adapter] | @tsv' <<< "$PLAN_JSON")
+  # the plan digest: what a run would do, so a preview can be checked against the run (skills phase 3a, decision D9)
+  if [[ "${E3D_SKILLS_V1:-0}" == "1" ]]; then
+    skills_plan_digest="$(jq -r '.preview.plan_digest // empty' <<< "$PLAN_JSON")"
+    if [[ -n "$SKILL_EXPECT_PLAN" && "$SKILL_EXPECT_PLAN" != "$skills_plan_digest" ]]; then
+      echo "error: skill_quote_expired: the plan changed since it was previewed (expected $SKILL_EXPECT_PLAN, now $skills_plan_digest); nothing was run" >&2; exit 1
+    fi
+    if (( SKILL_PREVIEW == 1 )); then
+      if (( SKILL_PREVIEW_JSON == 1 )); then jq '.preview' <<< "$PLAN_JSON"; else jq '.preview' <<< "$PLAN_JSON" | node "$REPO_ROOT/lib/skills/preview.mjs"; fi
+      exit 0
+    fi
+  fi
 fi
 (( ${#DEBATE_PROVIDERS[@]} >= 2 )) || { echo "error: need at least 2 --providers to debate" >&2; exit 1; }
 
@@ -704,6 +747,7 @@ if [[ -n "$PLAN_JSON" ]]; then
   while IFS= read -r p; do jq -j --arg p "$p" '.lens[$p]' <<< "$PLAN_JSON" > "$LENS_DIR/lens-$p.txt"; done < <(jq -r '.providers[]' <<< "$PLAN_JSON")
   jq -c .panel <<< "$PLAN_JSON" > "$work_dir/panel.json"
   jq -ce '.skills // empty' <<< "$PLAN_JSON" > "$work_dir/skills.json" 2>/dev/null || rm -f "$work_dir/skills.json"
+  jq -r '.preview.plan_digest // empty' <<< "$PLAN_JSON" > "$work_dir/skills-plan-digest.txt" 2>/dev/null || true
   echo "panel: $(jq -r '.panel.experts | map(.name + " on " + .seat) | join(", ")' <<< "$PLAN_JSON")$(jq -r 'if (.panel.plain_seats // [] | length) > 0 then "; plain: " + (.panel.plain_seats | map(.seat) | join(", ")) else "" end' <<< "$PLAN_JSON")$(jq -r 'if (.panel.dropped | length) > 0 then " (dropped: " + (.panel.dropped | join(", ")) + ")" else "" end' <<< "$PLAN_JSON")" >&2
 fi
 transcript_md="$work_dir/transcript.md"
@@ -1511,9 +1555,10 @@ write_decision_log() {
   providers_json="$(printf '%s\n' "${DEBATE_PROVIDERS_ALL[@]}" | jq -R . | jq -sc .)"
   local panel_json=null
   [[ -s "$work_dir/panel.json" ]] && panel_json="$(cat "$work_dir/panel.json")"
-  local skills_json=null
+  local skills_json=null skills_digest=""
   [[ -s "$work_dir/skills.json" ]] && skills_json="$(cat "$work_dir/skills.json")"
-  jq -nc --argjson panel "$panel_json" --argjson skills "$skills_json" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg qhash "$qhash" --arg pv "$DEBATE_PROMPT_VERSION" \
+  [[ -s "$work_dir/skills-plan-digest.txt" ]] && skills_digest="$(tr -d '\n' < "$work_dir/skills-plan-digest.txt")"
+  jq -nc --argjson panel "$panel_json" --argjson skills "$skills_json" --arg skills_digest "$skills_digest" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg qhash "$qhash" --arg pv "$DEBATE_PROMPT_VERSION" \
     --arg synth "${SYNTH_FALLBACK_TO:-$DEBATE_SYNTHESIZER}" --arg stop "$stop_reason" --arg consensus "$consensus" \
     --argjson providers "$providers_json" --argjson maxr "$DEBATE_ROUNDS" --argjson ran "$ran" \
     --argjson at "$converged_at_round" --argjson fast "$fast_synthesis" --argjson sok "$synth_ok" \
@@ -1527,7 +1572,7 @@ write_decision_log() {
       + {web_search: (if $ws == null then {search_enabled: false} else $ws end)}
       + (if $jc == null then {} else {jev_council: $jc} end)
       + (if $panel == null then {} else {panel: $panel} end)
-      + (if $skills == null then {} else {skills: $skills} end)' > "$work_dir/decision-log.json" || return 0
+      + (if $skills == null then {} else {skills: $skills} + (if $skills_digest == "" then {} else {skills_plan_digest: $skills_digest} end) end)' > "$work_dir/decision-log.json" || return 0
   if [[ -n "${E3D_DEBATE_DECISION_LOG:-}" ]]; then
     { mkdir -p "$(dirname "$E3D_DEBATE_DECISION_LOG")" && jq -c . "$work_dir/decision-log.json" >> "$E3D_DEBATE_DECISION_LOG"; } 2>/dev/null \
       || echo "warning: could not append to E3D_DEBATE_DECISION_LOG" >&2

@@ -1,0 +1,67 @@
+{
+  "schema_version": "e3d.skill-preview/v1",
+  "plan_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "request": {
+    "question_sha256": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "rounds": 2,
+    "max_words": 200,
+    "synthesizer": "claude"
+  },
+  "seats": [
+    {
+      "seat": "claude",
+      "adapter": "claude",
+      "family": "anthropic",
+      "source": "specialist",
+      "hook": "before_response",
+      "skill": {
+        "id": "skill.e3d.skeptic",
+        "version": "1.0.0",
+        "hash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      },
+      "legacy_folder_hash": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "tier": "built-in",
+      "lens_block_bytes": 612,
+      "hint_used": true,
+      "provider_forced": false
+    },
+    {
+      "seat": "codex",
+      "adapter": "codex",
+      "family": "openai",
+      "source": "seat-skill",
+      "hook": "seat_prompt",
+      "skill": {
+        "id": "skill.local_user.review",
+        "version": "1.2.0",
+        "hash": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+      },
+      "legacy_folder_hash": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "tier": "user",
+      "lens_block_bytes": 480,
+      "hint_used": false,
+      "provider_forced": true
+    }
+  ],
+  "plain_seats": [],
+  "observers": [],
+  "independence": {
+    "seats": 2,
+    "adapters": 2,
+    "families": 2
+  },
+  "estimate": {
+    "model_calls": {
+      "nominal": 5,
+      "with_retries": 10
+    },
+    "tokens": {
+      "input": 4100,
+      "output": 1600,
+      "total": 5700,
+      "basis": "cost model for a typical short question; an estimate, not a bound"
+    }
+  },
+  "conflicts": [],
+  "warnings": []
+}

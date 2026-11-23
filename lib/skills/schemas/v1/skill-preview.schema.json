@@ -1,0 +1,350 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "skill-preview.schema.json",
+  "title": "SkillPreview v1 (engine-local plan preview)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "plan_digest",
+    "request",
+    "seats",
+    "plain_seats",
+    "observers",
+    "independence",
+    "estimate",
+    "conflicts",
+    "warnings"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "e3d.skill-preview/v1",
+      "x-code": "skill_schema_version_unsupported"
+    },
+    "plan_digest": {
+      "$ref": "common.schema.json#/$defs/hash"
+    },
+    "request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "question_sha256",
+        "rounds",
+        "max_words",
+        "synthesizer"
+      ],
+      "properties": {
+        "question_sha256": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "common.schema.json#/$defs/hash"
+            }
+          ]
+        },
+        "rounds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10
+        },
+        "max_words": {
+          "type": "integer",
+          "minimum": 20,
+          "maximum": 2000
+        },
+        "synthesizer": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,31}$"
+        }
+      }
+    },
+    "seats": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 16,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "seat",
+          "adapter",
+          "family",
+          "source",
+          "hook",
+          "skill",
+          "legacy_folder_hash",
+          "tier",
+          "lens_block_bytes",
+          "hint_used",
+          "provider_forced"
+        ],
+        "properties": {
+          "seat": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]{0,31}(\\.[0-9]{1,2})?$"
+          },
+          "adapter": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]{0,31}$"
+          },
+          "family": {
+            "type": "string",
+            "pattern": "^[a-z0-9-]{1,40}$"
+          },
+          "source": {
+            "enum": [
+              "preset",
+              "specialist",
+              "seat-skill"
+            ]
+          },
+          "hook": {
+            "const": "seat_prompt"
+          },
+          "skill": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "common.schema.json#/$defs/skillRef"
+              }
+            ]
+          },
+          "legacy_folder_hash": {
+            "$ref": "common.schema.json#/$defs/hash"
+          },
+          "tier": {
+            "enum": [
+              "built-in",
+              "user",
+              "repo"
+            ]
+          },
+          "lens_block_bytes": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 4096
+          },
+          "hint_used": {
+            "type": "boolean"
+          },
+          "provider_forced": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    "plain_seats": {
+      "type": "array",
+      "maxItems": 16,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "seat",
+          "adapter",
+          "family",
+          "reason",
+          "code"
+        ],
+        "properties": {
+          "seat": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]{0,31}(\\.[0-9]{1,2})?$"
+          },
+          "adapter": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]{0,31}$"
+          },
+          "family": {
+            "type": "string",
+            "pattern": "^[a-z0-9-]{1,40}$"
+          },
+          "reason": {
+            "enum": [
+              "fill_pool",
+              "skill_failed"
+            ]
+          },
+          "code": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string",
+                "pattern": "^skill_[a-z_]{3,40}$"
+              }
+            ]
+          }
+        }
+      }
+    },
+    "observers": {
+      "type": "array",
+      "maxItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "skill",
+          "hook",
+          "adapter",
+          "family",
+          "max_output_bytes",
+          "timeout_ms"
+        ],
+        "properties": {
+          "skill": {
+            "$ref": "common.schema.json#/$defs/skillRef"
+          },
+          "hook": {
+            "const": "after_synthesis"
+          },
+          "adapter": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]{0,31}$"
+          },
+          "family": {
+            "type": "string",
+            "pattern": "^[a-z0-9-]{1,40}$"
+          },
+          "max_output_bytes": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 64000
+          },
+          "timeout_ms": {
+            "type": "integer",
+            "minimum": 1000,
+            "maximum": 300000
+          }
+        }
+      }
+    },
+    "independence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "seats",
+        "adapters",
+        "families"
+      ],
+      "properties": {
+        "seats": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 32
+        },
+        "adapters": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 32
+        },
+        "families": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 32
+        }
+      }
+    },
+    "estimate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "model_calls",
+        "tokens"
+      ],
+      "properties": {
+        "model_calls": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "nominal",
+            "with_retries"
+          ],
+          "properties": {
+            "nominal": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1000
+            },
+            "with_retries": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 2000
+            }
+          }
+        },
+        "tokens": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "input",
+            "output",
+            "total",
+            "basis"
+          ],
+          "properties": {
+            "input": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 100000000
+            },
+            "output": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 100000000
+            },
+            "total": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 200000000
+            },
+            "basis": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            }
+          }
+        }
+      }
+    },
+    "conflicts": {
+      "type": "array",
+      "maxItems": 32,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "code",
+          "message"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "pattern": "^skill_[a-z_]{3,40}$"
+          },
+          "message": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 300
+          }
+        }
+      }
+    },
+    "warnings": {
+      "type": "array",
+      "maxItems": 32,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 300
+      }
+    }
+  }
+}
