@@ -149,3 +149,19 @@ Reviewer: an independent read-only Sonnet agent, with reproducing scripts and ab
 | Nits and test gaps: the input bound was only checked in characters; the leftover-process case; the exported search settings | nit | Tests added: the bound is measured in bytes (also with multibyte text), no observer process outlives a stopped debate, the observer request carries no search tool |
 
 Process note: a mutation run was started in the background and overlapped with other commands that read the same files; the run was stopped and the files were verified against the intended diff before continuing. Mutation runs are run in the foreground, alone, from now on.
+
+## Phase 3c H2c (hosted skills on the run listener) independent review, 2026-11-23
+
+Reviewer: an independent read-only Sonnet agent, with reproducing scripts and 9 mutations. Scope: `lib/mcp/{pricing,run-server,runs,usage}.js`, `bin/e3d-mcp` and the tests. No blocker; no way found to inject an argument, change a provider, break the pin grammar or cross tenants. Six should-fix, all addressed:
+
+| Finding | Class | Outcome |
+| --- | --- | --- |
+| S1: a `skill_bytes` equal to the instruction bytes was accepted, then the engine refused after the hold (the lens block carries a wrapper of about 170 bytes) | should fix | Fixed: each seat skill's lens block, wrapper included, must fit `skill_bytes` at plan time; test |
+| S2: an observer skill name over 64 characters made its usage row unreadable for billing | should fix | Fixed: refused at plan time; test (a 70-character name) |
+| S3: a definition nested thousands of levels deep gave a retryable 503 | should fix | Fixed: iterative depth bound (16) before any recursion, and the key computation can no longer throw; test at 3000 levels |
+| S4: the daily-budget estimate ignored the observer call and the lens bytes | should fix | Fixed: `skillsExtra` adds the observer call, its quoted input and output, and the lens bytes per seat per round; unit-tested. The wiring into the estimate is covered by the end-to-end runs, not by its own assertion |
+| S5: the conflict test passed for the wrong reason; the crash-recovery scrub was untested | should fix | Fixed: the second definition now has a real hash; a killed process is restarted and its stored state is checked for skill text |
+| S6: no principal binding; a stale private file after SIGKILL; a restart is not a kill switch | should fix | Stale file: swept at start (old, private, ours, the file only; a young directory is kept; tested). Kill switch: a run accepted with skills that is resumed while the skills switch is off is not run (code; **not covered by a test**, the scenario needs a queued run across a restart). Principal binding stays documented: isolation depends on the trusted caller passing the right principal, to be bound to the authorize-run principal in the cloud (C2) |
+| Nits | nit | Accepted: the redundant target check, the broader 256 KiB limit when skills are on (only on the authenticated run route), the observer row not matching its provider (only the engine writes it) |
+
+Known gaps: the kill-switch path above; a request with exactly one seat attachment is still refused by the listener (the engine half of the single-seat change is separate and the listener half follows it).

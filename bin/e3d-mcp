@@ -14,7 +14,7 @@
 // rounds/providers/concurrency are capped (E3D_MCP_MAX_ROUNDS, E3D_MCP_MAX_PROVIDERS,
 // E3D_MCP_MAX_CONCURRENT, E3D_MCP_TIMEOUT_SEC). Nothing here writes to a repo.
 
-import { mkdtemp, writeFile, readFile, rm, stat } from 'node:fs/promises';
+import { mkdtemp, writeFile, readFile, readdir, lstat, rm, stat } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -38,11 +38,11 @@ import { listPrompts, getPrompt } from '../lib/mcp/prompts.js';
 import { chooseVoices, independence, isSampling } from '../lib/mcp/voices.js';
 import { startHttpServer } from '../lib/mcp/http.js';
 import { createSlots } from '../lib/mcp/slots.js';
-import { createUsage, usageFromTranscript, worstCase, usageTool, usageHandler } from '../lib/mcp/usage.js';
+import { createUsage, usageFromTranscript, worstCase, skillsExtra, usageTool, usageHandler } from '../lib/mcp/usage.js';
 import { webSearchConfig, sanitizeText, cleanUrl, hostOf, API_PROVIDERS, PRIVACY_NOTICE, searchAvailability, stripAnswerPrefix } from '../lib/debate/websearch.mjs';
 import { createExternalAuth, validateConfig as validateAuthConfig, canonicalJson } from '../lib/mcp/external-auth.js';
 import { intakeSkill, intakeDigest } from '../lib/skills/intake.mjs';
-import { parseSeatSkill } from '../lib/skills/plan.mjs';
+import { parseSeatSkill, expertFromSkill } from '../lib/skills/plan.mjs';
 import { createOutbox, outboxStatus, outboxExport, outboxRetryDead } from '../lib/mcp/outbox.js';
 import { createMetering, createReadiness, modelsFromTranscript, orphanPolicy } from '../lib/mcp/metering.js';
 import { createHash, randomUUID } from 'node:crypto';
@@ -371,8 +371,14 @@ function searchPlan(providers, webSearch) {
   if (PRICING_CONFIG.mode === 'per_token') return { searchProviders: webSearch && searchCapable(process.env) ? searching.length : 0, maxSearchesPerCall: searchCapFromEnv(process.env) };
   return { searchProviders: searching.length, maxSearchesPerCall: cfg.maxSearches };
 }
-const worstFor = (plan) => worstCase({ providers: plan.providers.length, rounds: plan.rounds, maxWords: plan.maxWords, questionChars: plan.question.length,
-  searchProviders: plan.searchProviders ?? 0, maxSearchesPerCall: plan.maxSearchesPerCall ?? 0, caseExtraTokens: plan.case ? CASE_SYNTH_EXTRA_TOKENS : 0 });
+const worstFor = (plan) => {
+  const w = worstCase({ providers: plan.providers.length, rounds: plan.rounds, maxWords: plan.maxWords, questionChars: plan.question.length,
+    searchProviders: plan.searchProviders ?? 0, maxSearchesPerCall: plan.maxSearchesPerCall ?? 0, caseExtraTokens: plan.case ? CASE_SYNTH_EXTRA_TOKENS : 0 });
+  const sk = plan.skills;
+  if (!sk) return w;
+  const x = skillsExtra({ skillBytes: sk.skillBytes, seats: sk.seats.length, rounds: plan.rounds, observer: sk.observer });
+  return { ...w, calls: w.calls + x.calls, tokens: w.tokens + x.tokens };
+};
 
 // The web-search part of a debate's result, from the out/web-search.json bin/e3d-debate writes. Everything is re-checked and
 // re-sanitised here: titles and excerpts are page text, so they are bounded and stripped of markup; URLs are http(s) with no
@@ -659,6 +665,8 @@ async function executeDebate(plan, handle, ctx, { progress, onStarted, signal } 
   let dir = null;
   let hostedFile = null;
   const sk = plan.skills ?? null;
+  // a run accepted before a restart does not run skills if the operator has since switched them off: the switch is a kill switch for accepted runs too (nothing was started)
+  if (sk && !SKILLS_RUN.on) { log('hosted skills are switched off; a run accepted earlier with skills is not run'); return { startFailed: true }; }
   const started = Date.now();
   try {
     dir = await mkdtemp(join(tmpdir(), 'e3d-mcp-'));
@@ -1564,13 +1572,19 @@ function skillsPlan(skills, providers) {
     if (!p || p.ref !== d.id || p.version !== d.version || p.hash !== d.definition_hash) return refuse('a definition id, version or hash cannot be used as a pin (skill_schema_value)');
     const prior = byId.get(d.id);
     if (prior && canonicalJson(prior.def) !== canonicalJson(a.definition)) return refuse('one skill id is attached with two different definitions (skill_conflict)');
-    if (!prior) byId.set(d.id, { def: a.definition, intake: d });
+    if (!prior) byId.set(d.id, { def: a.definition, intake: d, entry: x.entry });
     if (a.hook === 'seat') {
       if (!providers.includes(a.target)) return refuse('a seat target is not a provider of this run');
       if (seen.has(`seat:${d.id}`)) return refuse('one skill is attached to two seats (skill_conflict)');
       seen.add(`seat:${d.id}`);
+      // the engine refuses a seat whose lens block (the instruction text AND its wrapper) is over --lens-bytes-max: refuse here, before anything is held, what it would refuse after
+      if (Buffer.byteLength(lensBlock(expertFromSkill(x.entry)), 'utf8') > skills.skill_bytes) return refuse('a seat skill with its prompt wrapper is larger than skill_bytes (skill_too_large)');
       seats.push({ spec, target: a.target });
-    } else observer = { spec, provider: skills.observer.provider, maxTokens: skills.observer.max_tokens, inputBytes: skills.observer.input_bytes };
+    } else {
+      // the observer's usage row is keyed observer:<name>; billing drops a key it cannot read, so a name that does not fit is refused up front
+      if (!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(d.id.split('.').slice(2).join('.'))) return refuse('the observer skill name is longer than 64 characters or has a character the usage report cannot carry (skill_schema_value)');
+      observer = { spec, provider: skills.observer.provider, maxTokens: skills.observer.max_tokens, inputBytes: skills.observer.input_bytes };
+    }
   }
   // the instruction bytes the quote priced: the sum over the distinct skills of the run (a skill that is a seat and the observer counts once)
   const bytes = [...byId.values()].reduce((n, v) => n + Buffer.byteLength(v.intake.instructions.method, 'utf8'), 0);
@@ -1602,6 +1616,26 @@ async function planWebRun(fields, { perToken = null, experts = null, skills = nu
   return { plan: { ...plan, ...(fields.jev === true ? { jev: true } : {}), ...(fields.investigate === true ? { case: { investigate: true } } : {}) }, worst: worstFor(plan) };
 }
 
+// A process killed in the middle of a skills run (SIGKILL, power loss) can leave its private hosted-skills file in a temporary run directory. At start the file (never the
+// directory, never anything else) is removed from run directories of this user, private (0700) and older than the longest a run can last plus a margin.
+async function sweepStaleHostedFiles() {
+  const base = tmpdir();
+  const maxAgeMs = 6 * 3600 * 1000;
+  let removed = 0;
+  try {
+    for (const name of await readdir(base)) {
+      if (!/^e3d-mcp-[A-Za-z0-9]{6}$/.test(name)) continue;
+      const d = join(base, name);
+      const st = await lstat(d).catch(() => null);
+      if (!st || !st.isDirectory() || st.uid !== process.getuid() || (st.mode & 0o077) !== 0 || Date.now() - st.mtimeMs < maxAgeMs) continue;
+      const f = join(d, 'hosted-skills.json');
+      const fs = await lstat(f).catch(() => null);
+      if (fs && fs.isFile()) { await rm(f, { force: true }); removed += 1; }
+    }
+  } catch { /* nothing to sweep */ }
+  if (removed) log(`swept ${removed} stale hosted-skills file${removed === 1 ? '' : 's'} left by an earlier process`);
+}
+
 // The external hook: validate everything, then recover crashed work and start outbox delivery BEFORE listening.
 async function startAuthHook() {
   const checked = validateAuthConfig(process.env);
@@ -1620,6 +1654,7 @@ async function startAuthHook() {
   // E3D_MCP_PANEL=1: every hosted debate asks billing for the account's panel first (refused on any failure).
   if (PANEL_CONFIG.panel) panelClient = createPanelClient({ log });
   if (PRICING_CONFIG.mode === 'per_token') pricingClient = createPricingClient({ log });
+  if (SKILLS_RUN.on) await sweepStaleHostedFiles();
   const outbox = createOutbox({ dir: usage.dir, auth: external, log });
   external.attachOutbox(outbox);
   metering = createMetering({ localUsage: usage, external, outbox, log, dir: usage.dir });

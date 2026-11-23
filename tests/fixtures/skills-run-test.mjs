@@ -3,6 +3,7 @@
 import assert from 'node:assert/strict';
 import { validateRunRequest, SKILLS_LIMITS } from '../../lib/mcp/run-server.js';
 import { skillsRunFrom, readUsageRows } from '../../lib/mcp/pricing.js';
+import { skillsExtra, worstCase } from '../../lib/mcp/usage.js';
 import { writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -120,4 +121,24 @@ ok('every key, type, range and combination is checked, and no error echoes the r
   ok('the observer usage row is kept only for a run with an observer');
 }
 
+
+// review findings: nesting is bounded without recursion, and is a plain refusal (never a thrown error that becomes a retryable 503)
+{
+  const nest = (d) => { let o = 1; for (let i = 0; i < d; i++) o = { a: o }; return o; };
+  const at = (d) => withSk({ skill_attachments: [{ ...seat(), definition: { ...DEF(), extensions: nest(d) } }, seat('openai-api')] });
+  assert.doesNotThrow(() => validateRunRequest(at(3000), full), 'a very deep definition must not throw');
+  refused(at(3000), full, 'nesting 3000 deep');
+  refused(at(SKILLS_LIMITS.definitionDepth + 1), full, 'one level past the limit');
+  assert.ok(!validateRunRequest(at(SKILLS_LIMITS.definitionDepth - 2), full).error, 'a definition within the depth limit is not refused by the listener');
+  ok('nesting: bounded by a loop, 3000 levels is a refusal and not an exception, the limit is exact');
+}
+// the daily-budget estimate counts what hosted skills add
+{
+  const w = worstCase({ providers: 3, rounds: 2, maxWords: 300, questionChars: 100 });
+  assert.deepEqual(skillsExtra({ skillBytes: 4096, seats: 2, rounds: 2, observer: { inputBytes: 20000, maxTokens: 150 } }), { calls: 1, tokens: 1024 * 2 * 2 + 5000 + 150 });
+  assert.deepEqual(skillsExtra({ skillBytes: 4096, seats: 2, rounds: 2, observer: null }), { calls: 0, tokens: 4096 }, 'seats only: lens text per seat per round, no extra call');
+  assert.deepEqual(skillsExtra({ skillBytes: 5, seats: 0, rounds: 3, observer: { inputBytes: 1, maxTokens: 1 } }), { calls: 1, tokens: 2 }, 'observer only, rounding up');
+  assert.ok(w.tokens > 0);
+  ok('budget estimate: lens bytes per seat per round plus the observer call, nothing for a plain run');
+}
 console.log(`skills-run unit tests: ${n} groups passed`);

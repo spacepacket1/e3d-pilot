@@ -20,6 +20,7 @@ export function makeHosted(principal, spec) {
       const d = structuredClone(r.definition);
       d.owner_ref = principal; d.id = `skill.${principal}.${s.name}`; d.visibility = s.mutate === 'public' ? 'public' : 'private'; d.status = 'active';
       if (s.mutate === 'tools') { d.capability_level = 'tool_enabled'; }
+      if (s.rename) { d.name = s.rename; d.id = `skill.${principal}.${s.rename}`; }   // a name the local folder rules would refuse (over 64 characters), for the hosted checks
       d.definition_hash = definitionHash({ ...d, definition_hash: `sha256:${'0'.repeat(64)}` });
       return d;
     });

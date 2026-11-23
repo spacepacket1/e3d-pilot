@@ -26,8 +26,11 @@ mk "$TMP/d-r.json" "$P" '[{"name":"reviewer","body":"OBSMARK-GAMMA. Say whether 
 mk "$TMP/d-dual.json" "$P" '[{"name":"dual","body":"DUALMARK-DELTA. Both a lens and a review.","hooks":["seat","observer"]}]'
 mk "$TMP/d-tools.json" "$P" '[{"name":"sneaky","body":"SNEAKMARK-TOOLS.","hooks":["seat"],"mutate":"tools"}]'
 mk "$TMP/d-other.json" "u_zzzzzz999999" '[{"name":"lens-a","body":"OTHERMARK-OWNER.","hooks":["seat"]}]'
+mk "$TMP/d-dual2.json" "$P" '[{"name":"dual","body":"DUALMARK-OTHER-TEXT. A second, different definition under the same id.","hooks":["seat","observer"]}]'
+LONGNAME="$(printf 'a%.0s' $(seq 1 70))"
+mk "$TMP/d-long.json" "$P" "[{\"name\":\"longobs\",\"rename\":\"$LONGNAME\",\"body\":\"OBSMARK-LONGNAME. Review.\",\"hooks\":[\"observer\"]}]"
 def() { jq -c '.skills[0]' "$1"; }
-DA="$(def "$TMP/d-a.json")"; DB="$(def "$TMP/d-b.json")"; DR="$(def "$TMP/d-r.json")"; DUAL="$(def "$TMP/d-dual.json")"; DTOOLS="$(def "$TMP/d-tools.json")"; DOTHER="$(def "$TMP/d-other.json")"
+DA="$(def "$TMP/d-a.json")"; DB="$(def "$TMP/d-b.json")"; DR="$(def "$TMP/d-r.json")"; DUAL="$(def "$TMP/d-dual.json")"; DTOOLS="$(def "$TMP/d-tools.json")"; DOTHER="$(def "$TMP/d-other.json")"; DUAL2="$(def "$TMP/d-dual2.json")"; DLONG="$(def "$TMP/d-long.json")"
 spec_of() { jq -r '"\(.id)@\(.version)#\(.definition_hash)"' <<< "$1"; }
 SPEC_A="$(spec_of "$DA")"; SPEC_B="$(spec_of "$DB")"; SPEC_R="$(spec_of "$DR")"; SPEC_DUAL="$(spec_of "$DUAL")"
 [[ "$SPEC_A" =~ ^skill\.u_abc123def456\.lens-a@1\.0\.0#sha256:[0-9a-f]{64}$ ]] || fail "unexpected spec $SPEC_A"
@@ -239,9 +242,15 @@ refuse "an observer-only skill used as a seat" "$(body "$PV3" "$LIM3" "[$(seat "
 refuse "a seat-only skill used as the observer" "$(body "$PV2" "$LIM2" "[$(obsatt "$DA")]" | jq -c --argjson o "$OBSV" '.observer = $o')"; assert_contains "$LAST_MSG" "observer hook"
 refuse "one seat skill alone (the engine seats two or more)" "$(body "$PV3" "$LIM3" "[$(seat "$DA" anthropic-api)]")"
 refuse "the same skill on two seats" "$(body "$PV3" "$LIM3" "[$(seat "$DA" anthropic-api), $(seat "$DA" openai-api)]")"
-refuse "one id with two different definitions" "$(body "$PV2" "$LIM2" "[$(seat "$DUAL" anthropic-api), $(seat "$DB" openai-api), $(obsatt "$(jq -c '.limits.timeout_ms = 1234' <<< "$DUAL")")]" | jq -c --argjson o "$OBSV" '.observer = $o')"
+refuse "one id with two different definitions (each with a real hash)" "$(body "$PV2" "$LIM2" "[$(seat "$DUAL" anthropic-api), $(seat "$DB" openai-api), $(obsatt "$DUAL2")]" | jq -c --argjson o "$OBSV" '.observer = $o')"; assert_contains "$LAST_MSG" "skill_conflict"
 refuse "more instruction text than skill_bytes" "$(body "$PV3" "$LIM3" "[$(seat "$DA" anthropic-api), $(seat "$DB" openai-api)]" | jq -c '.skill_bytes = 60')"; assert_contains "$LAST_MSG" "skill_bytes"
 refuse "an observer adapter that cannot be priced" "$(body "$PV2" "$LIM2" "[$(obsatt "$DR")]" | jq -c '.observer = {provider:"or-nonexistent-voice",max_tokens:150,input_bytes:20000}')"
+# review findings: refused here, before anything is held, what the engine would refuse after the hold
+refuse "a seat whose prompt wrapper does not fit skill_bytes (the instruction text alone does)" "$(body "$PV3" "$LIM3" "[$(seat "$DA" anthropic-api), $(seat "$DB" openai-api)]" | jq -c '.skill_bytes = 80')"; assert_contains "$LAST_MSG" "skill_too_large"
+refuse "an observer skill whose name is too long for the usage report" "$(body "$PV2" "$LIM2" "[$(obsatt "$DLONG")]" | jq -c --argjson o "$OBSV" '.observer = $o')"; assert_contains "$LAST_MSG" "usage report"
+DEEP="$(python3 -c 'print("{\"a\":" * 3000 + "1" + "}" * 3000, end="")')"
+BDEEP="$(body "$PV3" "$LIM3" "[$(seat "$DA" anthropic-api), $SEATB]" | jq -c '.skill_attachments[0].definition = "DEEPDEEP"')"; BDEEP="${BDEEP/\"DEEPDEEP\"/$DEEP}"
+refuse "a definition nested 3000 levels deep (a 400, never a retryable 503)" "$BDEEP"; assert_contains "$LAST_MSG" "nested too deeply"
 refuse "an oversized definition" "$(body "$PV3" "$LIM3" "[$(seat "$(jq -c '.pad = ("x" * 50000)' <<< "$DA")" anthropic-api), $SEATB]")"
 refuse "two 40 KiB definitions (a body over the 64 KiB of a listener without skills_v1 is read, then refused for its content)" "$(body "$PV3" "$LIM3" "[$(seat "$(jq -c '.pad = ("x" * 40000)' <<< "$DA")" anthropic-api), $(seat "$(jq -c '.pad = ("y" * 40000)' <<< "$DB")" openai-api)]")"
 refuse "a definition with a float" "$(body "$PV3" "$LIM3" "[$(seat "$(jq -c '.limits.timeout_ms = 1.5' <<< "$DA")" anthropic-api), $SEATB]")"
@@ -301,4 +310,34 @@ for _ in $(seq 1 50); do [[ ! -e "$(dirname "$HSH")" ]] && break; sleep 0.1; don
 [[ ! -e "$HSH" && ! -e "$(dirname "$HSH")" ]] || fail "the skills file and its directory are gone after a cancelled run"
 assert_eq "$(jq -r '.run.outcome' <<< "$(rget "$DH" "$RTH")")" "error"
 echo "ok - a cancelled run removes the skills file and its directory"
+
+# ---- 8. a process killed in the middle of a skills run: the restart scrubs the skill text from the stored state, sweeps the stale private file, and (switch now off) does not run skills
+start_server crash "${SKON[@]}" WRAP_HANG=1
+CRASHPID="${PIDS[$((${#PIDS[@]} - 1))]}"
+n5="$(nrec)"
+BC="$(body "$PV3" "$LIM3" "[$(seat "$DA" anthropic-api), $SEATB]")"; DC="$(jq -r .debate_id <<< "$BC")"
+r="$(rpost "$BC")"; assert_eq "$(code "$r")" "202"; RTC="$(js "$r" | jq -r .run_token)"
+for _ in $(seq 1 100); do [[ "$(nrec)" == "$((n5 + 1))" ]] && break; sleep 0.1; done
+HSC="$(jq -r .hs <<< "$(lastrec)")"; [[ -f "$HSC" ]] || fail "the skills file exists while the run is going"
+grep -rq 'SEATMARK-ALPHA' "$TMP/state-crash" || fail "while a run is queued or running its definitions are in its state (that is how a restart can resume it)"
+kill -9 "$CRASHPID" 2>/dev/null || true; pkill -f "$TMP/wrap.sh" 2>/dev/null || true; sleep 0.5
+[[ -f "$HSC" ]] || fail "a killed process leaves its private file behind (the thing the sweep is for)"
+# the file is older than the sweep's margin (6 hours)
+node -e 'const fs=require("fs"); const t=(Date.now()-7*3600*1000)/1000; fs.utimesSync(process.argv[1], t, t)' "$(dirname "$HSC")"
+# a young directory with a file is NOT swept
+YOUNG="$(mktemp -d "${TMPDIR:-/tmp}/e3d-mcp-XXXXXX")"; chmod 700 "$YOUNG"; echo '{}' > "$YOUNG/hosted-skills.json"
+# restart on the same state, the skills switch now OFF: the recovered run does not run skills, its state is scrubbed
+start_server crash E3D_MCP_SKILLS_RUN=0
+for _ in $(seq 1 100); do [[ "$(rget "$DC" "$RTC" | jq -r '.run.status // empty')" == failed ]] && break; sleep 0.2; done
+! grep -rq 'SEATMARK-ALPHA' "$TMP/state-crash" || fail "after a restart no definition text remains in the stored state: $(grep -rl 'SEATMARK-ALPHA' "$TMP/state-crash" | head -2)"
+echo "ok - a killed process: the restart ends the run and scrubs the skill text from the stored state"
+# the sweep runs when skills are ON at start: the old private file is removed (the directory is not), a young one is kept
+start_server crash2 "${SKON[@]}"
+for _ in $(seq 1 50); do [[ ! -e "$HSC" ]] && break; sleep 0.1; done
+[[ ! -e "$HSC" ]] || fail "the stale private skills file is swept at start"
+assert_contains "$(cat "$TMP/crash2.log")" "swept 1 stale hosted-skills file"
+[[ -f "$YOUNG/hosted-skills.json" ]] || fail "a young run directory (a run in progress) is never swept"
+rm -rf "$YOUNG"
+echo "ok - the stale private skills file left by a killed process is swept at start (old, private and ours only)"
+rm -rf "$(dirname "$HSC")"
 echo "mcp-skills-run: all passed"
