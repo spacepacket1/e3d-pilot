@@ -65,6 +65,9 @@ SEAT_SKILLS=(); SEAT_SKILL_POLICY=""; SKILL_PREVIEW=0; SKILL_PREVIEW_JSON=0; SKI
 # a debate observer (skills phase 3b): one read-only call after the verdict; needs E3D_SKILLS_V1=1 and E3D_SKILLS_OBSERVER=1
 OBSERVER_SPEC=""; OBSERVER_PLAN_JSON=""; OBSERVER_LIB="$REPO_ROOT/lib/skills/observer.mjs"
 SKILLS_CLI="$REPO_ROOT/lib/skills/cli.mjs"
+# Calibration, local capture (docs/skills.md "Calibration (local)"): off unless E3D_CALIBRATION_V1=1. Pure local commands (no model, no network).
+CAL_ACTION=""; CAL_ARG=""; CAL_RESULT=""; CAL_TASK_CLASS=""; CAL_MODE=""; CAL_MODEL_FAMILY=""; CAL_JSON=0
+CAL_CLI="$REPO_ROOT/lib/calibration/cli.mjs"
 PLAN_JSON=""
 LENS_DIR=""
 # Transient provider failures (HTTP 429/500/502/503/504 or a curl timeout) are retried this many times, waiting DELAY x attempt seconds.
@@ -195,6 +198,10 @@ Skills (off unless E3D_SKILLS_V1=1; docs/skills/). Pure local commands: no model
   --list-skills | --show-skill <id|name> [--skill-version V] [--skill-hash H] | --validate-skill <folder> | --project-expert <name|folder>
   --export-skill <id|name> <new folder>   writes a native skill folder (a built-in is exported as a local copy); never overwrites
   --diff-skill <id|name|folder> <id|name|folder>   field-level difference and whether the definition hashes agree (exit 3 when they differ)
+Calibration (off unless E3D_CALIBRATION_V1=1; docs/skills.md). Local only: no model, no network. A track record describes what was recorded.
+  --skill-record <id|name> [--skill-version V] [--skill-hash H] [--task-class C] [--skill-mode M] [--model-family F] [--json]
+  --report-outcome <use_id> --result worked|failed|unknown [--json]   a later report for the same use supersedes the earlier one
+  --my-calibration [--json]   --delete-outcome <use_id> [--json]   --compact-calibration [--json]
 Observer (E3D_SKILLS_V1=1 and E3D_SKILLS_OBSERVER=1; docs/skills.md):
   --observer <id|name>[@version][#sha256:hash][:provider]   one read-only call after the verdict, by a skill with the hook debate_observer/after_synthesis; writes
                               observer-<skill>.md and an `observers` block, never changes the verdict (stdout is untouched; the report goes to stderr and the files);
@@ -232,6 +239,17 @@ while [[ $# -gt 0 ]]; do
     --diff-skill)
       [[ $# -ge 3 ]] || { echo "error: --diff-skill needs two skill ids, names or folders" >&2; exit 1; }
       SKILL_ACTION=diff; SKILL_ARG1="$2"; SKILL_ARG2="$3"; shift 3 ;;
+    --skill-record|--report-outcome|--delete-outcome)
+      [[ $# -ge 2 ]] || { echo "error: $1 needs a value" >&2; exit 1; }
+      case "$1" in --skill-record) CAL_ACTION=record ;; --report-outcome) CAL_ACTION=report ;; *) CAL_ACTION=delete ;; esac
+      CAL_ARG="$2"; shift 2 ;;
+    --my-calibration) CAL_ACTION=mine; shift ;;
+    --compact-calibration) CAL_ACTION=compact; shift ;;
+    --result) [[ $# -ge 2 ]] || { echo "error: --result needs worked, failed or unknown" >&2; exit 1; }; CAL_RESULT="$2"; shift 2 ;;
+    --task-class) [[ $# -ge 2 ]] || { echo "error: --task-class needs a value" >&2; exit 1; }; CAL_TASK_CLASS="$2"; shift 2 ;;
+    --skill-mode) [[ $# -ge 2 ]] || { echo "error: --skill-mode needs a value" >&2; exit 1; }; CAL_MODE="$2"; shift 2 ;;
+    --model-family) [[ $# -ge 2 ]] || { echo "error: --model-family needs a value" >&2; exit 1; }; CAL_MODEL_FAMILY="$2"; shift 2 ;;
+    --json) CAL_JSON=1; shift ;;
     --seat-skill) [[ $# -ge 2 ]] || { echo "error: --seat-skill needs <id|name>[@version][#sha256:hash][:provider]" >&2; exit 1; }; SEAT_SKILLS+=("$2"); SPEC_FLAG_USED=1; shift 2 ;;
     --observer) [[ $# -ge 2 ]] || { echo "error: --observer needs <id|name>[@version][#sha256:hash][:provider]" >&2; exit 1; }; [[ -z "$OBSERVER_SPEC" ]] || { echo "error: one observer per debate in this release" >&2; exit 1; }; OBSERVER_SPEC="$2"; shift 2 ;;
     --on-seat-skill-failure) [[ $# -ge 2 ]] || { echo "error: --on-seat-skill-failure needs fail or plain_seat" >&2; exit 1; }; SEAT_SKILL_POLICY="$2"; shift 2 ;;
@@ -279,11 +297,14 @@ case "${E3D_SPECIALISTS_BUILTIN_ONLY:-}" in ''|0) ;; 1) SPEC_BUILTIN_ONLY=1 ;; *
 if [[ -n "${E3D_SKILLS_V1+x}" ]]; then
   case "$E3D_SKILLS_V1" in ''|0|1) ;; *) echo "error: E3D_SKILLS_V1 must be 0 or 1" >&2; exit 2 ;; esac
 fi
-if [[ -n "$SKILL_ACTION" || "$SKILL_PIN_GIVEN" == 1 ]] && [[ "${E3D_SKILLS_V1:-0}" != "1" ]]; then
+if [[ -n "${E3D_CALIBRATION_V1+x}" ]]; then
+  case "$E3D_CALIBRATION_V1" in ''|0|1) ;; *) echo "error: E3D_CALIBRATION_V1 must be 0 or 1" >&2; exit 2 ;; esac
+fi
+if [[ -n "$SKILL_ACTION" || ( "$SKILL_PIN_GIVEN" == 1 && "$CAL_ACTION" != record ) ]] && [[ "${E3D_SKILLS_V1:-0}" != "1" ]]; then
   echo "error: skills are off. Set E3D_SKILLS_V1=1 to use --list-skills, --show-skill, --validate-skill, --project-expert, --export-skill and --diff-skill." >&2
   exit 1
 fi
-if [[ "$SKILL_PIN_GIVEN" == 1 && "$SKILL_ACTION" != show ]]; then echo "error: --skill-version and --skill-hash apply to --show-skill" >&2; exit 1; fi
+if [[ "$SKILL_PIN_GIVEN" == 1 && "$SKILL_ACTION" != show && "$CAL_ACTION" != record ]]; then echo "error: --skill-version and --skill-hash apply to --show-skill and --skill-record" >&2; exit 1; fi
 # a pin that is given must be well formed: an empty or malformed pin is refused, never silently dropped
 if [[ "$SKILL_PIN_GIVEN" == 1 ]]; then
   [[ -z "$SKILL_VERSION" || "$SKILL_VERSION" =~ ^(0|[1-9][0-9]{0,5})\.(0|[1-9][0-9]{0,5})\.(0|[1-9][0-9]{0,5})$ ]] || { echo "error: --skill-version must look like 1.0.0" >&2; exit 1; }
@@ -321,6 +342,31 @@ if (( SKILL_PREVIEW == 1 || SKILL_PREVIEW_JSON == 1 )) || [[ -n "$SKILL_EXPECT_P
   [[ -n "$SPEC_PANEL" ]] || (( ${#SPEC_LIST[@]} > 0 || ${#SEAT_SKILLS[@]} > 0 )) || { echo "error: --preview-skills, --preview-json and --expect-plan apply to a panel; give --panel, --specialist or --seat-skill" >&2; exit 1; }
   (( SKILL_PREVIEW_JSON == 0 )) || (( SKILL_PREVIEW == 1 )) || { echo "error: --preview-json modifies --preview-skills" >&2; exit 1; }
   [[ -z "$SKILL_EXPECT_PLAN" || "$SKILL_EXPECT_PLAN" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "error: --expect-plan must be sha256: followed by 64 hex characters" >&2; exit 1; }
+fi
+if [[ -n "$CAL_ACTION" || -n "$CAL_RESULT$CAL_TASK_CLASS$CAL_MODE$CAL_MODEL_FAMILY" ]] || (( CAL_JSON == 1 )); then
+  [[ "${E3D_CALIBRATION_V1:-0}" == "1" ]] || { echo "error: calibration is off. Set E3D_CALIBRATION_V1=1 to use --skill-record, --report-outcome, --my-calibration, --delete-outcome and --compact-calibration." >&2; exit 1; }
+  [[ -n "$CAL_ACTION" ]] || { echo "error: --result, --task-class, --skill-mode, --model-family and --json apply to the calibration commands" >&2; exit 1; }
+  if [[ "$CAL_ACTION" == report ]]; then [[ -n "$CAL_RESULT" ]] || { echo "error: --report-outcome needs --result worked, failed or unknown" >&2; exit 1; }; fi
+  [[ "$CAL_ACTION" == report || -z "$CAL_RESULT" ]] || { echo "error: --result applies to --report-outcome" >&2; exit 1; }
+  [[ "$CAL_ACTION" == record || -z "$CAL_TASK_CLASS$CAL_MODE$CAL_MODEL_FAMILY" ]] || { echo "error: --task-class, --skill-mode and --model-family apply to --skill-record" >&2; exit 1; }
+  [[ -z "$SKILL_ACTION" ]] || { echo "error: give either a skills command or a calibration command, not both" >&2; exit 1; }
+  command -v node >/dev/null 2>&1 || { echo "error: node is required for calibration" >&2; exit 1; }
+  cal_args=()
+  (( CAL_JSON == 0 )) || cal_args+=(--json)
+  case "$CAL_ACTION" in
+    record)
+      [[ -z "$SKILL_VERSION" ]] || cal_args+=(--version "$SKILL_VERSION")
+      [[ -z "$SKILL_HASH" ]] || cal_args+=(--hash "$SKILL_HASH")
+      [[ -z "$CAL_TASK_CLASS" ]] || cal_args+=(--task-class "$CAL_TASK_CLASS")
+      [[ -z "$CAL_MODE" ]] || cal_args+=(--mode "$CAL_MODE")
+      [[ -z "$CAL_MODEL_FAMILY" ]] || cal_args+=(--model-family "$CAL_MODEL_FAMILY") ;;
+    report) cal_args+=(--result "$CAL_RESULT") ;;
+  esac
+  case "$CAL_ACTION" in
+    mine|compact) node "$CAL_CLI" "$CAL_ACTION" ${cal_args[@]+"${cal_args[@]}"} ;;
+    *) node "$CAL_CLI" "$CAL_ACTION" ${cal_args[@]+"${cal_args[@]}"} -- "$CAL_ARG" ;;
+  esac
+  exit $?
 fi
 if (( SPEC_FLAG_USED == 1 )) && [[ "${E3D_SPECIALISTS:-0}" != "1" ]]; then
   echo "error: experts are off. Set E3D_SPECIALISTS=1 to use --panel, --specialist, --min-families and the --list/--show/--validate/--export-specialist commands." >&2
@@ -1660,6 +1706,10 @@ write_decision_log() {
   if [[ -n "${E3D_DEBATE_DECISION_LOG:-}" ]]; then
     { mkdir -p "$(dirname "$E3D_DEBATE_DECISION_LOG")" && jq -c . "$work_dir/decision-log.json" >> "$E3D_DEBATE_DECISION_LOG"; } 2>/dev/null \
       || echo "warning: could not append to E3D_DEBATE_DECISION_LOG" >&2
+  fi
+  # calibration (E3D_CALIBRATION_V1=1): note each skill use of this receipt in the local store so an outcome can be reported against its use_id
+  if [[ "${E3D_CALIBRATION_V1:-0}" == "1" && -s "$work_dir/skills.json" ]] && command -v node >/dev/null 2>&1; then
+    node "$CAL_CLI" register-uses -- "$work_dir/decision-log.json" > /dev/null 2>&1 || echo "warning: could not note the skill uses for outcome reporting" >&2
   fi
 }
 write_decision_log || true

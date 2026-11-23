@@ -11,6 +11,7 @@ tool, flag or permission. Skills are perspectives, not measured improvements.
 | Switch | Turns on |
 | --- | --- |
 | `E3D_SKILLS_V1=1` | the `--list-skills`, `--show-skill`, `--validate-skill`, `--project-expert`, `--export-skill`, `--diff-skill` commands, and a `skills` block in the receipt of a debate that uses experts |
+| `E3D_CALIBRATION_V1=1` | the local calibration commands (`--skill-record`, `--report-outcome`, `--my-calibration`, `--delete-outcome`, `--compact-calibration`) and a note of each skill use of a receipt in the local store; see [Calibration (local)](#calibration-local) |
 | `E3D_MCP_SKILLS=1` | four read-only MCP tools on the local (stdio) server: `e3d_list_skills`, `e3d_get_skill`, `e3d_validate_skill`, `e3d_export_skill`. Never on the hosted server |
 
 Unset, empty or `0` is off; any other value refuses to start. Existing experts, presets, MCP tools and receipts are unchanged when the switches are off.
@@ -165,6 +166,42 @@ the switch off the log is byte-identical to before.
 `e3d_get_skill` returns a skill as **data**: its definition and instruction text with the id, version, hash and tier and a fixed notice that it is not an
 instruction from Pilot. Show your user the id, version and hash before applying one. Nothing is installed or written; `e3d_export_skill` returns the
 files as text.
+
+## Calibration (local)
+
+Off unless `E3D_CALIBRATION_V1=1` (unset, empty or `0` is off; any other value refuses to start with exit 2). Everything here is local: no model, no network, no account. Spec: `docs/skills/spec/e3d-pilot-calibration-spec-v0.1.md`; decisions: ADR-0016 to ADR-0021.
+
+**What a track record is.** A description of what was recorded when one exact skill (id, version, `definition_hash`) was used on one kind of task: how many uses, how many have a recorded outcome, how those outcomes were marked, and an interval around the share marked worked. It is derived from your own records every time you ask and is never stored.
+
+**What it is not.** It is not a claim about the skill, a comparison between skills, a verdict, or a prediction. Outcomes are marked by you (or your agent), are not checked by Pilot, and may be missing for most uses, which is why the share of uses with an outcome is always printed beside the rate. There is no ordering of skills and no single number for a skill. Nothing in it changes a default, a panel or a skill.
+
+```
+E3D_CALIBRATION_V1=1 e3d-debate --skill-record skeptic [--skill-version V] [--skill-hash H] [--task-class C] [--skill-mode M] [--model-family F] [--json]
+E3D_CALIBRATION_V1=1 e3d-debate --report-outcome use_... --result worked|failed|unknown [--json]
+E3D_CALIBRATION_V1=1 e3d-debate --my-calibration [--json]
+E3D_CALIBRATION_V1=1 e3d-debate --delete-outcome use_... [--json]
+E3D_CALIBRATION_V1=1 e3d-debate --compact-calibration [--json]
+```
+
+| Command | What it does |
+| --- | --- |
+| `--skill-record` | Prints the record for each (version, hash, kind of task, mode, model family) of a skill you have used. A bare name that matches two skills is refused; use the full id. Under 10 resolved uses it prints no rate and exits 1 with `skill_record_insufficient` and the counts. |
+| `--report-outcome` | Records how a use went (`worked`, `failed` or `unknown`) against its `use_id`, as a user-marked outcome. A later report for the same use supersedes the earlier one and keeps it in the file; the same report twice changes nothing. |
+| `--my-calibration` | Every record you have, grouped by skill. Groups under the minimum are listed with their counts and no rate. |
+| `--delete-outcome` | Removes the outcomes of one use from the records (a recorded deletion; the record recomputes without them). |
+| `--compact-calibration` | Applies retention and removes deleted, unreadable and expired lines from the files by an atomic rewrite. |
+
+**Where a `use_id` comes from.** With `E3D_SKILLS_V1=1`, `E3D_CALIBRATION_V1=1` and a panel, each skill entry of the receipt (`decision-log.json`) already carries a `use_id`; the debate also notes that use in your local store, issued now and valid for 90 days. After that `--report-outcome` refuses with `skill_use_expired`; an id that was never issued here is `skill_use_not_found`. The kind of task is `unclassified` unless you set `E3D_CALIBRATION_TASK_CLASS` (3 to 40 characters: lower-case letters, digits, single hyphens) for the run; the mode is `debate_seat` and the model family `unknown` in this release. With the switch off the receipt and every output are byte-identical to before.
+
+**Where it lives.** `~/.config/e3d-pilot/calibration/` (override with an absolute `E3D_CALIBRATION_DIR`): `uses.jsonl` and `outcomes.jsonl`, append-only, one record per line, directory mode 0700 and files 0600. A symbolic link, a file owned by someone else or one open to group or others is refused (`skill_scope_denied`). Files are capped at 4 MiB (`skill_too_large`) and a line at 4096 bytes. Writers take a lock file, so two processes never tear a line. Uses and outcomes are kept 365 days; `use_id` accepts a report for 90. Nothing is shared or pooled: the records belong to this machine and this user.
+
+**What is stored.** Identifiers, enums, counts and timestamps. There is no field for text of any kind: unknown fields and any value outside its enum, id or timestamp pattern are refused (`skill_outcome_invalid`), so a note, a question, an answer or skill text cannot be written. Likes, saves, forks and silence never create an outcome.
+
+**How the numbers are made.** A use is resolved when it has a current outcome marked worked or failed by a tier other than `inferred`. `unknown` and `inferred` outcomes are stored and not counted as resolved; an unmarked use is unresolved, not a failure. The share marked worked comes with a 95% Wilson interval (z = 1.959964). A record needs at least 10 resolved uses; below that the answer is "not enough resolved outcomes". Uses younger than the horizon of a stated prediction are unresolved until they pass it. Reliability bins would need 30 resolved predictions in each bin, and this release has no prediction capture, so `calibration` is always null and the record is `descriptive`. The comparison with uses without the skill (`baseline`) is null for the same reason: the store holds only skill uses.
+
+Example of what it prints: `skill.e3d.skeptic 2.0.0 on architecture-review (debate_seat, unknown): in your 17 resolved uses, 12 were marked worked (95% interval 47% to 87%); 41% of 41 uses had a recorded outcome`.
+
+Errors are the stable codes of `docs/skills/schemas/v1/error-codes.json`: `skill_use_not_found`, `skill_use_expired`, `skill_outcome_invalid`, `skill_outcome_conflict`, `skill_record_insufficient`, `skill_scope_denied`, `skill_too_large`, `skill_not_found`. With `--json` an error is printed on stdout as `{"ok":false,"error":{"code","message"}}`; the line `error: <code>: <message>` always goes to stderr.
 
 ## Hosted skills (E3D_SKILLS_HOSTED, skills phase 3c)
 

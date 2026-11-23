@@ -11,6 +11,7 @@ Source: the "E3D Pilot User-Defined Skills: Implementation Specification" (v0.1,
 | Grounding report, gap table, contradictions, phase map | [phase1/grounding-report.md](phase1/grounding-report.md) |
 | 24 ADRs: 0001-0015 **Proposed**; 0005, 0006, 0009, 0010, 0013 and 0016-0024 **accepted or owner-decided 2026-11-23**; 0007, 0008, 0017 still pending | [phase1/adr/](phase1/adr/) |
 | User guide for the local skills commands (phase 2b) | [../skills.md](../skills.md) |
+| Calibration (local), calibration phase 2: the local outcome store, the five commands and the derived track record (flag `E3D_CALIBRATION_V1`, off by default) | [../skills.md](../skills.md#calibration-local), `lib/calibration/`, `tests/calibration-local.sh` |
 | Phase 3 plan (seat, observer and chat attachment runtime), for review | [phase3/plan.md](phase3/plan.md) |
 | Gallery readiness note (public handles, labels, publish flow; proposal, no code) | [gallery-readiness.md](gallery-readiness.md) |
 | 12 JSON Schemas, shared definitions, stable error codes | [schemas/v1/](schemas/v1/) |
