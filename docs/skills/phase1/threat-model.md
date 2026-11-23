@@ -57,6 +57,8 @@ Prompt blocks (spec 6.4, unchanged): 1 policy, 2 task contract, 3 skill instruct
 | T22 | Referent drift behind a hashed reference (schema refs, suite refs) | n/a | `e3d://schemas/*/vN` immutable and shipped in the repo; receipts record fixture versions | 2 |
 | T23 | Withdrawn or deprecated skill still runs; mutable name or description spoofs approval | n/a | Status checked live (`skill_withdrawn`); name and description are hashed; no router reads `tags` | 3, 7 |
 | T18 | Secrets in a skill (public) | none | Publish scanner for secrets, PII, local paths, private evidence refs | 8 |
+| T24 | **Served skill injects the host agent**: a skill fetched over MCP instructs a tool-capable agent (shell, files) to act | None (no skill tools yet) | Serve as labelled data only; instructional only; never install or run; scanner for host-directed instruction patterns; user sees hash and source; host keeps its own permissions (cannot be enforced by Pilot) | 2, calibration 3 |
+| T25 | Outcome poisoning: fake or self-serving use and outcome reports | n/a | Server-issued `use_id`; per-principal records; tiers displayed; aggregation only with opt-in, minimum group size and source diversity; reactions never count | calibration 3, 7 |
 
 ## 4. Permission matrix (v1 capability vocabulary)
 

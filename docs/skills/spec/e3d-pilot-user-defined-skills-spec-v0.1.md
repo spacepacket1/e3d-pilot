@@ -1,9 +1,9 @@
-# E3D Pilot User-Defined Skills — Engine Specification (part 1 of 2)
+# E3D Pilot User-Defined Skills — Engine Specification (part 1 of 3)
 
 **Version:** 0.1
 **Date:** 2026-11-23
 **Status:** Implementation proposal, reconciled with the four repositories on fresh `main` (Phase 1 grounding, draft PR `spacepacket1/e3d-pilot#92`). ADRs 0001-0014 are **Proposed** and need human approval before Phase 2 starts. Facts about the code carry a commit; everything else is still a proposal.
-**Scope:** the engine (`spacepacket1/e3d-pilot`, public): contracts, local runtime, security, evaluation, phases 1 to 6. **Hosted companion (part 2):** `spacepacket1/e3d-pilot-cloud` `docs/skills-hosted-spec.md` (private): hosted registry, API, UI, migrations, publishing, adapter PRs for phases 3 and 5, and phases 7 and 8.
+**Scope:** the engine (`spacepacket1/e3d-pilot`, public): contracts, local runtime, security, evaluation, phases 1 to 6. **Hosted companion (part 2) and calibration (part 3, `e3d-pilot-calibration-spec-v0.1.md`, same directory):** `spacepacket1/e3d-pilot-cloud` `docs/skills-hosted-spec.md` (private): hosted registry, API, UI, migrations, publishing, adapter PRs for phases 3 and 5, and phases 7 and 8.
 **Contracts version:** v1 (owned by this document; the companion cites it).
 **Companion repositories:** `spacepacket1/e3d-code`, `spacepacket1/e3d-brain`
 **Audience:** E3D maintainers and e3d-code implementation agents
@@ -503,7 +503,7 @@ The existing expert path keeps its prompt block (`lensBlock`) byte for byte, bec
 
 ## 7. APIs and MCP contracts
 
-Names below are **proposals for the hosted phase**, not commitments. Settled (ADR-0005): no new MCP tool or REST route is added before Phase 7. Phase 2 adds CLI verbs only, behind `E3D_SKILLS_V1=1` (`--list-skills`, `--show-skill`, `--validate-skill`, `--project-expert`, `--export-skill`, `--diff-skill`). `e3d_list_experts` and `e3d_get_expert` keep their names and output shape; Phase 7 adds `e3d_list_skills` and `e3d_get_skill` as supersets and keeps the old pair as aliases. Hosted public routes live under `/api/...`; the `/agent/v1/...` routes are the internal engine-to-billing loopback and are not used for skills. Paths written `/v1/...` below are illustrative and are mapped to hosted names in Phase 7.
+Names below are **proposals for the hosted phase**, not commitments. Settled (ADR-0005, amended by ADR-0015): no new hosted (remote) MCP tool or REST route is added before Phase 7. Phase 2 adds CLI verbs behind `E3D_SKILLS_V1=1` (`--list-skills`, `--show-skill`, `--validate-skill`, `--project-expert`, `--export-skill`, `--diff-skill`) and read-only stdio MCP tools for local skills (list, get, validate, export) behind `E3D_MCP_SKILLS=1`, off by default. `e3d_list_experts` and `e3d_get_expert` keep their names and output shape; Phase 7 adds `e3d_list_skills` and `e3d_get_skill` as supersets and keeps the old pair as aliases. Hosted public routes live under `/api/...`; the `/agent/v1/...` routes are the internal engine-to-billing loopback and are not used for skills. Paths written `/v1/...` below are illustrative and are mapped to hosted names in Phase 7.
 
 ### 7.1 Read APIs
 
@@ -899,7 +899,8 @@ No runtime implementation begins until architecture, security/privacy, and evalu
 6. Extend receipts additively with resolved skill source/version/hash only when flag/skill path is used.
 7. Add docs and migration dry-run from expert to skill.
 8. **Fix first, with tests, before anything else in this phase:** (a) hash-line stripping: `hashed()` must remove `e3d.expert.hash:` only inside the frontmatter (finding F-2; built-in hashes must not change); (b) end-of-role marker lines in a lens (threat T3); (c) read each file once so the hashed bytes are the used bytes (T21); (d) NFC and bidi/zero-width refusal (T20); (e) the `docs/experts.md` contradiction about experts on `e3d_debate` and the stale "eight" in the catalogue test header.
-9. CLI verbs only, as listed in section 7; no new MCP tool or route.
+9. CLI verbs as listed in section 7, plus read-only stdio MCP tools (list, get, validate, export of local skills) behind `E3D_MCP_SKILLS=1`, off by default (ADR-0015); no hosted route and no tool that spends or writes hosted data.
+10. The receipt carries a `use_id` when a skill is used (the calibration specification needs it); absent on the no-skill path.
 
 ### Acceptance criteria
 
