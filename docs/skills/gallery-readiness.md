@@ -1,6 +1,6 @@
 # Skills Gallery readiness: what to build now so a public Gallery is additive later
 
-Status: **design note, a proposal for the owner.** No code, no decision taken. Where a sentence reports a fact, the file it comes from is in parentheses. Where it says "propose" or "recommend", it is our suggestion, not something already decided. Context: the hosted release is private-only (ADR-0024, `phase1/adr/0024-hosted-private-skills-subset.md`); a Gallery of public skills is the owner's later direction. Wording follows ADR-0021: a "track record" or "calibration" describes what was recorded, never that a skill is good or effective.
+Status: **design note. The owner accepted the recommended defaults in section 7 on 2026-11-23** (decision 5 as amended there); no code yet. Where a sentence reports a fact, the file it comes from is in parentheses. Where it says "propose" or "recommend", it is our suggestion, not something already decided. Context: the hosted release is private-only (ADR-0024, `phase1/adr/0024-hosted-private-skills-subset.md`); a Gallery of public skills is the owner's later direction. Wording follows ADR-0021: a "track record" or "calibration" describes what was recorded, never that a skill is good or effective.
 
 ## 1. What a Gallery needs, and what we already have
 
@@ -108,7 +108,7 @@ Receipts keep (id, version, hash) and metrics, never the body (ADR-0011), so thi
 | 2 | Handle rename policy | Rename at most once per 90 days, old handle redirects then is held for that account. Stops link rot and squatting |
 | 3 | Reserved names | `e3d`, `pilot`, `admin`, `official`, `support`, `system`, plus major AI companies. Prevents impersonation |
 | 4 | License allow-list (ADR-0010) | Approve the five SPDX ids as written. Lets us scan and enforce attribution |
-| 5 | Are private skill names shown on a published debate | Hidden by default, owner opts in per name. A name can reveal intent |
+| 5 | Are private skill names shown on a published debate | **Amended by the owner's direction:** publishing a debate is the owner's explicit choice and is never blocked. The publish preview lists the skill names, versions and hashes that will appear, and the owner can hide a name. The skill text is never part of it |
 | 6 | First public step | Unlisted before public, curated before open. Smaller blast radius while moderation is untested |
 | 7 | Who reviews and what a "reviewed" label means | Label states reviewer, date and version only; staff only at first. Avoids implying "safe" |
 | 8 | Moderation staffing and appeals | Named owner and a response time before phase C. Public text without a takedown process is a liability |
