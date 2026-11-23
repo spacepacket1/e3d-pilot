@@ -98,6 +98,36 @@ folder that exists but does not validate is never skipped over for another skill
 **Constraints.** A native skill's `instructions.constraints` are part of its hash but are **not sent to the model** in this release (a seat receives the instruction
 text only). The preview warns when a seat skill has any; put them in the instruction text.
 
+## The debate observer
+
+An observer is a skill that reads a **finished** debate and writes a short report next to the verdict. It needs `E3D_SKILLS_V1=1` and `E3D_SKILLS_OBSERVER=1` and works on any debate:
+
+```
+E3D_SKILLS_V1=1 E3D_SKILLS_OBSERVER=1 e3d-debate "Should we ship it?" --providers claude,codex --observer my-review:gemini
+```
+
+`--observer <id|name>[@version][#sha256:hash][:provider]` (one per debate). The skill must declare the hook `debate_observer/after_synthesis` and allow one model call
+(`limits.max_model_calls` of at least 1); anything else, an unknown, withdrawn or invalid skill, a pin that does not match, or a missing adapter, stops the run before
+any call. By default the observer runs on a vendor that did not write the synthesis; if none is available it runs on the synthesizer and says it grades its own
+verdict. `--preview-skills` shows it and the plan digest covers it.
+
+**It cannot change the verdict.** It runs after the verdict is printed and stored. **stdout is byte-identical** with and without it (consumers parse stdout as the verdict), and so
+are `transcript.md`, every seat and synthesis prompt, and the decision log apart from a new `observers` key. The report is shown on **stderr** under a heading that says it is
+not part of the verdict, and written to `observer-<skill>.md` and `observers.json` in `--out-dir`; `decision-log.json` gains `observers` (a validated run record: status, errors
+with stable codes, digests that bind the exact data and prompt, a `use_id`).
+
+**It runs without tools.** The observer reads text written by models, so it runs only on an adapter that cannot use tools: `claude` (started with its tools off) or a plain
+chat API adapter (`anthropic-api`, `openai-api`, `gemini-api`, `xai-api`, `openrouter`, `azure-openai`, `bedrock`). `codex`, the `gemini` CLI, `grok-build`, `devin`, `local` and the
+MCP sampling adapters have real tools or no switch to turn them off, and are refused before any call. If you have verified another adapter, name it in
+`E3D_SKILLS_OBSERVER_ADAPTERS` (comma list).
+
+**It reads untrusted text.** Participants' answers and the verdict may contain instructions. They come from the engine's own answer files, not from a re-read of the transcript, are
+cleaned of every control, zero-width and bidirectional character, and sit inside a fence made of a random token chosen for that run. The prompt says they are data and gives the
+observer no tool. The whole prompt is cut to fit the skill's `max_input_bytes`. A reply that is empty, over the skill's byte limit or that echoes the fence token is invalid and follows
+the skill's `fallback.on_invalid_output` (`return_unstructured_with_warning`, `retry_once` or `fail`); an adapter error or a timeout is a failure. The skill's `timeout_ms` is a hard
+deadline for the adapter **and everything it started** (also on Ctrl-C). A failure never fails the debate; it is shown on stderr as `OBSERVER FAILED` with its code. Not available in a
+per-token (hosted) debate.
+
 ## The advisory scan
 
 Every skill is scanned for patterns aimed at the **agent** that will read it: asking it to ignore its rules or hide something from its user, to act without
