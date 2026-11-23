@@ -187,3 +187,7 @@ and Haiku 5.5; for models whose thinking cannot be turned off (Opus 5.5, Fable, 
 `output_config.effort: "low"`; nothing for any other model, because an omitted field was accepted everywhere.
 `ANTHROPIC_API_THINKING` and `ANTHROPIC_API_EFFORT` override the defaults, and an empty value sends nothing.
 `tests/web-search.sh` pins the request shape for each model, with search on and off.
+
+## Seats run without tools
+
+Debate seats, the synthesis and the recap get a self-contained prompt and need no tools. `bin/e3d-debate` therefore starts the `claude` adapter with `CLAUDE_TOOLS=""` (its `--tools ''`) for all of them; the setting does nothing for other adapters. Before this, the Claude CLI's tools were on, so a seat steered by text in the question or in another seat's answer could run commands as the user. Set `E3D_DEBATE_SEAT_TOOLS=1` to keep the old behaviour on purpose. `tests/debate-seat-tools.sh` pins both cases.
