@@ -9,7 +9,7 @@ Source: the "E3D Pilot User-Defined Skills: Implementation Specification" (v0.1,
 | **Engine specification v0.1 (part 1 of 2; phases 1 to 6; runnable by e3d-code).** The hosted part is in the private `e3d-pilot-cloud` repository, `docs/skills-hosted-spec.md` | [spec/e3d-pilot-user-defined-skills-spec-v0.1.md](spec/e3d-pilot-user-defined-skills-spec-v0.1.md) |
 | **Calibration specification v0.1 (part 3; builds on the skills contracts)** | [spec/e3d-pilot-calibration-spec-v0.1.md](spec/e3d-pilot-calibration-spec-v0.1.md) |
 | Grounding report, gap table, contradictions, phase map | [phase1/grounding-report.md](phase1/grounding-report.md) |
-| 22 ADRs: 0001-0015 **Proposed**; 0016-0021 (calibration) and 0022 (local plan, seat skills) **owner-decided 2026-11-23**, awaiting reviewer sign-off | [phase1/adr/](phase1/adr/) |
+| 23 ADRs: 0001-0015 **Proposed**; 0016-0021 (calibration) 0022 (local plan, seat skills) and 0023 (debate observer) **owner-decided 2026-11-23**, awaiting reviewer sign-off | [phase1/adr/](phase1/adr/) |
 | User guide for the local skills commands (phase 2b) | [../skills.md](../skills.md) |
 | Phase 3 plan (seat, observer and chat attachment runtime), for review | [phase3/plan.md](phase3/plan.md) |
 | 12 JSON Schemas, shared definitions, stable error codes | [schemas/v1/](schemas/v1/) |

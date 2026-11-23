@@ -51,6 +51,8 @@ SPEC_CLI="$REPO_ROOT/lib/debate/specialists-cli.mjs"
 SKILL_ACTION=""; SKILL_ARG1=""; SKILL_ARG2=""; SKILL_VERSION=""; SKILL_HASH=""; SKILL_PIN_GIVEN=0
 # skills on seats (skills phase 3a): --seat-skill needs E3D_SKILLS_V1=1 and E3D_SKILLS_SEATS=1; the preview and the plan digest need E3D_SKILLS_V1=1
 SEAT_SKILLS=(); SEAT_SKILL_POLICY=""; SKILL_PREVIEW=0; SKILL_PREVIEW_JSON=0; SKILL_EXPECT_PLAN=""
+# a debate observer (skills phase 3b): one read-only call after the verdict; needs E3D_SKILLS_V1=1 and E3D_SKILLS_OBSERVER=1
+OBSERVER_SPEC=""; OBSERVER_PLAN_JSON=""; OBSERVER_LIB="$REPO_ROOT/lib/skills/observer.mjs"
 SKILLS_CLI="$REPO_ROOT/lib/skills/cli.mjs"
 PLAN_JSON=""
 LENS_DIR=""
@@ -182,6 +184,9 @@ Skills (off unless E3D_SKILLS_V1=1; docs/skills/). Pure local commands: no model
   --list-skills | --show-skill <id|name> [--skill-version V] [--skill-hash H] | --validate-skill <folder> | --project-expert <name|folder>
   --export-skill <id|name> <new folder>   writes a native skill folder (a built-in is exported as a local copy); never overwrites
   --diff-skill <id|name|folder> <id|name|folder>   field-level difference and whether the definition hashes agree (exit 3 when they differ)
+Observer (E3D_SKILLS_V1=1 and E3D_SKILLS_OBSERVER=1; docs/skills.md):
+  --observer <id|name>[@version][#sha256:hash][:provider]   one read-only call after the verdict, by a skill with the hook debate_observer/after_synthesis; writes
+                              observer-<skill>.md and an `observers` block, never changes the verdict; not available in a per-token (hosted) debate
 Skills on seats (E3D_SKILLS_V1=1 and E3D_SKILLS_SEATS=1, with E3D_SPECIALISTS=1; docs/skills.md):
   --seat-skill <id|name>[@version][#sha256:hash][:provider]   one skill per flag, beside --specialist; a pin that no longer matches stops the run before any call
   --on-seat-skill-failure fail|plain_seat   what a seat does when its skill cannot be used (default fail; plain_seat runs that seat with no lens and says so)
@@ -216,6 +221,7 @@ while [[ $# -gt 0 ]]; do
       [[ $# -ge 3 ]] || { echo "error: --diff-skill needs two skill ids, names or folders" >&2; exit 1; }
       SKILL_ACTION=diff; SKILL_ARG1="$2"; SKILL_ARG2="$3"; shift 3 ;;
     --seat-skill) [[ $# -ge 2 ]] || { echo "error: --seat-skill needs <id|name>[@version][#sha256:hash][:provider]" >&2; exit 1; }; SEAT_SKILLS+=("$2"); SPEC_FLAG_USED=1; shift 2 ;;
+    --observer) [[ $# -ge 2 ]] || { echo "error: --observer needs <id|name>[@version][#sha256:hash][:provider]" >&2; exit 1; }; [[ -z "$OBSERVER_SPEC" ]] || { echo "error: one observer per debate in this release" >&2; exit 1; }; OBSERVER_SPEC="$2"; shift 2 ;;
     --on-seat-skill-failure) [[ $# -ge 2 ]] || { echo "error: --on-seat-skill-failure needs fail or plain_seat" >&2; exit 1; }; SEAT_SKILL_POLICY="$2"; shift 2 ;;
     --preview-skills) SKILL_PREVIEW=1; shift ;;
     --preview-json) SKILL_PREVIEW_JSON=1; shift ;;
@@ -273,6 +279,12 @@ if [[ "$SKILL_PIN_GIVEN" == 1 ]]; then
 fi
 if [[ -n "${E3D_SKILLS_SEATS+x}" ]]; then
   case "$E3D_SKILLS_SEATS" in ''|0|1) ;; *) echo "error: E3D_SKILLS_SEATS must be 0 or 1" >&2; exit 2 ;; esac
+fi
+if [[ -n "${E3D_SKILLS_OBSERVER+x}" ]]; then
+  case "$E3D_SKILLS_OBSERVER" in ''|0|1) ;; *) echo "error: E3D_SKILLS_OBSERVER must be 0 or 1" >&2; exit 2 ;; esac
+fi
+if [[ -n "$OBSERVER_SPEC" ]]; then
+  [[ "${E3D_SKILLS_V1:-0}" == "1" && "${E3D_SKILLS_OBSERVER:-0}" == "1" ]] || { echo "error: observers are off. Set E3D_SKILLS_V1=1 and E3D_SKILLS_OBSERVER=1 to use --observer." >&2; exit 1; }
 fi
 if (( ${#SEAT_SKILLS[@]} > 0 )) || [[ -n "$SEAT_SKILL_POLICY" ]]; then
   [[ "${E3D_SKILLS_V1:-0}" == "1" && "${E3D_SKILLS_SEATS:-0}" == "1" ]] || { echo "error: skills on seats are off. Set E3D_SKILLS_V1=1 and E3D_SKILLS_SEATS=1 to use --seat-skill and --on-seat-skill-failure." >&2; exit 1; }
@@ -364,6 +376,20 @@ if [[ -n "$JEV_PROPOSITIONS_FILE" ]]; then
   source "$REPO_ROOT/lib/debate/jev-council.sh"
   jev_council_validate "$JEV_PROPOSITIONS_FILE" || exit 1   # a bad file fails here, before any paid call
 fi
+# The observer is planned BEFORE any call: the skill and its pin are resolved, the provider is chosen (an explicit one, else a vendor that did not write the
+# synthesis) and its adapter must exist. Anything wrong stops the run here, with nothing spent.
+observer_plan() { # <pool csv>
+  local raw rc=0
+  raw="$(node "$OBSERVER_LIB" plan --builtin "$SPEC_BUILTIN" --user "$SPEC_USER" --repo "$SPEC_REPO" $( (( SPEC_BUILTIN_ONLY == 1 )) && echo --builtin-only ) --skill "$OBSERVER_SPEC" --pool "$1" --synthesizer "$DEBATE_SYNTHESIZER")" || rc=$?
+  if (( rc != 0 )); then echo "error: observer: $(jq -r '.error | "\(.code): \(.message)"' <<< "$raw" 2>/dev/null || echo "could not plan the observer")" >&2; exit 1; fi
+  [[ -x "$PROVIDERS_DIR/$(jq -r .observer.adapter <<< "$raw")" ]] || { echo "error: observer: $(jq -r .observer.adapter <<< "$raw") is not a provider adapter" >&2; exit 1; }
+  while IFS= read -r w; do echo "warning: observer: $w" >&2; done < <(jq -r '.warnings[]' <<< "$raw")
+  OBSERVER_PLAN_JSON="$raw"
+}
+if [[ -n "$OBSERVER_SPEC" ]] && [[ -z "$SPEC_PANEL" ]] && (( ${#SPEC_LIST[@]} == 0 && ${#SEAT_SKILLS[@]} == 0 )); then
+  command -v node >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 || { echo "error: node and jq are required for --observer" >&2; exit 1; }
+  observer_plan "$(IFS=,; echo "${DEBATE_PROVIDERS[*]}")"
+fi
 if [[ -n "$SPEC_PANEL" ]] || (( ${#SPEC_LIST[@]} > 0 || ${#SEAT_SKILLS[@]} > 0 )); then
   # A council is chosen by experts, not models: the engine assigns a provider to each expert from a pool of usable providers.
   command -v jq >/dev/null 2>&1 || { echo "error: jq is required for --panel and --specialist" >&2; exit 1; }
@@ -381,7 +407,9 @@ if [[ -n "$SPEC_PANEL" ]] || (( ${#SPEC_LIST[@]} > 0 || ${#SEAT_SKILLS[@]} > 0 )
   fi
   spec_pool_csv=""
   for p in ${spec_pool[@]+"${spec_pool[@]}"}; do spec_pool_csv+="${spec_pool_csv:+,}$p"; done
+  [[ -z "$OBSERVER_SPEC" ]] || observer_plan "$spec_pool_csv"
   spec_plan_args=(plan --builtin "$SPEC_BUILTIN" --user "$SPEC_USER" --repo "$SPEC_REPO" --pool "$spec_pool_csv")
+  [[ -z "$OBSERVER_PLAN_JSON" ]] || spec_plan_args+=(--observer-json "$OBSERVER_PLAN_JSON")
   [[ -z "$SPEC_PANEL" ]] || spec_plan_args+=(--panel "$SPEC_PANEL")
   [[ -z "$SPEC_MIN_FAMILIES" ]] || spec_plan_args+=(--min-families "$SPEC_MIN_FAMILIES")
   for s in ${SPEC_LIST[@]+"${SPEC_LIST[@]}"}; do spec_plan_args+=(--specialist "$s"); done
@@ -466,6 +494,7 @@ if [[ "$PROMPT_OVERHEAD" != "1" && ( -n "${E3D_DEBATE_MAX_TOKENS:-}" || -n "${E3
   (( ${#PT_ADAPTERS[@]} == ${#DEBATE_PROVIDERS[@]} )) || { echo "error: per-token pricing prices one seat per provider; several seats on one provider are not supported with token limits" >&2; exit 1; }
   PT_CFG="$(node "$PT_LIB" config "$DEBATE_SYNTHESIZER" "${PT_ADAPTERS[@]}")" || exit 1
   [[ "$(jq -r .perToken <<< "$PT_CFG")" == "true" ]] && { PT_ON=1; PT_MAX_JSON="$(jq -c .maxTokens <<< "$PT_CFG")"; SUMMARY_SYNTH_EXTRA_TOKENS="$(node "$CASE_LIB" summary-extra)" || exit 1; }
+  if (( PT_ON == 1 )) && [[ -n "$OBSERVER_SPEC" ]]; then echo "error: --observer is not available in a per-token (hosted) debate: its call has no quoted limit yet" >&2; exit 1; fi
   [[ "$(jq -r '.answerBytes != null' <<< "$PT_CFG")" == "true" ]] && { AB_ON=1; PT_ANS_JSON="$(jq -c .answerBytes <<< "$PT_CFG")"; }
   [[ "$(jq -r '.maxSearches != null' <<< "$PT_CFG")" == "true" ]] && { PT_SEARCH=1; PT_SEARCH_JSON="$(jq -c .maxSearches <<< "$PT_CFG")"; PT_CITE_BYTES="$(jq -r .citeBytes <<< "$PT_CFG")"; }
 fi
@@ -1641,4 +1670,57 @@ if [[ -n "$LINK_REPO" ]]; then
 fi
 
 # a debate without a verdict is a failure (e3d-mcp already treats a missing verdict as one; the exit code now says so too)
+# The observer (skills phase 3b; docs/skills/phase3/plan.md, ADR-0006): one read-only call, AFTER the verdict is printed and stored. It reads the finished debate as
+# data and writes a bounded report to its own file (observer-<skill>.md, observers.json) and an `observers` block in decision-log.json. It cannot change the
+# verdict, the transcript, positions, dissent, the quote or the charge; whatever goes wrong here leaves the debate, its output and its exit status as they were.
+observer_call() { # <adapter> <prompt file> <reply file> <stderr file> <seconds>: the adapter with a deadline (macOS has no `timeout`)
+  env -u E3D_PROVIDER_WEB_SEARCH -u E3D_PROVIDER_WS_OUT -u E3D_PROVIDER_WS_MAX_SEARCHES -u E3D_PROVIDER_WS_ALLOW -u E3D_PROVIDER_WS_DENY -u E3D_PROVIDER_WS_EXCERPT_CHARS -u E3D_PROVIDER_WS_TIMEOUT \
+    "$PROVIDERS_DIR/$1" "$2" > "$3" 2> "$4" &
+  local pid=$! wd rc
+  ( sleep "$5"; pkill -TERM -P "$pid" 2>/dev/null; kill -TERM "$pid" 2>/dev/null; sleep 2; pkill -KILL -P "$pid" 2>/dev/null; kill -KILL "$pid" 2>/dev/null ) >/dev/null 2>&1 &
+  wd=$!
+  wait "$pid"; rc=$?
+  kill "$wd" 2>/dev/null; wait "$wd" 2>/dev/null
+  (( rc == 143 || rc == 137 )) && rc=124   # killed by the deadline
+  return "$rc"
+}
+run_observer() {
+  local adapter secs obs_out log attempt=1 t0 t1 rc fin status code report
+  adapter="$(jq -r .observer.adapter <<< "$OBSERVER_PLAN_JSON")"
+  secs="$(jq -r '(.observer.timeout_ms / 1000 | ceil)' <<< "$OBSERVER_PLAN_JSON")"
+  obs_out="${OUT_DIR:-$work_dir}"; mkdir -p "$obs_out"
+  log="$obs_out/decision-log.json"; [[ -s "$log" ]] || log="$transcript_md"
+  printf '%s' "$QUESTION" > "$work_dir/observer.question"
+  if ! node "$OBSERVER_LIB" prompt --builtin "$SPEC_BUILTIN" --user "$SPEC_USER" --repo "$SPEC_REPO" $( (( SPEC_BUILTIN_ONLY == 1 )) && echo --builtin-only ) --plan "$OBSERVER_PLAN_JSON" \
+       --transcript "$transcript_md" --question-file "$work_dir/observer.question" --meta-out "$work_dir/observer.meta" > "$work_dir/observer.prompt.md" 2> "$work_dir/observer.prompt.err"; then
+    echo "warning: the observer was not run (its skill no longer matches the plan); the debate is unaffected" >&2; return 0
+  fi
+  while :; do
+    t0="$(node -e 'console.log(Date.now())')"
+    rc=0; observer_call "$adapter" "$work_dir/observer.prompt.md" "$work_dir/observer.reply" "$work_dir/observer.stderr" "$secs" || rc=$?
+    t1="$(node -e 'console.log(Date.now())')"
+    fin="$(node "$OBSERVER_LIB" finalize --plan "$OBSERVER_PLAN_JSON" --meta "$work_dir/observer.meta" --reply "$work_dir/observer.reply" --rc "$rc" --latency-ms "$(( t1 - t0 ))" \
+           --attempt "$attempt" --out-dir "$obs_out" --debate-log "$log" --created-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" 2>/dev/null)" || { echo "warning: the observer reply could not be recorded; the debate is unaffected" >&2; return 0; }
+    if [[ "$(jq -r .retry <<< "$fin")" == "true" && "$attempt" -lt 2 ]]; then attempt=$((attempt + 1)); echo "note: the observer's reply was not usable; retrying once (its skill asks for that)" >&2; continue; fi
+    break
+  done
+  status="$(jq -r .status <<< "$fin")"; code="$(jq -r '.errors[0].code // empty' <<< "$fin")"; report="$(jq -r '.report_file // empty' <<< "$fin")"
+  if [[ -n "$OUT_DIR" && -s "$OUT_DIR/decision-log.json" && -s "$OUT_DIR/observers.json" ]]; then
+    jq --slurpfile o "$OUT_DIR/observers.json" '. + {observers: $o[0]}' "$OUT_DIR/decision-log.json" > "$OUT_DIR/decision-log.json.tmp" 2>/dev/null && mv "$OUT_DIR/decision-log.json.tmp" "$OUT_DIR/decision-log.json" || rm -f "$OUT_DIR/decision-log.json.tmp"
+  fi
+  local sid sver sad; sid="$(jq -r .observer.skill.id <<< "$OBSERVER_PLAN_JSON")"; sver="$(jq -r .observer.skill.version <<< "$OBSERVER_PLAN_JSON")"; sad="$adapter"
+  if [[ -n "$report" && -s "$obs_out/$report" ]]; then
+    printf '\n## Observer report (%s %s on %s; read-only, not part of the verdict above)\n\n' "$sid" "$sver" "$sad"
+    cat "$obs_out/$report"
+    [[ -z "$code" ]] || printf '\n(warning: %s)\n' "$(jq -r '.errors[0].message' <<< "$fin")"
+  else
+    printf '\nOBSERVER FAILED (%s %s on %s): %s. The verdict above is unaffected.\n' "$sid" "$sver" "$sad" "${code:-skill_provider_error}"
+    echo "warning: the observer failed (${code:-skill_provider_error}); the debate is unaffected" >&2
+  fi
+  return 0
+}
+if [[ -n "$OBSERVER_PLAN_JSON" ]]; then
+  if [[ "$synth_ok" -eq 1 ]]; then set +e; run_observer; set -e; else echo "note: no observer: the synthesis did not finish" >&2; fi
+fi
+
 [[ "$synth_ok" -eq 1 ]] || exit 1
