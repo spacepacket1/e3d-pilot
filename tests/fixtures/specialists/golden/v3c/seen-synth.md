@@ -63,6 +63,10 @@ Rules: every quote must be copied verbatim from that analyst's text. If you cann
 
 The 150-word limit above covers the lines above only. After them, add a section headed exactly "## What would change this" with at most 3 lines. Each line names one concrete, observable thing (a document, a measurement, a date or an event) that would change your FINAL ANSWER or its CONSENSUS, and says which way. Do not invent evidence. If you state any probability anywhere, name the event, the time window and what the number rests on; if you cannot, state no number.
 
+Then add a section headed exactly "## Each model" with one line per participant, in transcript order, in exactly this form:
+- <participant name exactly as in the transcript headings> | <that participant's own conclusion in its last turn, in at most 25 words>
+Restate only what that participant concluded, in its own terms, as the shortest answer it gave to the question. Do not compare participants, say who is right or whether they agree. If it gave no conclusion, write: No position stated.
+
 Then add a section headed exactly "## Key claims" with at most 6 lines, one per factual claim that your FINAL ANSWER or your reasoning relies on, each in exactly this form:
 - <the claim, one sentence> | tier: <documented|inferred|speculative> | source: <primary|reputable|low|none> | by: <who asserted it: an analyst's name, or "official statement">
 tier: documented = a source that the transcript names states it; inferred = it follows from documented facts by reasoning; speculative = neither. source: primary = a government, court, regulator, company filing or the party concerned; reputable = an established news organisation or research body; low = a social post, blog, forum, aggregator or anonymous source; none = a participant's own knowledge with no source named. A statement by an interested party (an agency about its own incident, a company about its own outage) is a claim, not a verdict: write by: official statement. Never write "documented" unless a source is named in the transcript.
