@@ -1,8 +1,7 @@
 # E3D Pilot User-Defined Skills — Engine Specification (part 1 of 2)
 
-**Version:** 0.2 (split 2026-11-23)
+**Version:** 0.1
 **Date:** 2026-11-23
-**Supersedes:** v0.1 (2026-11-22). v0.1 is kept unchanged in Drive for history.
 **Status:** Implementation proposal, reconciled with the four repositories on fresh `main` (Phase 1 grounding, draft PR `spacepacket1/e3d-pilot#92`). ADRs 0001-0014 are **Proposed** and need human approval before Phase 2 starts. Facts about the code carry a commit; everything else is still a proposal.
 **Scope:** the engine (`spacepacket1/e3d-pilot`, public): contracts, local runtime, security, evaluation, phases 1 to 6. **Hosted companion (part 2):** `spacepacket1/e3d-pilot-cloud` `docs/skills-hosted-spec.md` (private): hosted registry, API, UI, migrations, publishing, adapter PRs for phases 3 and 5, and phases 7 and 8.
 **Contracts version:** v1 (owned by this document; the companion cites it).
@@ -10,29 +9,6 @@
 **Audience:** E3D maintainers and e3d-code implementation agents
 
 > **Governing principle:** Pilot orchestrates. Skills provide specialized intelligence. E3D Brain remembers. Evaluation determines what works.
-
-## Revision notes (v0.1 to v0.2)
-
-v0.2 changes only what Phase 1 showed to be wrong, missing or unrunnable. Section numbers are unchanged. The evidence is in `docs/skills/phase1/grounding-report.md`; each decision is an ADR in `docs/skills/phase1/adr/`.
-
-| Area | v0.1 said | v0.2 says | ADR |
-|---|---|---|---|
-| Authoring format | nested YAML with inline lists | JSON for structure (`e3d/skill.json`); `SKILL.md` frontmatter stays the engine's small subset, which refuses `[`, `{` and nesting | 0001 |
-| Hash | one `content_hash`, RFC 8785 | two hashes: the existing folder hash (`legacy_folder_hash`, unchanged) and a new `definition_hash`. `content_hash` is already the MCP field that holds the folder hash, so it is not reused | 0003 |
-| Name, description | not stated | hashed, so editing them is a new version; `tags` never hashed and never used for routing | 0003 |
-| Version | semantic version | existing integer string `"N"` projects to `N.0.0` | 0002 |
-| Identifiers | `skill.user_01hxyz.slug` | slug is the existing name (`^[a-z0-9]+(-[a-z0-9]+)*$`, equals folder name); id derived as `skill.<owner>.<name>` | 0014 |
-| Error codes | upper case | lower-case `skill_*` (the engine and hosted already return lower-case codes) | 0014 |
-| Flags | `E3D_SKILLS_V1` | kept, added next to the existing `E3D_SPECIALISTS`, `E3D_MCP_EXPERTS*`, `E3D_MCP_CHAT_TOOL`; strict unset/`0`/`1` | 0014 |
-| API names | `/v1/skills`, `e3d_*_skill` | no new MCP tool or route before Phase 7; Phase 2 adds CLI verbs only; `e3d_list_experts` / `e3d_get_expert` stay forever | 0005 |
-| Observer hooks | `after_round` (shadow) and `after_synthesis` | `after_synthesis` only; `after_round` not approved and rejected by the v1 schema | 0006 |
-| Brain gateway | Brain enforces principal, tenant, audience, purpose | Brain has one principal per process and none of those fields; the gateway lives in Pilot and Brain stays advisory | 0008 |
-| Database | tables, forward/backward migrations | hosted is MongoDB: new collections, start-up index creation, dry-run backfill scripts (`--apply --i-have-a-backup`); no tenant concept, `tenant_id` is a nullable team id | 0009 |
-| Chat attachment | proposed, Phase 3 | partly built and flagged (`chat_skills_v1`, 1 to 3 built-in lenses); Phase 3 extends it | grounding 3 |
-| Evaluation | at least 50 tasks | 90 tasks, one primary test, thresholds proposed (not frozen until a human approves and the signed tag exists) | `evaluation-freeze.md` |
-| Existing defects | not known | hash-line stripping (F-2) and lens delimiter spoofing (T3) are in the engine today; fixed first in Phase 2 | 0003, threat model |
-| Runner | e3d-code runs this file | the v0.1 heading "1.2 ... Phase 1 must resolve" made e3d-code stop with `duplicate phase number`; fixed here (see section 16) | n/a |
-| Structure | one document for both repositories | split: engine spec (this file) and a private hosted companion; a runner executes inside one repository | n/a |
 
 ## 0. Executive decision
 
@@ -849,10 +825,9 @@ Each phase is independently reviewable and must end in one or more PRs. Cross-re
 
 **Runner notes (verified against e3d-code `0.4.0`).**
 
-- This file holds phases 1 to 6; the hosted phases are in the companion. A phase starts at any heading (levels 1 to 6) that contains `Phase <number>`. **No other heading in this file may contain that pattern**; v0.1 had one (`1.2 ... Phase 1 must resolve`) and e3d-code refused the file with `duplicate phase number in spec: 1`. Keep prose references to phases in body text, not headings. Before using the runner, `bin/e3d-code <this file> --list` must show exactly the six phases.
+- This file holds phases 1 to 6; the hosted phases are in the companion. A phase starts at any heading (levels 1 to 6) that contains `Phase <number>`. **No other heading in this file may contain that pattern**; a heading such as `1.2 ... Phase 1 must resolve` makes e3d-code refuse the file with `duplicate phase number in spec: 1`. Keep prose references to phases in body text, not headings. Before using the runner, `bin/e3d-code <this file> --list` must show exactly the six phases.
 - Run one phase at a time and stop for approval between phases.
 - The runner's default permission mode is `bypassPermissions` (unattended, no per-call guard). Run it only in a dedicated worktree on a dedicated branch, never in a shared checkout, and set a stricter `CLAUDE_PERMISSION_MODE` where the phase does not need to write outside the worktree.
-- Phase 1 was carried out by following this workflow by hand (the runner could not parse v0.1).
 
 ## Phase 1 - Grounding, ADRs, schemas, threat model, and evaluation freeze
 
@@ -1174,20 +1149,4 @@ The live copy of this table is `docs/skills/README.md` in the repository; update
 
 All repository/deployment references are a snapshot and must be revalidated at implementation time.
 
-Added in v0.2: `docs/skills/phase1/grounding-report.md`, ADRs 0001-0014, `docs/skills/phase1/threat-model.md`, `docs/skills/phase1/evaluation-freeze.md`, `docs/skills/phase1/review-record.md`, and the code at the audited commits listed in section 1.1.
-
-## Appendix D - Where each v0.1 section was corrected
-
-| Section | Corrected by |
-|---|---|
-| 1 | grounding report, sections 1 to 5 |
-| 3.3, 7.3 | ADR-0006, ADR-0005 |
-| 5, 5.1 | ADR-0001, ADR-0002, ADR-0003, ADR-0014 |
-| 6.4 | threat T3, ADR-0002 |
-| 7, 7.5 | ADR-0005, ADR-0014 |
-| 9 | ADR-0008 |
-| 11 | ADR-0007, threat model |
-| 11.4 | ADR-0011 (owner input) |
-| 13 | `evaluation-freeze.md` |
-| 14.1, 14.2 | ADR-0002, ADR-0009 |
-| 16 | runner notes in section 16 |
+Phase 1 outputs: `docs/skills/phase1/grounding-report.md`, ADRs 0001-0014, `docs/skills/phase1/threat-model.md`, `docs/skills/phase1/evaluation-freeze.md`, `docs/skills/phase1/review-record.md`, and the code at the audited commits listed in section 1.1.
