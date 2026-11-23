@@ -6,6 +6,7 @@ Source: the "E3D Pilot User-Defined Skills: Implementation Specification" (v0.1,
 
 | Deliverable | Where |
 | --- | --- |
+| **Corrected specification (v0.2), runnable by e3d-code** | [spec/e3d-pilot-user-defined-skills-spec-v0.2.md](spec/e3d-pilot-user-defined-skills-spec-v0.2.md) |
 | Grounding report, gap table, contradictions, phase map | [phase1/grounding-report.md](phase1/grounding-report.md) |
 | 14 ADRs (all **Proposed**) | [phase1/adr/](phase1/adr/) |
 | 12 JSON Schemas, shared definitions, stable error codes | [schemas/v1/](schemas/v1/) |
