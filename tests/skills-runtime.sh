@@ -38,6 +38,12 @@ sk 1 --show-skill skeptic --skill-version 1.0.0 || fail "--show-skill with the r
 jq -e '.definition.id == "skill.e3d.skeptic" and .tier == "built-in"' "$T/stdout" >/dev/null || fail "--show-skill output"
 rc=0; sk 1 --show-skill skeptic --skill-version 9.9.9 || rc=$?; [[ $rc -eq 1 ]] || fail "a wrong pinned version must fail"; grep -q skill_version_invalid "$T/stderr" || fail "skill_version_invalid missing"
 rc=0; sk 1 --show-skill skeptic --skill-hash "sha256:$(printf 'f%.0s' {1..64})" || rc=$?; [[ $rc -eq 1 ]] || fail "a wrong pinned hash must fail"; grep -q skill_hash_mismatch "$T/stderr" || fail "skill_hash_mismatch missing"
+rc=0; sk 1 --show-skill skeptic --skill-hash "" || rc=$?; [[ $rc -eq 1 ]] || fail "an empty pin must be refused, not dropped (S6)"
+rc=0; sk 1 --show-skill skeptic --skill-version 1 || rc=$?; [[ $rc -eq 1 ]] || fail "a malformed version pin must be refused"
+rc=0; sk 1 --show-skill skeptic --skill-hash sha256:xyz || rc=$?; [[ $rc -eq 1 ]] || fail "a malformed hash pin must be refused"
+rc=0; sk 1 --list-skills --skill-hash "sha256:$(printf 'a%.0s' {1..64})" || rc=$?; [[ $rc -eq 1 ]] || fail "a pin with --list-skills must be refused"
+rc=0; sk 1 --show-skill || rc=$?; [[ $rc -eq 1 ]] || fail "--show-skill with no value must say so"; grep -q 'needs a value' "$T/stderr" || fail "missing-value message"
+rc=0; sk 1 --show-skill --hash || rc=$?; [[ $rc -eq 1 ]] || fail "a value that looks like an option is a name, not an option"; grep -q 'skill_not_found' "$T/stderr" || fail "skill_not_found for an option-like value"; ! grep -q "$ROOT" "$T/stderr" || fail "the engine path must not appear in that message"
 rc=0; sk 1 --show-skill nonesuch || rc=$?; [[ $rc -eq 1 ]] || fail "an unknown skill must fail"; grep -q skill_not_found "$T/stderr" || fail "skill_not_found missing"
 sk 1 --project-expert skeptic || fail "--project-expert failed"
 jq -e '.projectable == true and .definition.provenance.source_format == "expert-v1-projection"' "$T/stdout" >/dev/null || fail "--project-expert output"
@@ -48,6 +54,14 @@ sk 1 --validate-skill "$T/exp/skeptic" || fail "the exported folder must validat
 grep -q '^definition_hash: sha256:' "$T/stdout" || fail "--validate-skill prints the hash"
 rc=0; sk 1 --diff-skill skeptic "$T/exp/skeptic" || rc=$?; [[ $rc -eq 3 ]] || fail "a local copy has a different hash: exit 3, got $rc"
 rc=0; sk 1 --diff-skill skeptic skeptic || rc=$?; [[ $rc -eq 0 ]] || fail "a skill against itself is identical: exit 0, got $rc"
+# S7: a bare word is a skill, never a folder in the current directory
+mkdir -p "$T/cwd"
+cwd_run() { ( cd "$T/cwd" && env -u E3D_SPECIALISTS E3D_SKILLS_V1=1 HOME="$T/home" "$ROOT/bin/e3d-debate" "$@" > "$T/stdout" 2> "$T/stderr" ); }
+cwd_run --export-skill skeptic . || fail "export into the current directory"
+[[ -d "$T/cwd/skeptic" ]] || fail "the export went to ./skeptic"
+rc=0; cwd_run --diff-skill skeptic skeptic || rc=$?; [[ $rc -eq 0 ]] || fail "a bare name is the built-in skill, not ./skeptic: expected identical (exit 0), got $rc"
+cwd_run --project-expert skeptic || fail "project by name"; jq -e '.definition.id == "skill.e3d.skeptic"' "$T/stdout" >/dev/null || fail "--project-expert skeptic must project the built-in, not ./skeptic"
+rc=0; cwd_run --diff-skill skeptic ./skeptic || rc=$?; [[ $rc -eq 3 ]] || fail "./skeptic is the local copy: exit 3, got $rc"
 echo "skills-runtime 3 (commands): ok"
 
 # 4. the receipt: a skills block only with E3D_SKILLS_V1=1; nothing else in the log changes

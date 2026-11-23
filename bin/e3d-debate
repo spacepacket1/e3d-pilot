@@ -48,7 +48,7 @@ SUGGEST=0; SUGGEST_RULES=0; SUGGEST_TASK=""
 SPEC_FLAG_USED=0
 SPEC_CLI="$REPO_ROOT/lib/debate/specialists-cli.mjs"
 # Skills (docs/skills/): off unless E3D_SKILLS_V1=1. Pure local commands (no model, no network); a debate is not changed by these flags.
-SKILL_ACTION=""; SKILL_ARG1=""; SKILL_ARG2=""; SKILL_VERSION=""; SKILL_HASH=""
+SKILL_ACTION=""; SKILL_ARG1=""; SKILL_ARG2=""; SKILL_VERSION=""; SKILL_HASH=""; SKILL_PIN_GIVEN=0
 SKILLS_CLI="$REPO_ROOT/lib/skills/cli.mjs"
 PLAN_JSON=""
 LENS_DIR=""
@@ -198,17 +198,18 @@ while [[ $# -gt 0 ]]; do
       SPEC_ACTION=export; SPEC_ARG1="$2"; SPEC_ARG2="$3"; SPEC_FLAG_USED=1; shift 3 ;;
     --no-sidecar) SPEC_NO_SIDECAR=1; SPEC_FLAG_USED=1; shift ;;
     --list-skills) SKILL_ACTION=list; shift ;;
-    --show-skill) SKILL_ACTION=show; SKILL_ARG1="${2:-}"; shift 2 ;;
-    --validate-skill) SKILL_ACTION=validate; SKILL_ARG1="${2:-}"; shift 2 ;;
-    --project-expert) SKILL_ACTION=project; SKILL_ARG1="${2:-}"; shift 2 ;;
+    --show-skill|--validate-skill|--project-expert)
+      [[ $# -ge 2 ]] || { echo "error: $1 needs a value (a skill id or name, or a folder)" >&2; exit 1; }
+      case "$1" in --show-skill) SKILL_ACTION=show ;; --validate-skill) SKILL_ACTION=validate ;; *) SKILL_ACTION=project ;; esac
+      SKILL_ARG1="$2"; shift 2 ;;
     --export-skill)
       [[ $# -ge 3 ]] || { echo "error: --export-skill needs a skill id or name and a new output folder" >&2; exit 1; }
       SKILL_ACTION=export; SKILL_ARG1="$2"; SKILL_ARG2="$3"; shift 3 ;;
     --diff-skill)
       [[ $# -ge 3 ]] || { echo "error: --diff-skill needs two skill ids, names or folders" >&2; exit 1; }
       SKILL_ACTION=diff; SKILL_ARG1="$2"; SKILL_ARG2="$3"; shift 3 ;;
-    --skill-version) SKILL_VERSION="${2:-}"; shift 2 ;;
-    --skill-hash) SKILL_HASH="${2:-}"; shift 2 ;;
+    --skill-version) [[ $# -ge 2 ]] || { echo "error: --skill-version needs a value like 1.0.0" >&2; exit 1; }; SKILL_VERSION="$2"; SKILL_PIN_GIVEN=1; shift 2 ;;
+    --skill-hash) [[ $# -ge 2 ]] || { echo "error: --skill-hash needs sha256:<64 hex characters>" >&2; exit 1; }; SKILL_HASH="$2"; SKILL_PIN_GIVEN=1; shift 2 ;;
     --builtin-only) SPEC_BUILTIN_ONLY=1; SPEC_FLAG_USED=1; shift ;;
     --fill-pool) SPEC_FILL_POOL=1; SPEC_FLAG_USED=1; shift ;;
     --expert-pin) SPEC_PINS+=("${2:-}"); SPEC_FLAG_USED=1; shift 2 ;;
@@ -247,11 +248,17 @@ case "${E3D_SPECIALISTS_BUILTIN_ONLY:-}" in ''|0) ;; 1) SPEC_BUILTIN_ONLY=1 ;; *
 if [[ -n "${E3D_SKILLS_V1+x}" ]]; then
   case "$E3D_SKILLS_V1" in ''|0|1) ;; *) echo "error: E3D_SKILLS_V1 must be 0 or 1" >&2; exit 2 ;; esac
 fi
-if [[ -n "$SKILL_ACTION" || -n "$SKILL_VERSION" || -n "$SKILL_HASH" ]] && [[ "${E3D_SKILLS_V1:-0}" != "1" ]]; then
+if [[ -n "$SKILL_ACTION" || "$SKILL_PIN_GIVEN" == 1 ]] && [[ "${E3D_SKILLS_V1:-0}" != "1" ]]; then
   echo "error: skills are off. Set E3D_SKILLS_V1=1 to use --list-skills, --show-skill, --validate-skill, --project-expert, --export-skill and --diff-skill." >&2
   exit 1
 fi
-if [[ -z "$SKILL_ACTION" ]] && [[ -n "$SKILL_VERSION$SKILL_HASH" ]]; then echo "error: --skill-version and --skill-hash apply to --show-skill" >&2; exit 1; fi
+if [[ "$SKILL_PIN_GIVEN" == 1 && "$SKILL_ACTION" != show ]]; then echo "error: --skill-version and --skill-hash apply to --show-skill" >&2; exit 1; fi
+# a pin that is given must be well formed: an empty or malformed pin is refused, never silently dropped
+if [[ "$SKILL_PIN_GIVEN" == 1 ]]; then
+  [[ -z "$SKILL_VERSION" || "$SKILL_VERSION" =~ ^(0|[1-9][0-9]{0,5})\.(0|[1-9][0-9]{0,5})\.(0|[1-9][0-9]{0,5})$ ]] || { echo "error: --skill-version must look like 1.0.0" >&2; exit 1; }
+  [[ -z "$SKILL_HASH" || "$SKILL_HASH" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "error: --skill-hash must be sha256: followed by 64 hex characters" >&2; exit 1; }
+  [[ -n "$SKILL_VERSION$SKILL_HASH" ]] || { echo "error: --skill-version/--skill-hash were given with an empty value" >&2; exit 1; }
+fi
 if (( SPEC_FLAG_USED == 1 )) && [[ "${E3D_SPECIALISTS:-0}" != "1" ]]; then
   echo "error: experts are off. Set E3D_SPECIALISTS=1 to use --panel, --specialist, --min-families and the --list/--show/--validate/--export-specialist commands." >&2
   exit 1
@@ -275,11 +282,11 @@ if [[ -n "$SKILL_ACTION" ]]; then
   [[ -z "$SKILL_HASH" ]] || skill_pin+=(--hash "$SKILL_HASH")
   case "$SKILL_ACTION" in
     list) node "$SKILLS_CLI" list "${skill_common[@]}" ;;
-    show) node "$SKILLS_CLI" show "$SKILL_ARG1" "${skill_common[@]}" ${skill_pin[@]+"${skill_pin[@]}"} ;;
-    validate) node "$SKILLS_CLI" validate "$SKILL_ARG1" ;;
-    project) node "$SKILLS_CLI" project "$SKILL_ARG1" "${skill_common[@]}" ;;
-    export) node "$SKILLS_CLI" export "$SKILL_ARG1" "$SKILL_ARG2" "${skill_common[@]}" ;;
-    diff) node "$SKILLS_CLI" diff "$SKILL_ARG1" "$SKILL_ARG2" "${skill_common[@]}" ;;
+    show) node "$SKILLS_CLI" show "${skill_common[@]}" ${skill_pin[@]+"${skill_pin[@]}"} -- "$SKILL_ARG1" ;;
+    validate) node "$SKILLS_CLI" validate -- "$SKILL_ARG1" ;;
+    project) node "$SKILLS_CLI" project "${skill_common[@]}" -- "$SKILL_ARG1" ;;
+    export) node "$SKILLS_CLI" export "${skill_common[@]}" -- "$SKILL_ARG1" "$SKILL_ARG2" ;;
+    diff) node "$SKILLS_CLI" diff "${skill_common[@]}" -- "$SKILL_ARG1" "$SKILL_ARG2" ;;
   esac
   exit $?
 fi

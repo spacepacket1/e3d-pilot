@@ -55,7 +55,7 @@ import { loadExperts } from '../lib/debate/specialists.mjs';
 import { lensBlock } from '../lib/debate/specialists-plan.mjs';
 import { galleryFrom, createGalleryRead, GALLERY_INSTRUCTION } from '../lib/mcp/gallery-read.js';
 import { chatToolFrom, chatQuoteTool, chatTool, createChatHandlers, CHAT_INSTRUCTION } from '../lib/mcp/agent-chat.js';
-import { skillsFrom, createSkillsRead, SKILLS_INSTRUCTION } from '../lib/mcp/skills-read.js';
+import { skillsFrom, SKILLS_INSTRUCTION } from '../lib/mcp/skills-config.js';
 import { expertsFrom, expertsAgentFrom, checkAgentExperts, loadCatalogue as loadExpertsCatalogue, createExpertsRead, EXPERTS_INSTRUCTION, EXPERTS_USE_INSTRUCTION } from '../lib/mcp/experts-read.js';
 import { agentModeFrom, agentFieldsOf, AGENT_INSTRUCTIONS, SCHEMA_VERSION as AGENT_SCHEMA_VERSION, IDEMPOTENCY_KEY_RE, QUOTE_ID_RE, agentError, errorResult, reasonError, extendDebateTool, quoteTool, quoteResult, validQuote } from '../lib/mcp/agent.js';
 import { validatePanelConfig, validateRequiredConfig, withRequired, requireAvailable, createPanelClient, checkFamilies, requireFamilies, degrade, explicitPanel, familiesOf } from '../lib/mcp/panel.js';
@@ -96,7 +96,7 @@ const agentCatalogue = AGENT_EXPERTS_ON ? loadExpertsCatalogue(BUILTIN_EXPERTS_D
 // e3d_list_skills / e3d_get_skill / e3d_validate_skill / e3d_export_skill (lib/mcp/skills-read.js, docs/skills ADR-0015): free, read-only, LOCAL skills only,
 // off unless E3D_MCP_SKILLS=1; never on the hosted HTTP server.
 const SKILLS_CONFIG = skillsFrom(process.env, { http: HTTP_MODE });
-const skillsRead = SKILLS_CONFIG.on ? createSkillsRead({ dirs: { builtin: BUILTIN_EXPERTS_DIR, user: join(process.env.HOME || '/nonexistent', '.config', 'e3d-pilot', 'specialists'), repo: join(process.cwd(), '.e3d-pilot', 'specialists') } }) : null;
+const skillsRead = SKILLS_CONFIG.on ? (await import('../lib/mcp/skills-read.js')).createSkillsRead({ dirs: { builtin: BUILTIN_EXPERTS_DIR, user: join(process.env.HOME || '/nonexistent', '.config', 'e3d-pilot', 'specialists'), repo: join(process.cwd(), '.e3d-pilot', 'specialists') } }) : null;
 const expertsRead = EXPERTS_CONFIG.on ? createExpertsRead({ builtinDir: fileURLToPath(new URL('../lib/specialists', import.meta.url)), use: AGENT_EXPERTS_ON }) : null;
 // The version comes from package.json, so a development build (0.2.0-dev.N) reports itself correctly.
 const PKG_VERSION = (() => { try { return JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).version; } catch { return '0.0.0-unknown'; } })();
