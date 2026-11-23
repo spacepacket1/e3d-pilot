@@ -372,6 +372,11 @@
       "schema": "track-record",
       "code": "skill_schema_value",
       "semantic": "record"
+    },
+    {
+      "file": "invalid/skill-definition--tag-characters.json",
+      "schema": "skill-definition",
+      "code": "skill_schema_format"
     }
   ]
 }

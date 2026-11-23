@@ -56,8 +56,9 @@ the exact text. The synthesis step never receives a lens. With no expert named, 
 
 With `E3D_MCP_EXPERTS=1` the MCP server offers two free tools, `e3d_list_experts` and `e3d_get_expert`, so an assistant can describe the built-in
 experts and presets and show the exact lens text a seat receives. They read this checkout's own files at start-up: no network, no credentials,
-nothing written, nothing charged, and a person's own expert folders are never listed. **Passing experts through the `e3d_debate` connector tool is
-not built**; the command line above and hosted web debates (next section) run them. Off by default; any value other than unset, `0` or `1` refuses to start.
+nothing written, nothing charged, and a person's own expert folders are never listed. **With only this flag, the `e3d_debate`
+connector tool does not take experts**; it does with the separate `E3D_MCP_EXPERTS_AGENT=1` (hosted agent mode, described under Hosted runs below), and the
+command line above and hosted web debates run them too. Off by default; any value other than unset, `0` or `1` refuses to start.
 
 ## Hosted runs (live on pilot.e3d.ai web debates since 2026-11-03, behind a flag)
 
@@ -80,6 +81,18 @@ without it both fields are refused `400 invalid`. The `e3d_debate` MCP tool take
 - `tools` must be `none` in this release. `allowed-tools` in a `SKILL.md` is ignored with a warning, never granted. A `scripts/` folder is
   never run.
 - A symbolic link inside a skill folder, an unknown frontmatter field, an oversized file or a malformed sidecar is refused with a coded error.
+- Text a reader cannot see is refused in `SKILL.md`: control characters other than tab and line breaks, every Unicode format character (zero-width and
+  bidirectional controls, the soft hyphen, Unicode tag characters), line and paragraph separators, variation selectors and invisible filler
+  characters (`hidden_characters`), and text that is not Unicode NFC (`not_nfc`). Emoji presentation selectors after an emoji (for example the warning
+  sign) are allowed. **Known limit:** zero-width joiners and non-joiners are refused too, so emoji sequences such as a family emoji and Persian or Indic
+  text that needs a joiner cannot be used in a lens yet; this matches the skills schemas and will change only by a recorded decision.
+- A lens that contains the role-delimiter lines `[Your role in this debate]` or `[End of role` (any spacing or case, either bracket style) is refused
+  (`lens_marker`), and the prompt block neutralises them again, so a lens can never close its own block. These checks apply to your own folders; the
+  built-in experts are unchanged.
+- The folder hash covers the lens text. Only the `e3d.expert.hash` line inside the frontmatter is left out (a hash cannot cover itself); the same line
+  in the lens body is lens text and is hashed. Every file is read once, without following a link and with a size bound, and the bytes that are hashed are the bytes that are used. A folder
+  that is rewritten by another process while it is being read is a residual race (it needs write access to the folder); on Windows the no-follow open is
+  not available, so only the listing check applies there.
 - Nothing is fetched from a network and no model is called to load, show, validate or export an expert.
 
 ## The receipt
