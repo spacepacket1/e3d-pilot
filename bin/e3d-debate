@@ -27,6 +27,17 @@ DEBATE_PROVIDERS=(claude codex)
 # on one adapter will be `adapter.2`. Wherever the script runs an adapter or looks up a per-provider limit it goes through adapter_of.
 declare -A SEAT_ADAPTER
 adapter_of() { printf '%s' "${SEAT_ADAPTER[$1]:-$1}"; }
+# pt_var_of <adapter>: the environment variable that gives that adapter its vendor output limit; fails for an adapter without one.
+pt_var_of() {
+  case "$1" in
+    anthropic-api) echo ANTHROPIC_API_MAX_TOKENS ;; openai-api) echo OPENAI_API_MAX_TOKENS ;;
+    gemini-api) echo GEMINI_API_MAX_TOKENS ;; xai-api) echo XAI_API_MAX_TOKENS ;;
+    or-*) echo OPENROUTER_MAX_TOKENS ;;   # OpenRouter voices (docs/openrouter.md); the adapter refuses a per-token call without it
+    *) return 1 ;;
+  esac
+}
+# Quoted observer limits (hosted per-token debate) are announced by two variables; the planner needs to know that before the per-token settings are parsed below.
+OBS_PT_REQ=0; [[ -z "${E3D_DEBATE_OBSERVER_MAX_TOKENS:-}${E3D_DEBATE_OBSERVER_INPUT_BYTES_MAX:-}" ]] || OBS_PT_REQ=1
 DEBATE_ROUNDS=2
 DEBATE_SYNTHESIZER="claude"
 RECAP_PROVIDER="${E3D_DEBATE_RECAP:-}"   # --recap <provider>: an optional recap call after the verdict (docs/debate-recap.md)
@@ -187,7 +198,7 @@ Skills (off unless E3D_SKILLS_V1=1; docs/skills/). Pure local commands: no model
 Observer (E3D_SKILLS_V1=1 and E3D_SKILLS_OBSERVER=1; docs/skills.md):
   --observer <id|name>[@version][#sha256:hash][:provider]   one read-only call after the verdict, by a skill with the hook debate_observer/after_synthesis; writes
                               observer-<skill>.md and an `observers` block, never changes the verdict (stdout is untouched; the report goes to stderr and the files);
-                              runs only on an adapter without tools (claude, the API adapters); not available in a per-token (hosted) debate
+                              runs only on an adapter without tools (claude, the API adapters); in a per-token (hosted) debate it needs the quoted limits, see docs/token-pricing.md
 Skills on seats (E3D_SKILLS_V1=1 and E3D_SKILLS_SEATS=1, with E3D_SPECIALISTS=1; docs/skills.md):
   --seat-skill <id|name>[@version][#sha256:hash][:provider]   one skill per flag, beside --specialist; a pin that no longer matches stops the run before any call
   --on-seat-skill-failure fail|plain_seat   what a seat does when its skill cannot be used (default fail; plain_seat runs that seat with no lens and says so)
@@ -394,8 +405,9 @@ fi
 # synthesis) and its adapter must exist. Anything wrong stops the run here, with nothing spent.
 observer_plan() { # <pool csv>
   local raw rc=0
-  raw="$(node "$OBSERVER_LIB" plan --builtin "$SPEC_BUILTIN" --user "$SPEC_USER" --repo "$SPEC_REPO" $( (( SPEC_BUILTIN_ONLY == 1 )) && echo --builtin-only ) ${HOSTED_ARGS[@]+"${HOSTED_ARGS[@]}"} --skill "$OBSERVER_SPEC" --pool "$1" --synthesizer "$DEBATE_SYNTHESIZER")" || rc=$?
+  raw="$(node "$OBSERVER_LIB" plan --builtin "$SPEC_BUILTIN" --user "$SPEC_USER" --repo "$SPEC_REPO" $( (( SPEC_BUILTIN_ONLY == 1 )) && echo --builtin-only ) $( (( OBS_PT_REQ == 1 )) && echo --require-provider ) ${HOSTED_ARGS[@]+"${HOSTED_ARGS[@]}"} --skill "$OBSERVER_SPEC" --pool "$1" --synthesizer "$DEBATE_SYNTHESIZER")" || rc=$?
   if (( rc != 0 )); then echo "error: observer: $(jq -r '.error | "\(.code): \(.message)"' <<< "$raw" 2>/dev/null || echo "could not plan the observer")" >&2; exit 1; fi
+  if (( OBS_PT_REQ == 1 )); then pt_var_of "$(jq -r .observer.adapter <<< "$raw")" >/dev/null || { echo "error: observer: $(jq -r .observer.adapter <<< "$raw") has no output-limit setting, so its call cannot be priced in a per-token debate" >&2; exit 1; }; fi
   [[ -f "$PROVIDERS_DIR/$(jq -r .observer.adapter <<< "$raw")" && -x "$PROVIDERS_DIR/$(jq -r .observer.adapter <<< "$raw")" ]] || { echo "error: observer: $(jq -r .observer.adapter <<< "$raw") is not a provider adapter" >&2; exit 1; }
   while IFS= read -r w; do echo "warning: observer: $w" >&2; done < <(jq -r '.warnings[]' <<< "$raw")
   OBSERVER_PLAN_JSON="$raw"
@@ -509,9 +521,23 @@ if [[ "$PROMPT_OVERHEAD" != "1" && ( -n "${E3D_DEBATE_MAX_TOKENS:-}" || -n "${E3
   (( ${#PT_ADAPTERS[@]} == ${#DEBATE_PROVIDERS[@]} )) || { echo "error: per-token pricing prices one seat per provider; several seats on one provider are not supported with token limits" >&2; exit 1; }
   PT_CFG="$(node "$PT_LIB" config "$DEBATE_SYNTHESIZER" "${PT_ADAPTERS[@]}")" || exit 1
   [[ "$(jq -r .perToken <<< "$PT_CFG")" == "true" ]] && { PT_ON=1; PT_MAX_JSON="$(jq -c .maxTokens <<< "$PT_CFG")"; SUMMARY_SYNTH_EXTRA_TOKENS="$(node "$CASE_LIB" summary-extra)" || exit 1; }
-  if (( PT_ON == 1 )) && [[ -n "$OBSERVER_SPEC" ]]; then echo "error: --observer is not available in a per-token (hosted) debate: its call has no quoted limit yet" >&2; exit 1; fi
   [[ "$(jq -r '.answerBytes != null' <<< "$PT_CFG")" == "true" ]] && { AB_ON=1; PT_ANS_JSON="$(jq -c .answerBytes <<< "$PT_CFG")"; }
   [[ "$(jq -r '.maxSearches != null' <<< "$PT_CFG")" == "true" ]] && { PT_SEARCH=1; PT_SEARCH_JSON="$(jq -c .maxSearches <<< "$PT_CFG")"; PT_CITE_BYTES="$(jq -r .citeBytes <<< "$PT_CFG")"; }
+fi
+# The observer in a per-token (hosted) debate (skills phase 3c, docs/skills/phase3/plan-3c-hosted-user-skills.md; hosted spec 2.4): its one call is a quoted line of the bill, so it
+# runs only with the limits the quote priced, both together: E3D_DEBATE_OBSERVER_MAX_TOKENS (the vendor output limit of that one call) and E3D_DEBATE_OBSERVER_INPUT_BYTES_MAX
+# (the most prompt bytes it may be sent). The provider is named (--observer <skill>:<provider>), never chosen here, and must be an API adapter that has an output-limit setting.
+# The call is never retried and writes its own usage row (key observer:<skill>), also when the debate is stopped while it runs.
+OBS_PT_ON=0; OBS_PT_TOKENS=""; OBS_PT_INPUT=""; OBS_SLUG=""; OBS_ADAPTER=""; OBS_PID=""
+if [[ -n "${E3D_DEBATE_OBSERVER_MAX_TOKENS:-}" || -n "${E3D_DEBATE_OBSERVER_INPUT_BYTES_MAX:-}" ]]; then
+  (( PT_ON == 1 )) || { echo "error: E3D_DEBATE_OBSERVER_MAX_TOKENS and E3D_DEBATE_OBSERVER_INPUT_BYTES_MAX apply to a per-token debate (E3D_DEBATE_MAX_TOKENS)" >&2; exit 1; }
+  [[ -n "$OBSERVER_SPEC" ]] || { echo "error: observer limits were given but the debate has no --observer; a quote that prices an observer that does not run is refused" >&2; exit 1; }
+  [[ -n "${E3D_DEBATE_OBSERVER_MAX_TOKENS:-}" && -n "${E3D_DEBATE_OBSERVER_INPUT_BYTES_MAX:-}" ]] || { echo "error: E3D_DEBATE_OBSERVER_MAX_TOKENS and E3D_DEBATE_OBSERVER_INPUT_BYTES_MAX are given together or not at all" >&2; exit 1; }
+  [[ "$E3D_DEBATE_OBSERVER_MAX_TOKENS" =~ ^[1-9][0-9]{0,3}$ ]] && (( E3D_DEBATE_OBSERVER_MAX_TOKENS <= 4096 )) || { echo "error: E3D_DEBATE_OBSERVER_MAX_TOKENS must be a whole number from 1 to 4096" >&2; exit 1; }
+  [[ "$E3D_DEBATE_OBSERVER_INPUT_BYTES_MAX" =~ ^[1-9][0-9]{0,5}$ ]] && (( E3D_DEBATE_OBSERVER_INPUT_BYTES_MAX <= 256000 )) || { echo "error: E3D_DEBATE_OBSERVER_INPUT_BYTES_MAX must be a whole number from 1 to 256000" >&2; exit 1; }
+  OBS_PT_ON=1; OBS_PT_TOKENS="$E3D_DEBATE_OBSERVER_MAX_TOKENS"; OBS_PT_INPUT="$E3D_DEBATE_OBSERVER_INPUT_BYTES_MAX"
+elif (( PT_ON == 1 )) && [[ -n "$OBSERVER_SPEC" ]]; then
+  echo "error: --observer in a per-token (hosted) debate needs the quoted limits E3D_DEBATE_OBSERVER_MAX_TOKENS and E3D_DEBATE_OBSERVER_INPUT_BYTES_MAX" >&2; exit 1
 fi
 if (( PT_ON == 1 )); then
   DEBATE_PROVIDER_RETRIES=0
@@ -525,18 +551,14 @@ pt_env() {
   (( PT_ON == 1 )) || return 0
   local var a
   a="$(adapter_of "$1")"
-  case "$a" in
-    anthropic-api) var=ANTHROPIC_API_MAX_TOKENS ;; openai-api) var=OPENAI_API_MAX_TOKENS ;;
-    gemini-api) var=GEMINI_API_MAX_TOKENS ;; xai-api) var=XAI_API_MAX_TOKENS ;;
-    or-*) var=OPENROUTER_MAX_TOKENS ;;   # OpenRouter voices (docs/openrouter.md); the adapter refuses a per-token call without it
-    *) echo "error: no output-limit setting for provider $a" >&2; exit 1 ;;
-  esac
+  var="$(pt_var_of "$a")" || { echo "error: no output-limit setting for provider $a" >&2; exit 1; }
   PT_ENV=("$var=$(pt_limit "$a" "${2:-}")" E3D_PROVIDER_PER_TOKEN=1)
 }
 # pt_limit <adapter> <key>: the output limit of one call. The quoted one, and in case mode (--follow-up) the synthesis call (key synth, or synth-failed:*) gets
 # CASE_SYNTH_EXTRA_TOKENS more: its reply carries the questions and their json copy, which the hosted bound prices for the synthesis only (lib/debate/case.mjs).
 pt_limit() {
   local base
+  if [[ "$2" == observer:* ]]; then echo "$OBS_PT_TOKENS"; return; fi   # the observer's one call is quoted on its own line, not at a seat's limit
   base="$(jq -r --arg p "$1" '.[$p]' <<< "$PT_MAX_JSON")"
   # every synthesis also writes "## Each model" (SUMMARY_SYNTH_EXTRA_TOKENS more, priced by the hosted bound); case mode adds its questions on top
   if [[ "$2" == synth* ]] && [[ "$base" =~ ^[0-9]+$ ]]; then
@@ -1279,7 +1301,7 @@ pt_usage_row() {
   (( PT_ON == 1 )) || return 0
   local mode="" a
   a="$(adapter_of "$2")"
-  if (( PT_SEARCH == 1 )); then mode=none; [[ "$1" != synth ]] && search_on_for "$2" && mode=search; fi
+  if (( PT_SEARCH == 1 )); then mode=none; [[ "$1" != synth && "$1" != observer:* ]] && search_on_for "$2" && mode=search; fi
   node "$PT_LIB" row "$1" "$a" "$3" "$4" "$5" "$6" "$(pt_limit "$a" "$1")" "$mode" >> "$work_dir/usage.rows" 2>/dev/null || true
 }
 pt_usage_write() {
@@ -1296,6 +1318,9 @@ pt_on_term() {
   if [[ "$PT_PHASE" == synth ]]; then
     kill "${SYNTH_PID:-0}" 2>/dev/null || true
     pt_usage_row synth "${SYNTH_CUR:-$DEBATE_SYNTHESIZER}" "$synth_prompt" "$synth_out" "$work_dir/synthesis.stderr" inflight
+  elif [[ "$PT_PHASE" == observer ]]; then
+    kill "${OBS_PID:-0}" 2>/dev/null || true
+    pt_usage_row "observer:$OBS_SLUG" "$OBS_ADAPTER" "$work_dir/observer.prompt.md" "$work_dir/observer.reply" "$work_dir/observer.stderr" inflight
   elif [[ "$PT_PHASE" == r* ]]; then
     kill ${pids[@]+"${pids[@]}"} 2>/dev/null || true
     for p in "${DEBATE_PROVIDERS[@]}"; do
@@ -1713,23 +1738,47 @@ observer_data() { # -> $work_dir/observer.data.json
 }
 run_observer() {
   local adapter ms obs_out attempt=1 t0 t1 rc fin status code report slug sid sver
+  local -a obs_env=() obs_prompt_extra=()
   adapter="$(jq -r .observer.adapter <<< "$OBSERVER_PLAN_JSON")"; ms="$(jq -r .observer.timeout_ms <<< "$OBSERVER_PLAN_JSON")"
   sid="$(jq -r .observer.skill.id <<< "$OBSERVER_PLAN_JSON")"; sver="$(jq -r .observer.skill.version <<< "$OBSERVER_PLAN_JSON")"; slug="${sid#skill.*.}"
+  OBS_SLUG="$slug"; OBS_ADAPTER="$adapter"
+  if (( OBS_PT_ON == 1 )); then
+    # the quoted limits, exactly: the vendor output limit of the one call, and the most prompt bytes it may be sent
+    obs_env=("$(pt_var_of "$adapter")=$OBS_PT_TOKENS" E3D_PROVIDER_PER_TOKEN=1)
+    obs_prompt_extra=(--max-input-bytes "$OBS_PT_INPUT")
+  fi
   obs_out="${OUT_DIR:-$work_dir}"; mkdir -p "$obs_out"
   rm -f "$obs_out/observer-$slug.md" "$obs_out/observers.json"   # nothing from an earlier run in the same folder survives beside this run's record
   printf '%s' "$QUESTION" > "$work_dir/observer.question"
   if ! observer_data; then echo "warning: the observer was not run (its input could not be prepared); the debate is unaffected" >&2; return 0; fi
-  if ! node "$OBSERVER_LIB" prompt --builtin "$SPEC_BUILTIN" --user "$SPEC_USER" --repo "$SPEC_REPO" $( (( SPEC_BUILTIN_ONLY == 1 )) && echo --builtin-only ) ${HOSTED_ARGS[@]+"${HOSTED_ARGS[@]}"} --plan "$OBSERVER_PLAN_JSON" \
+  if ! node "$OBSERVER_LIB" prompt --builtin "$SPEC_BUILTIN" --user "$SPEC_USER" --repo "$SPEC_REPO" $( (( SPEC_BUILTIN_ONLY == 1 )) && echo --builtin-only ) ${HOSTED_ARGS[@]+"${HOSTED_ARGS[@]}"} ${obs_prompt_extra[@]+"${obs_prompt_extra[@]}"} --plan "$OBSERVER_PLAN_JSON" \
        --data-file "$work_dir/observer.data.json" --question-file "$work_dir/observer.question" --meta-out "$work_dir/observer.meta" > "$work_dir/observer.prompt.md" 2> "$work_dir/observer.prompt.err"; then
     echo "warning: the observer was not run ($(jq -r '.error.code // empty' "$work_dir/observer.prompt.err" 2>/dev/null; true) its skill no longer matches the plan, or its input is over the skill's limit); the debate is unaffected" >&2; return 0
   fi
   while :; do
     t0="$(node -e 'console.log(Date.now())')"
-    rc=0; node "$OBSERVER_LIB" call --adapter "$adapter" --adapter-path "$PROVIDERS_DIR/$adapter" --prompt "$work_dir/observer.prompt.md" --reply "$work_dir/observer.reply" --stderr "$work_dir/observer.stderr" --timeout-ms "$ms" || rc=$?
+    rc=0
+    if (( OBS_PT_ON == 1 )); then
+      # in the background and waited for, so a SIGTERM (a timeout or a cancel) is handled while the call is under way (pt_on_term writes its usage row)
+      PT_PHASE=observer
+      env "${obs_env[@]}" node "$OBSERVER_LIB" call --adapter "$adapter" --adapter-path "$PROVIDERS_DIR/$adapter" --prompt "$work_dir/observer.prompt.md" --reply "$work_dir/observer.reply" --stderr "$work_dir/observer.stderr" --timeout-ms "$ms" &
+      OBS_PID=$!
+      wait "$OBS_PID" || rc=$?
+    else
+      node "$OBSERVER_LIB" call --adapter "$adapter" --adapter-path "$PROVIDERS_DIR/$adapter" --prompt "$work_dir/observer.prompt.md" --reply "$work_dir/observer.reply" --stderr "$work_dir/observer.stderr" --timeout-ms "$ms" || rc=$?
+    fi
     t1="$(node -e 'console.log(Date.now())')"
+    # the call's own usage row (key observer:<skill>): the vendor's counts when its usage line is there, else an estimate at the quoted output limit, so it is never an undercount
+    if (( OBS_PT_ON == 1 )); then
+      # a call that was killed (the skill's deadline, a signal) may have reached the vendor and been billed with nothing to show for it: it is reported as inflight, at the quoted output limit
+      local obs_row_rc="$rc"; case "$rc" in 124|130|137|143) obs_row_rc=inflight ;; esac
+      pt_usage_row "observer:$slug" "$adapter" "$work_dir/observer.prompt.md" "$work_dir/observer.reply" "$work_dir/observer.stderr" "$obs_row_rc"; pt_usage_write
+      PT_PHASE=""
+    fi
     fin="$(node "$OBSERVER_LIB" finalize --plan "$OBSERVER_PLAN_JSON" --meta "$work_dir/observer.meta" --reply "$work_dir/observer.reply" --rc "$rc" --latency-ms "$(( t1 - t0 ))" \
-           --attempt "$attempt" --out-dir "$obs_out" --created-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" 2>/dev/null)" || { echo "warning: the observer reply could not be recorded; the debate is unaffected" >&2; return 0; }
-    if [[ "$(jq -r .retry <<< "$fin")" == "true" && "$attempt" -lt 2 ]]; then attempt=$((attempt + 1)); echo "note: the observer's reply was not usable; retrying once (its skill asks for that)" >&2; continue; fi
+           --attempt "$(( OBS_PT_ON == 1 ? 2 : attempt ))" --out-dir "$obs_out" --created-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" 2>/dev/null)" || { echo "warning: the observer reply could not be recorded; the debate is unaffected" >&2; return 0; }
+    # a per-token call is never repeated: a second vendor call would be unquoted
+    if [[ "$(jq -r .retry <<< "$fin")" == "true" && "$attempt" -lt 2 && "$OBS_PT_ON" == 0 ]]; then attempt=$((attempt + 1)); echo "note: the observer's reply was not usable; retrying once (its skill asks for that)" >&2; continue; fi
     break
   done
   status="$(jq -r .status <<< "$fin")"; code="$(jq -r '.errors[0].code // empty' <<< "$fin")"; report="$(jq -r '.report_file // empty' <<< "$fin")"

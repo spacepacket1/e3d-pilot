@@ -193,6 +193,6 @@ for a in anthropic-api openai-api; do printf '#!/usr/bin/env bash\nif [[ "${E3D_
 rc=0; rm -f "$T"/seen-* "$T/obs-count"
 env -u TYPESAFE_API_KEY E3D_SKILLS_V1=1 E3D_SKILLS_OBSERVER=1 E3D_SKILLS_OBSERVER_ADAPTERS=obs,synth E3D_DEBATE_MAX_TOKENS='{"anthropic-api":456,"openai-api":456}' E3D_DEBATE_ANSWER_BYTES_MAX='{"anthropic-api":400,"openai-api":400}' HOME="$T/home" \
   "$T/bin/e3d-debate" "Which?" --providers anthropic-api,openai-api --rounds 1 --synthesizer anthropic-api --observer judge:obs > "$T/stdout" 2> "$T/stderr" || rc=$?
-[[ $rc -eq 1 ]] && grep -q 'not available in a per-token' "$T/stderr" && nocall || fail "a per-token debate refuses --observer before any call (rc=$rc): $(head -c 300 "$T/stderr")"
+[[ $rc -eq 1 ]] && grep -q 'needs the quoted limits' "$T/stderr" && nocall || fail "a per-token debate refuses --observer without the quoted observer limits before any call (rc=$rc): $(head -c 300 "$T/stderr")"
 echo "skills-observer 9 (review findings): ok"
 echo "skills-observer: PASS"

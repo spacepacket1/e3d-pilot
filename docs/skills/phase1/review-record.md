@@ -135,3 +135,17 @@ Reviewer: an independent read-only Sonnet agent, with reproducing scripts and 24
 | Nits: identifiers (not text) appear in the receipt, transcript and panel line; a skill declaring both hooks can be a seat and the observer in one run | nit | Accepted and noted for the cloud: publishing a debate that used private skills is the owner's explicit choice, with a preview of the names that appear; skill text is never part of it (plan section 7); whether seat plus observer on one skill is priced twice is a cloud question |
 
 Test gaps closed: a hosted observer end to end, a space and a glob path, `plain_seat`, an unused bad file, an empty path, the lens-size limit with a hosted skill, and the observer plan and prompt receiving the file. Overlapping layers (the two `--builtin-only` checks, the two `plain_seat` checks, the two size checks, the symlink guard) are pinned together by mutation.
+
+## Phase 3c H2b (observer in a per-token debate) independent review, 2026-11-23
+
+Reviewer: an independent read-only Sonnet agent, with reproducing scripts and about 24 mutations. Scope: the quoted observer limits, the usage row and the stop handling in `bin/e3d-debate`, and `lib/skills/observer.mjs`. One billing blocker, three should-fix:
+
+| Finding | Class | Outcome |
+| --- | --- | --- |
+| B1: an observer call killed by the skill's own deadline (exit 124) wrote no usage row, so a call the vendor may have billed was undercounted and the platform would refund the whole reserve | blocker | Fixed: a deadline or signal exit is reported as an `inflight` row at the quoted output limit; test with a skill `timeout_ms` below the vendor's delay |
+| S1: a SIGTERM between the call finishing and the row being written left the call unreported | should fix | Fixed: the stop phase stays set until the row is written (a late stop gives an inflight row or the vendor's counts). Not tested deterministically: the window is milliseconds and a test would need a seam in production code |
+| S2: the observer's row carried the search-mode `searches` field (null) although it never searches | should fix | Fixed: an observer call is never a search call (`searches` 0); test with search quoted and a caller exporting search settings |
+| S3: with `retry_once` and an unusable reply in a per-token debate, the failure was not recorded in `observers.json` or the receipt | should fix | Fixed: the one allowed attempt is final and is recorded as a failure; the test asserts both files |
+| Nits and test gaps: the input bound was only checked in characters; the leftover-process case; the exported search settings | nit | Tests added: the bound is measured in bytes (also with multibyte text), no observer process outlives a stopped debate, the observer request carries no search tool |
+
+Process note: a mutation run was started in the background and overlapped with other commands that read the same files; the run was stopped and the files were verified against the intended diff before continuing. Mutation runs are run in the foreground, alone, from now on.
