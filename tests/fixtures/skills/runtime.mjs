@@ -205,14 +205,18 @@ await ok('diff ignores key order and reports changed fields', () => {
 });
 
 // ---- the receipt entries ----
-await ok('receipt entries name each expert as a skill with its own use_id, and fall back for a folder that does not project', () => {
+await ok('receipt entries name each seat as a skill with its own use_id and attachment id, and say so for a folder that does not project', () => {
   const root = tier();
   mk(root, 'good', { md: `${FRONT('good', 'metadata:\n  e3d.expert.version: "3"\n')}Lens.\n` });
   mk(root, 'odd', { md: `${FRONT('odd', 'metadata:\n  e3d.expert.version: "x1"\n')}Lens.\n` });
-  const { experts } = loadExperts({ tiers: [{ name: 'user', dir: root }] });
-  const e = skillReceiptEntries(experts);
-  const good = e.find((x) => x.id === 'skill.local_user.good'); assert.equal(good.version, '3.0.0'); assert.match(good.use_id, /^use_[0-9a-f]{20}$/); assert.match(good.legacy_folder_hash, /^sha256:/);
-  assert.equal(e.length, experts.length);
+  const tiers = [{ name: 'user', dir: root }];
+  const { experts } = loadExperts({ tiers });
+  const catalogue = loadSkills({ tiers });
+  const e = skillReceiptEntries(experts.map((x, i) => ({ seat: `s${i}`, expert: x, source: 'specialist' })), catalogue);
+  const good = e.find((x) => x.id === 'skill.local_user.good');
+  assert.equal(good.version, '3.0.0'); assert.match(good.use_id, /^use_[0-9a-f]{20}$/); assert.match(good.attachment_id, /^att_[0-9a-f]{16}$/); assert.match(good.legacy_folder_hash, /^sha256:/);
+  assert.equal(good.hook, 'seat_prompt'); assert.equal(good.scope, 'debate_seat'); assert.equal(good.source, 'specialist');
+  const odd = e.find((x) => x.name === 'odd'); assert.equal(odd.definition, null); assert.equal(odd.reason, 'not_projectable_or_changed');
   assert.equal(new Set(e.map((x) => x.use_id)).size, e.length);
   assert.match(newUseId(), /^use_[0-9a-f]{20}$/);
 });
@@ -341,12 +345,16 @@ await ok('S5: an over-long name in validate is refused with no path in the answe
   const r = await call('e3d_validate_skill', { skill_md: `---\nname: ${'a'.repeat(300)}\ndescription: x\n---\nBody\n` });
   assert.equal(r.isError, true); assert.ok(!JSON.stringify(r).includes(tmpdir()));
 });
-await ok('S8: a receipt entry for a folder that changed after the panel was planned says so', () => {
+await ok('S8: the receipt describes the bytes the panel was planned from, and an expert whose bytes match no catalogue entry says so', () => {
   const root = tier(); const dir = mk(root, 'moving', { md: `${FRONT('moving', 'metadata:\n  e3d.expert.version: "1"\n')}First lens.\n` });
-  const { experts } = loadExperts({ tiers: [{ name: 'user', dir: root }] });
-  writeFileSync(join(dir, 'SKILL.md'), `${FRONT('moving', 'metadata:\n  e3d.expert.version: "1"\n')}Second lens.\n`);
-  const e = skillReceiptEntries(experts)[0];
-  assert.equal(e.reason, 'changed_since_load'); assert.equal(e.definition, null); assert.ok(!e.definition_hash);
+  const tiers = [{ name: 'user', dir: root }];
+  const { experts } = loadExperts({ tiers }); const catalogue = loadSkills({ tiers });
+  writeFileSync(join(dir, 'SKILL.md'), `${FRONT('moving', 'metadata:\n  e3d.expert.version: "1"\n')}Second lens.\n`); // changes after planning: nothing is re-read
+  const same = skillReceiptEntries([{ seat: 'a', expert: experts[0], source: 'specialist' }], catalogue)[0];
+  assert.equal(same.definition_hash, catalogue.skills[0].definition.definition_hash); assert.ok(!same.reason);
+  const reloaded = loadExperts({ tiers }).experts[0]; // an expert loaded AFTER the change no longer matches the earlier catalogue
+  const stale = skillReceiptEntries([{ seat: 'a', expert: reloaded, source: 'specialist' }], catalogue)[0];
+  assert.equal(stale.definition, null); assert.equal(stale.reason, 'not_projectable_or_changed'); assert.ok(!stale.definition_hash);
 });
 await ok('S3 (text): the MCP get text states the capabilities from the data', async () => {
   const t = (await call('e3d_get_skill', { id: 'skeptic' })).content[0].text;

@@ -39,6 +39,7 @@
     "skill_outcome_invalid": "An outcome breaks a rule: a verified outcome without evidence, or an inferred outcome that claims a result.",
     "skill_outcome_conflict": "An outcome conflicts with a recorded one (a second report that does not supersede the first).",
     "skill_record_insufficient": "A track record asserts a rate or a status without the minimum resolved uses.",
-    "skill_scope_denied": "The caller may not read or write records outside its own principal."
+    "skill_scope_denied": "The caller may not read or write records outside its own principal.",
+    "skill_invalid": "A skill folder exists but does not validate (the underlying codes say why), so it cannot be used or silently replaced by another skill of the same name."
   }
 }

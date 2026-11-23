@@ -67,7 +67,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     if (node.$ref && Object.keys(node).some((k) => k !== '$ref')) bad(`${where}: $ref must not have sibling keywords (the harness ignores them)`);
     if (node['x-code'] && (node.properties || node.items || node.anyOf)) bad(`${where}: x-code must be on a leaf schema`);
   };
-  for (const f of ['common', 'skill-definition', 'skill-composition', 'skill-attachment', 'skill-recommendation', 'skill-plan', 'skill-grant', 'skill-run', 'observation', 'evaluation', 'learning-proposal', 'skill-error', 'event', 'skill-use', 'prediction', 'outcome', 'track-record']) walkSchema(load(`${f}.schema.json`), f);
+  for (const f of ['common', 'skill-definition', 'skill-composition', 'skill-attachment', 'skill-recommendation', 'skill-plan', 'skill-grant', 'skill-run', 'observation', 'evaluation', 'learning-proposal', 'skill-error', 'event', 'skill-use', 'prediction', 'outcome', 'track-record', 'skill-preview']) walkSchema(load(`${f}.schema.json`), f);
   // 1. every schema file loads and uses only supported keywords (validate throws on the first unsupported one while walking a fixture)
   for (const v of manifest.valid) {
     const doc = read(v.file);
@@ -100,7 +100,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const catalogue = Object.keys(JSON.parse(readFileSync(join(SCHEMAS, 'error-codes.json'), 'utf8')).codes);
   for (const iv of manifest.invalid) if (!catalogue.includes(iv.code)) bad(`${iv.file}: ${iv.code} is not in error-codes.json`);
   const covered = new Set([...manifest.valid, ...manifest.invalid].map((x) => x.schema));
-  for (const n of ['skill-definition', 'skill-composition', 'skill-attachment', 'skill-recommendation', 'skill-plan', 'skill-grant', 'skill-run', 'observation', 'evaluation', 'learning-proposal', 'skill-error', 'event', 'skill-use', 'prediction', 'outcome', 'track-record']) {
+  for (const n of ['skill-definition', 'skill-composition', 'skill-attachment', 'skill-recommendation', 'skill-plan', 'skill-grant', 'skill-run', 'observation', 'evaluation', 'learning-proposal', 'skill-error', 'event', 'skill-use', 'prediction', 'outcome', 'track-record', 'skill-preview']) {
     if (!covered.has(n)) bad(`no fixture covers ${n}`);
     if (!manifest.valid.some((x) => x.schema === n)) bad(`no valid fixture for ${n}`);
     if (!manifest.invalid.some((x) => x.schema === n)) bad(`no invalid fixture for ${n}`);

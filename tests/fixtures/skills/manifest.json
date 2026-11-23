@@ -76,6 +76,14 @@
     {
       "file": "valid/track-record--insufficient.json",
       "schema": "track-record"
+    },
+    {
+      "file": "valid/skill-preview--two-seats.json",
+      "schema": "skill-preview"
+    },
+    {
+      "file": "valid/skill-preview--skill-failed-plain-seat.json",
+      "schema": "skill-preview"
     }
   ],
   "invalid": [
@@ -377,6 +385,31 @@
       "file": "invalid/skill-definition--tag-characters.json",
       "schema": "skill-definition",
       "code": "skill_schema_format"
+    },
+    {
+      "file": "invalid/skill-preview--bad-digest.json",
+      "schema": "skill-preview",
+      "code": "skill_schema_format"
+    },
+    {
+      "file": "invalid/skill-preview--two-observers.json",
+      "schema": "skill-preview",
+      "code": "skill_schema_limit"
+    },
+    {
+      "file": "invalid/skill-preview--after-round-observer.json",
+      "schema": "skill-preview",
+      "code": "skill_schema_value"
+    },
+    {
+      "file": "invalid/skill-preview--unknown-field.json",
+      "schema": "skill-preview",
+      "code": "skill_schema_unknown_field"
+    },
+    {
+      "file": "invalid/skill-preview--wrong-seat-hook.json",
+      "schema": "skill-preview",
+      "code": "skill_schema_value"
     }
   ]
 }

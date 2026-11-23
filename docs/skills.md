@@ -64,6 +64,40 @@ so on, for example:
 The id, description, license and instruction text come from `SKILL.md`; `provenance`, `id` and `definition_hash` are set by the loader and may not be written
 in the file. The schemas are in `docs/skills/schemas/v1`.
 
+## Skills on seats, the preview and the plan digest
+
+A skill can sit on a debate seat. This needs `E3D_SKILLS_V1=1`, `E3D_SKILLS_SEATS=1` and `E3D_SPECIALISTS=1` (it runs a debate):
+
+```
+E3D_SPECIALISTS=1 E3D_SKILLS_V1=1 E3D_SKILLS_SEATS=1 e3d-debate "Should we ship it?" \
+  --specialist skeptic --seat-skill 'premortem@2.0.0' --seat-skill 'my-review#sha256:...:codex'
+```
+
+`--seat-skill <id|name>[@version][#sha256:hash][:provider]` sits beside `--specialist` and takes any skill: a built-in, or a native one from your folders. A pin
+(`@version`, `#hash`) that no longer matches stops the run **before any model call**; so does an unknown or withdrawn skill, or one that does not declare the
+`debate_seat/seat_prompt` hook. A seat only runs without its skill if you say `--on-seat-skill-failure plain_seat`: that seat then sends no lens and is recorded
+as a plain seat with the failure code, in the receipt, the preview and on stderr. A skill's `model_hints` steer which provider it gets; `:provider` forces one. The
+seat's prompt is the same role block experts have always had; the id, version and hash are in the receipt (`skills`, with a `use_id` and an `attachment_id` per seat).
+
+**Preview before you spend.** `--preview-skills` (add `--preview-json` for JSON) prints what the run would do and exits without calling any model: each seat with its
+skill, version, hash and size, plain seats and why, vendor families, the number of model calls and a token estimate for a typical short question (an estimate, not
+a bound: credits are quoted by the hosted service), and a **plan digest**. The preview carries no instruction text. The call count is the nominal one; each call
+may be retried (`E3D_DEBATE_PROVIDER_RETRIES`, default 2), and a fallback synthesis, a recap, web search and retries after an empty answer add more.
+
+**Bind a run to its preview.** Run the same command with `--expect-plan sha256:...` and the run refuses to start (`skill_quote_expired`, nothing called) if anything
+the digest covers changed. It covers: the question, rounds, word limit, synthesizer, the provider pool as assigned, forced providers, every seat's skill (id, version,
+hash, lens size) and plain seats, and the settings `--prompts`, `--approach`, `--web-search`, `--recap`, `--jev`, `E3D_DEBATE_SYNTH_FALLBACK`,
+`E3D_DEBATE_FAST_SYNTHESIS` and `E3D_DEBATE_PROVIDER_RETRIES`. It does **not** cover other environment knobs (timeouts, per-provider settings, test seams) or what a
+provider does on its side. The receipt records the digest as `skills_plan_digest`.
+
+**Pins.** A hash pin (`#sha256:...`) is what guarantees the exact skill that runs. A bare name with only a version pin (`skeptic@1.0.0`) is satisfied by any skill of
+that name and version in the highest tier, including one of your own that shadows a built-in; name the full id (`skill.e3d.skeptic`) to select exactly one. A skill
+folder that exists but does not validate is never skipped over for another skill of the same name: the run stops with `skill_invalid` (or that seat runs plain with
+`plain_seat`).
+
+**Constraints.** A native skill's `instructions.constraints` are part of its hash but are **not sent to the model** in this release (a seat receives the instruction
+text only). The preview warns when a seat skill has any; put them in the instruction text.
+
 ## The advisory scan
 
 Every skill is scanned for patterns aimed at the **agent** that will read it: asking it to ignore its rules or hide something from its user, to act without

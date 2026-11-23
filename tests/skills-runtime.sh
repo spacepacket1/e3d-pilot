@@ -80,7 +80,7 @@ jq -e '.skills | length == 2' "$T/out/decision-log.json" >/dev/null || fail "two
 jq -e '.skills | map(.id) | sort == ["skill.e3d.premortem", "skill.e3d.skeptic"]' "$T/out/decision-log.json" >/dev/null || fail "the skills block names the two skills by id"
 jq -e '.skills | all(.definition_hash | test("^sha256:[0-9a-f]{64}$")) and all(.use_id | test("^use_[0-9a-f]{20}$")) and all(.version == "2.0.0")' "$T/out/decision-log.json" >/dev/null || fail "skills entries must carry a definition_hash, a use_id and the projected version"
 [[ "$(jq '[.skills[].use_id] | unique | length' "$T/out/decision-log.json")" == 2 ]] || fail "each use gets its own use_id"
-jq -S 'del(.ts, .seconds, .skills)' "$T/out/decision-log.json" | diff -u "$T/off.json" - >/dev/null || fail "with the flag on, the rest of the decision log must be unchanged"
+jq -S 'del(.ts, .seconds, .skills, .skills_plan_digest)' "$T/out/decision-log.json" | diff -u "$T/off.json" - >/dev/null || fail "with the flag on, the rest of the decision log must be unchanged"
 grep -q 'LENS-skeptic-MARK' "$T/seen-"*.md || fail "the lens must still reach the seats"
 echo "skills-runtime 4 (receipt): ok"
 echo "skills-runtime: PASS"

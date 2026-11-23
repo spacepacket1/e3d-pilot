@@ -1,0 +1,69 @@
+{
+  "schema_version": "e3d.skill-preview/v1",
+  "plan_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "request": {
+    "question_sha256": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "rounds": 2,
+    "max_words": 200,
+    "synthesizer": "claude",
+    "settings": {
+      "prompts": "v2",
+      "approach": "decide",
+      "web_search": 1,
+      "recap": "",
+      "jev": 0,
+      "synth_fallback": "auto",
+      "fast_synthesis": "0",
+      "provider_retries": 2
+    }
+  },
+  "seats": [
+    {
+      "seat": "claude",
+      "adapter": "claude",
+      "family": "anthropic",
+      "source": "specialist",
+      "hook": "seat_prompt",
+      "skill": {
+        "id": "skill.e3d.skeptic",
+        "version": "1.0.0",
+        "hash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      },
+      "legacy_folder_hash": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "tier": "built-in",
+      "lens_block_bytes": 612,
+      "hint_used": true,
+      "provider_forced": false
+    }
+  ],
+  "plain_seats": [
+    {
+      "seat": "codex",
+      "adapter": "codex",
+      "family": "openai",
+      "reason": "skill_failed",
+      "code": "skill_hash_mismatch"
+    }
+  ],
+  "observers": [],
+  "independence": {
+    "seats": 2,
+    "adapters": 2,
+    "families": 2
+  },
+  "estimate": {
+    "model_calls": {
+      "nominal": 5,
+      "with_retries": 15,
+      "retries_per_call": 2
+    },
+    "tokens": {
+      "input": 4100,
+      "output": 1600,
+      "total": 5700,
+      "basis": "cost model for a typical short question; an estimate, not a bound"
+    }
+  },
+  "conflicts": [],
+  "warnings": []
+}
