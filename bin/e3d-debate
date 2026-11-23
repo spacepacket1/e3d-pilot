@@ -179,14 +179,14 @@ Experts (off unless E3D_SPECIALISTS=1; docs/specs/experts-phase1-private-experts
 (SKILL.md plus an optional e3d/expert.json) found in lib/specialists, ~/.config/e3d-pilot/specialists and <repo>/.e3d-pilot/specialists
 (later wins). You choose experts, not models: the engine assigns one provider to each, spread across vendors.
   --panel <preset>            a preset from lib/specialists/panels.json (never shrinks for lack of providers; at most 6 seats)
-  --specialist <name>[:p]     one expert per flag (at least two, at most 6); :p forces a provider. With fewer providers than experts
+  --specialist <name>[:p]     one expert per flag (at least two, at most 6; one --seat-skill is enough with --fill-pool); :p forces a provider. With fewer providers than experts
                               the extra experts share a provider (seats claude, claude.2, ...), on the vendor family with the fewest seats
   --min-families N            refuse a panel on fewer than N vendor families (default 2); --min-families 1 runs lenses on one vendor on
                               purpose, and says "lenses differ, the model does not"
   --providers a,b,c           with a panel, the pool the engine may assign from (default: the providers that answer E3D_PILOT_CHECK)
   --builtin-only              read only the built-in experts (never ~/.config/e3d-pilot/specialists or <repo>/.e3d-pilot/specialists), so a folder on
                               this machine cannot override a built-in by name; also E3D_SPECIALISTS_BUILTIN_ONLY=1 (hosted runs)
-  --fill-pool                 with --specialist: every provider of the pool without an expert answers as a plain seat (no lens); one seat per
+  --fill-pool                 with --specialist or one --seat-skill: every provider of the pool without an expert answers as a plain seat (no lens); one seat per
                               provider, so more experts than providers is refused; adds one "Experts" line to the transcript (hosted runs)
   --expert-pin <name>=<hash>  refuse unless the expert's content hash is exactly this (repeatable; hosted runs)
   --lens-bytes-max N          refuse an expert whose lens block (wrapper included) is larger than N bytes (hosted runs)

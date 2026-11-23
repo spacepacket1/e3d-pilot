@@ -141,5 +141,10 @@ run "${ON[@]}" -- "${ARGS[@]}" --seat-skill "skill.$P.lens-a" --hosted-skills "$
 # --fill-pool does not relax the rule for --specialist
 mkdir -p "$T/lib/specialists/skeptic"; printf -- '---\nname: skeptic\ndescription: The skeptic lens. Use it in tests.\nlicense: MIT\nmetadata:\n  e3d.expert.version: "1"\n---\nLENS-SKEPTIC-MARK.\n' > "$T/lib/specialists/skeptic/SKILL.md"
 run "${ON[@]}" -- "${ARGS[@]}" --specialist skeptic --fill-pool; [[ $rc -eq 1 ]] || fail "one --specialist with --fill-pool is still refused, got $rc"; nocall || fail "no call"
+
+# the default diversity rule still applies to one skill: a pool of one vendor family, or a single provider, is refused before any call
+for n in anthropic-api claude; do mkstub "$T" "$n" v2; done
+run "${ON[@]}" -- "$Q" --providers anthropic-api,claude --rounds 1 --synthesizer synth --builtin-only --seat-skill "skill.$P.lens-a" --fill-pool --hosted-skills "$T/good.json"; [[ $rc -ne 0 ]] || fail "one skill on a pool of one vendor family is refused (the default --min-families 2), got $rc"; nocall || fail "no call"; grep -q 'famil' "$T/stderr" || fail "says why: $(tail -2 "$T/stderr")"
+run "${ON[@]}" -- "$Q" --providers alpha --rounds 1 --synthesizer synth --builtin-only --min-families 1 --seat-skill "skill.$P.lens-a" --fill-pool --hosted-skills "$T/good.json"; [[ $rc -ne 0 ]] || fail "one skill with one provider is refused, got $rc"; nocall || fail "no call"
 echo "skills-hosted 11 (one skill with --fill-pool): ok"
 echo "skills-hosted: ok"

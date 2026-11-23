@@ -165,3 +165,14 @@ Reviewer: an independent read-only Sonnet agent, with reproducing scripts and 9 
 | Nits | nit | Accepted: the redundant target check, the broader 256 KiB limit when skills are on (only on the authenticated run route), the observer row not matching its provider (only the engine writes it) |
 
 Known gaps: the kill-switch path above; a request with exactly one seat attachment is still refused by the listener (the engine half of the single-seat change is separate and the listener half follows it).
+
+## Single seat skill in a hosted run (engine and listener) independent review, 2026-11-23
+
+Reviewer: an independent read-only Sonnet agent, with scenario runs and mutations. No blocker. The panel cannot end with fewer than two seats; the default diversity rule (`--min-families 2`) still applies; a local `--seat-skill X --fill-pool --on-seat-skill-failure plain_seat` whose skill fails to resolve still refuses (nothing runs); `--specialist --fill-pool` keeps its two-expert rule.
+
+| Finding | Class | Outcome |
+| --- | --- | --- |
+| The listener accepted one seat attachment with a single provider; it would only fail later at plan time instead of a clean 400 | should fix | Fixed: a run with seat attachments needs at least 2 providers; unit case |
+| The tests never ran the default diversity rule with one skill | should fix | Added: one skill on a same-vendor pool, and on a single provider, are refused before any call |
+| Stale help text for `--specialist` and `--fill-pool` | nit | Fixed |
+| Suggestion to simplify the condition to `--fill-pool` plus one request | nit | Not taken: a lone `--specialist` is also one request, so the explicit clauses are needed (the test that caught this stays) |
