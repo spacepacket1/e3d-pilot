@@ -24,3 +24,20 @@ They are model reviews, not the human approvals the exit gate requires; the sign
 
 **Not resolved by this phase (open risks):** the numbers in ADR-0010 and ADR-0011 and the evaluation thresholds need the owner; the compat test depends on `jq` and `node` and a 2-second server start; homoglyph attacks are accepted and shown in preview, not prevented; the hosted claims rest on a private appendix reviewers of the public PR cannot see; the first-draft statistical design had material flaws that these reviews found, so the revised freeze deserves a human statistician's read before approval.
 No UX review was run: Phase 1 has no user interface.
+
+## Skills phase 2a (expert-loader hardening): independent review
+
+One read-only Sonnet reviewer tried to break the change (F-2, T3, T20, T21). Findings and dispositions:
+
+| Finding | Severity | Disposition |
+| --- | --- | --- |
+| B1: oversized files read into memory before the limit applied (regression; a 1.5 GB sparse file used 1.67 GB) | blocking | Fixed: bounded read, size checked before reading, no duplicate `too_large`; tests |
+| B2: hidden-character class missed Unicode tag characters, C1 controls, variation selectors, separators, invisible fillers (the schema had the same gap) | blocking | Fixed in the loader (Cc, Cf, Zl, Zp and explicit lists) and in the schema `text` pattern; fixture `skill-definition--tag-characters` |
+| S1: hash-looking line inside a YAML block scalar was stripped | should fix | Fixed: only the `metadata:` map loses its hash line |
+| S2: a file swapped for a FIFO after listing could hang the read | should fix | Fixed: non-blocking open, regular-file check |
+| S3: `O_NOFOLLOW` covers only the last path component | should fix | Fixed by a real-path containment check before opening; a swap between check and open stays a documented residual race |
+| S4: delimiter lookalikes (spacing, NBSP, tab, full-width bracket, unclosed start marker) passed | should fix | Fixed in validation and neutralisation |
+| S5: zero-width joiners and non-joiners refused (emoji sequences, Persian and Indic text) | decision | Kept the blanket refusal (matches the schemas); documented in `docs/experts.md`; **owner decision** whether to relax it |
+| N1 to N5 | nit | N1 (misleading `missing_skill_md`), N2 (growing file), N4 (Windows caveat documented), N5 (brittle and missing tests) addressed |
+
+`tests/specialists-hardening.sh` has 56 cases; 30 of the cases for the review findings fail on the code before the fixes.

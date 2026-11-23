@@ -15,7 +15,7 @@
     },
     "text": {
       "type": "string",
-      "pattern": "^[^\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F\\u007F\\u200B-\\u200F\\u202A-\\u202E\\u2060-\\u2064\\u2066-\\u2069\\uFEFF]*$"
+      "pattern": "^(?![\\s\\S]*\\uDB40[\\uDC00-\\uDC7F\\uDD00-\\uDDEF])[^\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F\\u007F-\\u009F\\u00AD\\u034F\\u061C\\u115F\\u1160\\u180E\\u200B-\\u200F\\u2028-\\u202E\\u2060-\\u2069\\u3164\\uFE00-\\uFE0D\\uFEFF\\uFFF9-\\uFFFC]*$"
     },
     "skillId": {
       "type": "string",
