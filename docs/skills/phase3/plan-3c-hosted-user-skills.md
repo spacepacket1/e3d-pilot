@@ -85,7 +85,7 @@ Merge order: H1, H2, then C1 to C3 against the merged engine. Each PR has its in
 - A run with a seat skill and an observer: the verdict, positions and dissent are byte-identical with and without the observer; the observer line settles at or below its reserve; failure follows the refund rule.
 - Every refusal (bad hash, tools requested, oversized, unknown field, other user's skill) happens before a model call and before charge.
 - Hostile suite through the hosted path: a skill and a question that try fence forgery, forged policy, trigger phrases, secret leakage and markup; the report is clean and rendering is escaped.
-- A private run's receipt, transcript and panel line (they carry skill ids and names) are never published to the Gallery or any public page; a skill used as both a seat and the observer in one run is priced as the contract says (to be settled in C2).
+- Publishing a debate that used private skills is the owner's explicit choice and is allowed. The publish preview shows which skill names, versions and hashes will appear (never the instruction text; that becomes public only when the owner publishes the skill itself, a later step with the skills gallery). The public id of a skill must not expose an internal account identifier (settle the public handle before the gallery). A skill used as both a seat and the observer in one run is priced as the contract says (to be settled in C2).
 - A live canary on the metered key, then a tenant canary, before any wider use.
 
 ## 8. Decisions for the owner
