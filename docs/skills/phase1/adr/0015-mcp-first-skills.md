@@ -15,6 +15,7 @@ Skills are widely shared as prompts that people copy into a chat: unversioned, u
 5. **Use and outcome reports are bound to a server-issued `use_id`** created when the skill is fetched; reports for unknown, expired or foreign ids are refused.
 6. **Import and publish scanning** (secrets, local paths, scripts, hidden or confusable text, instruction patterns aimed at the host such as "ignore previous", "run this command", "disable safety") raise findings the user sees before saving; findings are advisory except the ones the schema already rejects.
 7. Existing tools (`e3d_list_experts`, `e3d_get_expert`) keep names and output forever.
+8. **Hosts (owner, 2026-11-23):** Claude Code first, then Codex. Delivery order: MCP tool results first (works in any MCP host); explicit user-run export into a host's skills directory second; MCP prompts or resources later. Codex behaviour is verified in calibration phase 3, not assumed.
 
 ## Consequences
 

@@ -4,7 +4,7 @@
 **Date:** 2026-11-23
 **Scope:** `spacepacket1/e3d-pilot` (public): contracts, local capture, local and stdio-MCP surfaces, evaluation of calibration claims. Hosted storage, remote MCP and aggregation are an adapter in the private repository, specified when this document is approved.
 **Builds on:** the engine skills specification (`e3d-pilot-user-defined-skills-spec-v0.1.md`, contracts v1) and its ADRs. Where this document says "skill", "receipt", "hash" or "contract", it means those definitions.
-**Status:** Proposal. The facts in section 1 were checked in the four repositories on 2026-11-23; everything else is a proposal. New decisions are in ADR-0015 (Proposed) and the questions listed in section 12.
+**Status:** Proposal. The facts in section 1 were checked in the four repositories on 2026-11-23; everything else is a proposal. New decisions are in ADR-0015 (Proposed); the owner decisions of 2026-11-23 are recorded in section 12.
 
 > **Governing principle:** Skills are the unit. Outcomes are the evidence. Calibration is an honest track record of what happened when a skill was used, shown with its sample size and uncertainty, and offered to the places people already work: their own agent chats, through MCP.
 
@@ -28,14 +28,14 @@ This keeps the skills spec's invariants (receipts pin versions; learning propose
 | Engine outcomes | `ideas outcome` metrics, `negotiate_dissent` and `gate_fired` findings, `ideas list --pending-outcome` (added 2026-09-16 after `ideas outcome` had never been used) | evidence of use at scale; any link from an outcome to a skill |
 | Case mode | questions and answers carried between runs, framed as untrusted data (`lib/debate/case.mjs`) | a recorded real-world result |
 | Jev council | an opt-in signal with provisional bands that the doc says "must be recalibrated on outcomes" and may not vote until "a calibrated, outcome-checked signal" exists | the outcomes to calibrate it |
-| Hosted decisions | a decision record with `outcome: worked | failed | unknown` plus a private note and timestamps; 365-day retention; a no-prompt rule (outcome marking is never nudged); instrumentation with kill criteria ("drop outcome work if under 15-20% of decided records get an outcome") | the resolved-outcome count in production (unknown to this audit; counting it needs the owner's approval to query production); any link to skills |
+| Hosted decisions | a decision record with `outcome: worked | failed | unknown` plus a private note and timestamps; 365-day retention; a no-prompt rule (outcome marking is never nudged); instrumentation with kill criteria ("drop outcome work if under 15-20% of decided records get an outcome") | the resolved-outcome count in production, which is **unknown**: the decision-metrics report needs a measurement window and none exists (`dw_2026-11-06` to `dw_2026-11-09` all returned `unknown_window` on 2026-11-23); any link to skills |
 | Hosted Gallery | reactions (like, save), reports, appeals, forks, assessments per debate | any rule that makes these evidence (and the skills spec forbids it) |
 | MCP today | `e3d_list_experts`, `e3d_get_expert` (flagged), `e3d_debate`, `e3d_chat`, `e3d_usage`, `e3d_gallery`, `e3d_provenance_trace`, `e3d_ideas_list` and others | any skill tool, any outcome tool; OAuth has one scope, `debates:run` |
 | Measurement | a planted-error study on expert lenses: +2.8 points, 95% interval -4.6 to +10.2, inconclusive (12 tasks) | calibration of any kind; a probability forecast in any receipt |
 
 Prior decisions this specification must respect: the 2026-11-17 council verdict named Calibration the next layer (majority; recorded dissent: governance first, or too few resolved outcomes to score); the vision document puts "verified outcome measurement" before any curated public catalogue; `docs/methodology/expert-councils.md` makes no quality claim until its measurement matrix has numbers.
 
-**The unchecked risk is the resolved-outcome count.** Phase 1 of this document records it, with the owner's approval for any production query, and states the data gates in section 9.
+**The unchecked risk is the resolved-outcome count, and it is still unchecked.** On 2026-11-23, with the owner's approval, the read-only `ops/decision-metrics.js --window` report was run on production for the four window ids around the decisions go-live; none exists, so the decision-record outcome rate has never been measured. The owner chose to leave this as a finding rather than open a window or query the collection directly. Phase 1 must either open a window (a production write needing approval) or approve a one-off aggregate count. The data gates in section 9 do not depend on it, and decision-record outcomes alone are unlikely to reach them soon, which is why outcomes reported from users' own agents are the main planned source.
 
 ## 2. Goals, non-goals and invariants
 
@@ -86,11 +86,11 @@ Created by Pilot (never by the client) when a skill is fetched for use, or by th
   "principal_ref": "pseudonymous-or-private-id",
   "run_ref": null,
   "issued_at": "2026-11-23T00:00:00Z",
-  "expires_at": "2026-12-23T00:00:00Z"
+  "expires_at": "2027-02-21T00:00:00Z"
 }
 ```
 
-`mode` is `host_chat`, `pilot_chat`, `debate_seat` or `observer`. `run_ref` links an engine receipt when Pilot ran it. `task_class_source` is `declared` (the host or user said), `derived` (a deterministic rule) or `none`. A use expires; an outcome after expiry is refused with `skill_use_expired`.
+`mode` is `host_chat`, `pilot_chat`, `debate_seat` or `observer`. `run_ref` links an engine receipt when Pilot ran it. `task_class_source` is `declared` (the host or user said), `derived` (a deterministic rule) or `none`. A use expires after 90 days (owner decision); an outcome after expiry is refused with `skill_use_expired`.
 
 ### 3.2 `Prediction` (optional)
 
@@ -187,12 +187,12 @@ A skill's detail page shows its track record next to its definition; the decisio
 
 ### 5.4 Asking for outcomes
 
-The hosted decision-record spec forbids prompting for outcomes so that the outcome rate stays an honest signal. Calibration needs outcomes. Default stays **no prompting**. An opt-in setting ("remind me to record how this went") is proposed in section 12 and, if approved, applies only to users who turn it on; the resolution rate is always reported so the effect is visible.
+**Decided (owner, 2026-11-23): never prompt by default, with an opt-in reminder.** The hosted decision-record rule stands for everyone who has not opted in: Pilot sends no email, notification or in-product nudge asking for an outcome, so the outcome rate stays an honest signal. A user may turn on "remind me to record how this went". In host mode the reminder is a line the user's agent includes at the end of a task (carried in the tool description and the served skill's metadata only while the setting is on); in Pilot's own screens it is a visible, dismissible prompt. The resolution rate and the share of reminded users are always shown beside any record, so the effect of reminders is visible.
 
 ## 6. Trust, privacy and retention
 
 - **Host-reported data is self-asserted.** The server-issued `use_id` stops reports against skills that were never fetched, but it cannot prove the host used the skill or that the result is true. That is why the tier is displayed.
-- **Data class.** Records are identifiers, enums, counts and timestamps. They are private to the principal. Retention follows the owner-approved numbers (proposed: the same 365-day default as decision records, `use_id` expiry 30 days); deleting a decision, a skill or an account removes the linked records and recomputes derived records.
+- **Data class.** Records are identifiers, enums, counts and timestamps. They are private to the principal. Retention (owner-approved): records are kept 365 days and `use_id` expires after 90 days; deleting a decision, a skill or an account removes the linked records and recomputes derived records.
 - **Aggregation.** Cross-user views (a skill's pooled record, a public catalogue) need explicit opt-in per user, a minimum group size, no exposure of strata small enough to identify a person, and a documented opt-out. Aggregates are never fed back as another user's private record.
 - **Export, correction and deletion** are available to the user for every record about their uses.
 
@@ -223,11 +223,12 @@ Jev (`docs/jev-council.md`) is a consumer: its thresholds are recalibrated again
 
 ## 9. Evaluation and data gates
 
-Claims follow `docs/skills/phase1/evaluation-freeze.md`: no "improves", "best", "accurate" or "verified" without the definition and sample basis. Allowed language: "In your 17 resolved uses of this skill on architecture reviews, 12 were marked worked (95% interval 47% to 87%); 41% of uses had a recorded outcome." The track record is a description of what was recorded, not a claim about the skill.
+Claims follow `docs/skills/phase1/evaluation-freeze.md`: no "improves", "best", "accurate" or "verified" without the definition and sample basis. Allowed words: "track record", "calibration", "recorded outcomes", "resolved uses", "how it went"; the hosted decision-record wording ban (no memory, learning, truth, audit, governance, knowledge base, or better outcomes) applies to all calibration copy and shares its copy test. Allowed language: "In your 17 resolved uses of this skill on architecture reviews, 12 were marked worked (95% interval 47% to 87%); 41% of uses had a recorded outcome." The track record is a description of what was recorded, not a claim about the skill.
 
-**Data gates (proposed numbers; the owner decides them in Phase 1):**
+**Data gates (owner-approved 2026-11-23; revisable only by an ADR):**
 
 - Show a per-skill record only at 10 or more resolved uses in a stratum.
+- Show a personal recommendation (L1) only when the principal has at least 20 resolved uses of that skill on that kind of task.
 - Show reliability bins only at 30 or more resolved predictions per bin.
 - Do not start phase 6 (recommendations) before 200 resolved outcomes across at least 20 principals, with at least 3 skills each having 30 or more.
 - Stop expanding capture work if, 60 days after phase 3, fewer than 15% of reported uses have an outcome (the same kill criterion the decision-record spec uses).
@@ -254,8 +255,8 @@ Each phase is independently reviewable and ends in one or more PRs, one reposito
 
 ### Work
 
-1. Measure the resolved-outcome count: local ledger (`ideas list --pending-outcome`), and for production a single aggregate count query only with the owner's explicit approval; record the numbers and the date.
-2. Decide the owner questions in section 12 and record them as ADRs.
+1. Measure the resolved-outcome count: local ledger (`ideas list --pending-outcome`); for production, either open a decision-metrics window or run a one-off aggregate count, each only with the owner's explicit approval; record the numbers and the date. (No window existed on 2026-11-23.)
+2. Record the owner decisions of section 12 as ADRs, and decide the one still open.
 3. Commit JSON Schemas and valid/invalid fixtures for `SkillUse`, `Prediction`, `Outcome`, `TrackRecord`, and the new error codes, validated by the existing harness.
 4. Extend the threat model with C-T1 to C-T9 and the privacy inventory with the calibration data classes.
 5. Write the calibration claim language and the evaluation protocol for the data gates.
@@ -265,7 +266,7 @@ Each phase is independently reviewable and ends in one or more PRs, one reposito
 
 - Every claim in section 1 is labelled with evidence; the resolved-outcome count is recorded or explicitly unknown.
 - Schemas validate their valid fixtures and reject their invalid ones with stable codes.
-- The owner has approved or changed each proposed number.
+- The owner decisions are recorded as ADRs, and the production count is either recorded or explicitly still unknown.
 
 ### Exit gate
 
@@ -316,7 +317,7 @@ Compatibility sign-off; flag stays off in release defaults.
 1. Add the MCP tools of section 5.1 and the skill read/export tools of ADR-0015 to the stdio server, behind the flags; the tool-name baseline test is updated deliberately, and still shows no skill tool with the flags unset.
 2. Serve skill content as labelled data with id, version and hash; issue server-side `use_id`; accept reports against it.
 3. Adversarial tests: a served skill that tries to instruct the host to widen its own tools or exfiltrate; reports for unknown, expired or foreign `use_id`; replay; rate limits.
-4. Documentation for connecting Claude Code and Codex, with the trust rules in plain language.
+4. Documentation for connecting Claude Code and Codex, with the trust rules in plain language. **Hosts (owner, 2026-11-23): Claude Code first, then Codex**; Codex support is an acceptance test of this phase, not an assumption, and includes how each host handles the outcome-confirmation step.
 
 ### Acceptance criteria
 
@@ -407,7 +408,7 @@ Human review; any L3 influence needs a separate approval and an instant rollback
 <!-- runner:read=docs/skills/spec/e3d-pilot-calibration-spec-v0.1.md -->
 <!-- runner:verify=bash tests/skills-schemas.sh -->
 
-**Dependencies:** phases 5 and 6; skills phase 8; a separate go/no-go ADR.
+**Dependencies:** phases 5 and 6; skills phase 8; a separate go/no-go ADR. **Status (owner, 2026-11-23): private only for now; pooling is not approved.** This phase stays in the plan as a gated option; if it is ever approved, pooling is opt-in per user, needs at least 20 users in a stratum, and opting out recomputes.
 
 ### Work
 
@@ -423,15 +424,21 @@ Human review; any L3 influence needs a separate approval and an instant rollback
 
 Security, privacy, moderation, legal and evaluation reviews.
 
-## 12. Questions for the owner
+## 12. Owner decisions
 
-1. **Outcome reminder.** Keep "never prompt" (default), or allow an opt-in reminder?
-2. **Numbers.** The minimum counts and the data gates in section 9.
-3. **Retention.** Calibration record and `use_id` retention (proposed 365 days and 30 days).
-4. **Aggregation.** Whether cross-user pooling is ever wanted, and the minimum group size.
-5. **Copy.** The decision-record spec bans "learn", "memory", "truth", "audit", "governance", "knowledge" and "better outcomes" in feature copy. Confirm that "track record" and "calibration" are allowed and that the ban applies here.
-6. **Production count.** Approval for one aggregate, read-only query of resolved-outcome counts.
-7. **Host modes.** Which hosts are supported first (Claude Code, Codex) and how skills are delivered to them (ADR-0015).
+Decided 2026-11-23 (the Phase 1 ADRs record them formally):
+
+| # | Question | Decision |
+| --- | --- | --- |
+| 1 | Asking for outcomes | Never prompt by default; opt-in reminder (section 5.4) |
+| 2 | Data gates | Record at 10 resolved uses; reliability bins at 30; personal recommendations at 20 own resolved uses; phase 6 at 200 outcomes, 20 users, 3 skills with 30+ (section 9) |
+| 3 | Retention | Records 365 days; `use_id` 90 days |
+| 4 | Pooling across users | Private only for now; decide later (phase 7 stays a gated option) |
+| 5 | Copy | The decision-record ban applies; "track record" and "calibration" allowed |
+| 6 | Production count | Left as a finding: no measurement window exists, count unknown |
+| 7 | Hosts | Claude Code first, then Codex |
+
+Still open: whether Phase 1 opens a decision-metrics window (a production write) or approves a one-off aggregate count.
 
 ## 13. Definition of done
 
