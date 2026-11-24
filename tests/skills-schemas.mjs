@@ -31,6 +31,12 @@ function recordProblems(d) {
     if (d.success.interval95[0] > d.success.rate || d.success.rate > d.success.interval95[1]) return 'skill_schema_value';
   }
   if ((d.status === 'calibrated') !== (d.calibration !== null)) return 'skill_schema_value';
+  if (d.success) { // the interval must be the Wilson 95% interval of count out of n_resolved (an independent route: the roots of the Wilson quadratic)
+    const z2 = 1.959963984540054 ** 2; const x = d.success.count; const m = d.n_resolved;
+    const a = m + z2; const b = 2 * x + z2; const disc = Math.sqrt(Math.max(0, b * b - (4 * a * x * x) / m));
+    const lo = Math.max(0, (b - disc) / (2 * a)); const hi = Math.min(1, (b + disc) / (2 * a));
+    if (Math.abs(d.success.interval95[0] - lo) > 1.5e-4 || Math.abs(d.success.interval95[1] - hi) > 1.5e-4) return 'skill_schema_value';
+  }
   return null;
 }
 

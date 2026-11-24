@@ -176,3 +176,18 @@ Reviewer: an independent read-only Sonnet agent, with scenario runs and mutation
 | The tests never ran the default diversity rule with one skill | should fix | Added: one skill on a same-vendor pool, and on a single provider, are refused before any call |
 | Stale help text for `--specialist` and `--fill-pool` | nit | Fixed |
 | Suggestion to simplify the condition to `--fill-pool` plus one request | nit | Not taken: a lone `--specialist` is also one request, so the explicit clauses are needed (the test that caught this stays) |
+
+## Calibration phase 2 (local capture) independent reviews, 2026-11-23
+
+Two read-only Opus reviews (statistics and store security, then a re-check of the fix commit) plus the builder's own mutation runs.
+
+| Round | Finding | Outcome |
+| --- | --- | --- |
+| 1 | No blocker. Wilson math correct (re-derived; 1.1M (x, n) pairs; the spec's own 12/17 example was wrong: true interval [0.4687, 0.8672]) | Spec section 3.4 example and the fixture corrected; the schema test now checks interval values against the formula |
+| 1 | "N% of M uses had a recorded outcome" was misleading (`unknown` is not resolved); the record line omitted the tier mix and reminded share; unreadable lines not disclosed | Wording is "marked worked or failed", unknown and inferred counts, tier mix, reminded share and a corrections count are printed, unreadable lines are disclosed |
+| 1 | The lock could be taken from a live holder and fork the supersession chain; compact kept free text and miscounted; the debate hook would pool hosted users (ADR-0020); a use's origin was weak (any file, registration-time issue date, no run reference) | Pid-and-nonce lock, chain forks are unreadable lines, one `scan()` for reads and compact with exact wrapper validation, calibration refused for hosted runs, uses issued at the receipt's own timestamp with a run reference |
+| 2 | No blocker; all seven round-1 findings verified fixed; three should-fix | Fixed: breakers serialised by a second exclusive file with an inode-and-text re-check (three-process tests through a test-only pause seam); the append check uses the whole chain and refuses outcomes dated before their use; the lock carries a host id and compact verifies its lock before each rename |
+| 2 | Nits: printed bounds could be tighter than the true interval; shares printed 0% or 100% when not exact; "verified" without its definition; lock edge cases; partial receipt application; wide clock skew; lenient hosted-flag check | Fixed (outward rounding from the unrounded bounds, "under 1%" / "over 99%", a compliant evidence wording, five lock edge cases, all-or-none receipts, 5-minute skew, fail-closed flag) |
+| 2 | ADR-0021's owner-decided example sentence had been rewritten by a fix | Restored; the corrected wording is under a marked "Amendment proposed (needs owner sign-off)" paragraph |
+
+Residual, accepted: a tiny window between a holder's release check and its unlink if a breaker moves its lock at exactly that moment (only past the 10-minute ceiling); the directory fsync after compact is not unit-tested; two terminals reporting on one use means the later one wins silently (documented). The whole feature is off unless E3D_CALIBRATION_V1=1.

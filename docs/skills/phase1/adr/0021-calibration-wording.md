@@ -17,3 +17,8 @@ The hosted decision-record spec bans "memory, learning, truth, audit or audit tr
 ## Alternatives considered
 
 Ban "calibration" too (loses the clearest term); a separate rule (two wording regimes).
+
+## Amendment proposed (needs owner sign-off; not part of the owner-decided text above)
+
+The example sentence in decision 4 says "41% of uses had a recorded outcome". The share it reports is resolved uses divided by all uses, and a use marked `unknown` has an outcome on file but is not resolved, so the sentence can read lower than the share of uses that have an outcome. Proposed corrected example: "In your 17 resolved uses of this skill on architecture reviews, 12 were marked worked (approximate 95% interval 46% to 87%); 41% of uses were marked worked or failed." The interval bounds are rounded outward from the unrounded Wilson bounds (12 of 17 is 46.87% to 86.72%), so a printed interval is never tighter than the computed one. The local record line also prints the number of uses marked unknown or inferred, the outcome sources, the share of uses made with the reminder on and the number of corrections, as calibration spec section 5.4 asks. The engine implements the corrected wording; the sentence above is unchanged until the owner approves this amendment.
+
