@@ -1,6 +1,6 @@
 # Calibration phase 3 plan: skills and track records in the user's own agent, over MCP (stdio)
 
-Status: **proposal for owner review, 2026-11-24. Docs only; no runtime work starts before sign-off.** Spec: `docs/skills/spec/e3d-pilot-calibration-spec-v0.1.md` ("Phase 3", section 5.1, section 9 gates). Decisions it builds on: ADR-0015 (skills over MCP), ADR-0016 (never prompt by default), ADR-0017 (tiers), ADR-0019 (retention), ADR-0020 (no pooling), ADR-0021 (wording). Hosts: Claude Code first; Codex second and **untested** (an acceptance test, not an assumption).
+Status: **approved by the owner on 2026-11-24: D1 to D9 as recommended, D10 to D12 as recommended. Docs only; build starts with P3-1, and the live check (see "to verify live before P3-3") must pass before P3-3.** Spec: `docs/skills/spec/e3d-pilot-calibration-spec-v0.1.md` ("Phase 3", section 5.1, section 9 gates). Decisions it builds on: ADR-0015 (skills over MCP), ADR-0016 (never prompt by default), ADR-0017 (tiers), ADR-0019 (retention), ADR-0020 (no pooling), ADR-0021 (wording). Hosts: Claude Code first; Codex second and **untested** (an acceptance test, not an assumption).
 
 ## 1. Goal and non-goals
 
