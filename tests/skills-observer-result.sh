@@ -163,4 +163,31 @@ rc=0; wait "$EP" || rc=$?
 [[ ! -s "$TMP/s2.out" ]] || fail "no verdict on stdout"
 [[ ! -e "$TMP/s2/observers.json" ]] || fail "no observer ran"
 echo "skills-observer-result (b) a stop before the verdict is unchanged (exit 143, nothing on stdout): ok"
+
+# (d) a hostile report cannot stall the listener: the markup patterns are quadratic on a long run of spaces after "![a](" or "[a](", so the report is cut BEFORE they run
+D="$TMP/hostile-dir"; mkdir -p "$D"
+printf '%s' '[{"run":{"status":"completed","errors":[],"metrics":{"latency_ms":5}},"output":{"file":"observer-reviewer.md"}}]' > "$D/observers.json"
+for lead in '![a](' '[a](' '![a]('; do
+  { printf '%s' "$lead"; head -c 64000 /dev/zero | tr '\0' ' '; printf 'end'; } > "$D/observer-reviewer.md"
+  T0=$(node -e 'console.log(Date.now())'); R="$(result "$D" 64000)"; T1=$(node -e 'console.log(Date.now())')
+  [[ $((T1 - T0)) -lt 1500 ]] || fail "a hostile report ($lead + 64 KB of spaces) took $((T1 - T0)) ms to process: it would stall the listener"
+  [[ "$(jq -r '.report | length' <<< "$R")" -le 4096 ]] || fail "the report stays within the hard cap"
+  [[ "$(jq -r .status <<< "$R")" == ok ]] || fail "a hostile but valid report is still ok: $R"
+done
+echo "skills-observer-result (d) a hostile 64 KB report is processed in time and capped: ok"
+
+# (e) the duplicate-name suffix of a participant heading fits the per-participant constant (16 participants of the same longest name)
+node --input-type=module - "$ROOT" <<'EOF2'
+import { pathToFileURL } from 'node:url';
+const lib = async (f) => import(pathToFileURL(`${process.argv[2]}/${f}`).href);
+const { buildObserverPrompt, OBSERVER_POSITION_OVERHEAD_BYTES, cleanData } = await lib('lib/skills/observer.mjs');
+const def = { id: 'skill.u_abc123def456.reviewer', version: '1.0.0', definition_hash: `sha256:${'a'.repeat(64)}`, limits: { max_output_bytes: 1000 }, instructions: { method: 'x' } };
+const mk = (positions) => Buffer.byteLength(buildObserverPrompt({ definition: def, tier: 'user', question: '', data: cleanData({ positions, synthesis: '' }), nonce: 'n'.repeat(24), date: '2026-11-23' }));
+const base = mk([]);
+const many = mk(Array.from({ length: 16 }, () => ({ who: 'a'.repeat(48), round: 1000, text: '' })));
+const per = (many - base) / 16;
+if (per > OBSERVER_POSITION_OVERHEAD_BYTES) throw new Error(`a participant heading with the duplicate suffix averages ${per} bytes, over ${OBSERVER_POSITION_OVERHEAD_BYTES}`);
+console.log(`participant heading incl. duplicate suffix: ${per} bytes on average (constant ${OBSERVER_POSITION_OVERHEAD_BYTES})`);
+EOF2
+echo "skills-observer-result (e) the position overhead holds for duplicate names: ok"
 echo "skills-observer-result: ok"

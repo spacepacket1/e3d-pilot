@@ -1313,7 +1313,8 @@ pt_usage_write() {
 # never an undercount. Calls of earlier rounds already have their rows.
 PT_PHASE=""
 pt_on_term() {
-  if (( VERDICT_DONE == 1 )); then
+  if (( VERDICT_DONE == 1 )) && [[ -n "$OBSERVER_PLAN_JSON" ]]; then
+    # (only a run with an observer: a run without one keeps the old rule, a stop is a stop, so a wedged step after the verdict can never outlive the listener's timeout)
     # The verdict is complete and already on stdout: a stop now (the listener's timeout or a cancel) ends the observer, if one is under way, and nothing else. The debate itself is
     # finished, so it still exits 0 with its output untouched; what remains after the verdict is local and short. The call's usage row is written by run_observer (inflight).
     OBS_STOPPED=1

@@ -89,6 +89,8 @@ cp=$!
 trap 'kill -TERM "$cp" 2>/dev/null' TERM
 while kill -0 "$cp" 2>/dev/null; do wait "$cp"; rc=$?; done
 [[ -f "$out/usage.json" ]] && cp "$out/usage.json" "$WRAP_SNAP/usage-$n.json"
+# WRAP_POSTHANG: the engine finished (verdict written, exit 0) and this wrapper then hangs until the listener stops it, as if a step after the verdict wedged
+if [[ -n "${WRAP_POSTHANG:-}" ]]; then trap 'exit 0' TERM; while true; do sleep 0.2; done; fi
 exit $rc
 WRAPEOF
 chmod +x "$TMP/wrap.sh"
@@ -416,5 +418,11 @@ start_server prestop "${SKON[@]}" ANTHROPIC_API_MODEL=claude-hang ANTHROPIC_API_
 obs_run "$DR"; wait_run "$OD" "$ORT" failed; OV="$(rget "$OD" "$ORT")"
 assert_eq "$(jq -c '[.run.outcome, (.run.result // null)]' <<< "$OV")" '["timeout",null]' "a timeout before the verdict is a timeout with no result"
 sleep 1; ! pgrep -f "observer.mjs call" >/dev/null 2>&1 || fail "an observer call process outlived the stopped run"
+# a run WITHOUT an observer stays a timeout when it is stopped after its verdict: only a run with an observer is kept ok (a wedged step after the verdict must never turn a timeout into a success)
+start_server posthang "${SKON[@]}" WRAP_POSTHANG=1 E3D_MCP_TIMEOUT_SEC=6
+BP="$(body "$PV3" "$LIM3" "[$(seat "$DA" anthropic-api), $SEATB]")"; DP="$(jq -r .debate_id <<< "$BP")"
+r="$(rpost "$BP")"; assert_eq "$(code "$r")" "202" "$(js "$r")"; RTP="$(js "$r" | jq -r .run_token)"
+wait_run "$DP" "$RTP" failed; VP2="$(rget "$DP" "$RTP")"
+assert_eq "$(jq -c '[.run.outcome, (.run.result // null)]' <<< "$VP2")" '["timeout",null]' "a seat-only run stopped after its verdict is still a timeout with no result"
 echo "ok - a stop during the observer (listener timeout, user cancel) leaves a finished debate ok with its verdict and an observer timeout; a stop before the verdict is unchanged"
 echo "mcp-skills-run: all passed"
