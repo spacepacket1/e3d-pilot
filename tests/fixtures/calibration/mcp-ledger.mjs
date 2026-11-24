@@ -1,6 +1,7 @@
 // Unit cases for lib/calibration/mcp-ledger.mjs. Deterministic: fake clock, seeded RNG, no file, no network, no model.
 import assert from 'node:assert/strict';
-import { createLedger, MAX_OUTSTANDING, ISSUE_PER_WINDOW, WRITES_PER_WINDOW, PAUSE_MS, TICKET_MS, MAX_SUPERSESSIONS } from '../../../lib/calibration/mcp-ledger.mjs';
+import { spawnSync } from 'node:child_process';
+import { createLedger, ELICIT_TIMEOUT_MS, MAX_OUTSTANDING, ISSUE_PER_WINDOW, WRITES_PER_WINDOW, PAUSE_MS, TICKET_MS, MAX_SUPERSESSIONS } from '../../../lib/calibration/mcp-ledger.mjs';
 
 const cases = [];
 const test = (name, fn) => cases.push([name, fn]);
@@ -59,8 +60,13 @@ test('replay: a returned ticket copy cannot be used to alter the ledger', () => 
 });
 test('supersession cap: 3 per use, then refused', () => {
   const { l } = mk(); const id = issueOne(l);
-  for (let i = 1; i <= MAX_SUPERSESSIONS; i++) assert.equal(l.noteSupersession(id).count, i);
-  assert.equal(l.noteSupersession(id).code, 'supersession_cap'); assert.equal(l.noteSupersession('use_' + '2'.repeat(32)).code, 'skill_use_not_found');
+  for (let i = 1; i <= MAX_SUPERSESSIONS; i++) assert.equal(l.markSuperseded(id).count, i);
+  assert.equal(l.markSuperseded(id).code, 'supersession_cap'); assert.equal(l.markSuperseded('use_' + '2'.repeat(32)).code, 'skill_use_not_found');
+});
+test('supersession count only after a successful write: canSupersede alone never counts', () => {
+  const { l } = mk(); const id = issueOne(l);
+  for (let i = 0; i < 10; i++) assert.equal(l.canSupersede(id).ok, true);
+  assert.equal(l.markSuperseded(id).count, 1);
 });
 test('ids are not sequential or guessable: 500 ids are distinct, differ in many digits, neighbours share no structure', () => {
   const { l, clock } = mk({ limits: { issuePerWindow: 1000, maxOutstanding: 1000 } }); const ids = [];
@@ -81,9 +87,27 @@ test('collision: an id already in the ledger is redrawn, never reused', () => {
   let k = 0; const l = createLedger({ now: () => 0, sessionId: 's', rng: (n) => Buffer.alloc(n, k++ < 3 ? 7 : k) }); // session 8 bytes, id1, then id2 first draw collides
   const a = l.issue({ skill: S }).use_id, b = l.issue({ skill: S }).use_id; assert.notEqual(a, b);
 });
-test('cap: 64 outstanding tickets, the 65th is refused, and an expiry frees a slot', () => {
+test('cap: at 64 outstanding the OLDEST unpersisted ticket is evicted (not refused); the evicted id is not found, the rest stay', () => {
+  const { l, clock } = mk({ limits: { issuePerWindow: 10000 } }); const ids = [];
+  for (let i = 0; i < MAX_OUTSTANDING; i++) { ids.push(issueOne(l)); clock.t += 1000; }
+  const r = l.issue({ skill: S }); assert.equal(r.ok, true); assert.equal(l.outstanding(), MAX_OUTSTANDING);
+  assert.equal(l.lookup(ids[0]).code, 'skill_use_not_found'); assert.equal(l.lookup(ids[1]).ok, true); assert.equal(l.lookup(r.use_id).ok, true);
+});
+test('cap: a persisted ticket is never evicted; the next-oldest unpersisted one goes', () => {
+  const { l, clock } = mk({ limits: { issuePerWindow: 10000 } }); const ids = [];
+  for (let i = 0; i < MAX_OUTSTANDING; i++) { ids.push(issueOne(l)); clock.t += 1000; }
+  l.markPersisted(ids[0]); assert.equal(l.issue({ skill: S }).ok, true);
+  assert.equal(l.lookup(ids[0]).ok, true); assert.equal(l.lookup(ids[1]).code, 'skill_use_not_found');
+});
+test('cap: the ticket of a pending elicitation is never evicted', async () => {
+  const { l, clock } = mk({ limits: { issuePerWindow: 10000 } }); const ids = [];
+  for (let i = 0; i < MAX_OUTSTANDING; i++) { ids.push(issueOne(l)); clock.t += 1000; }
+  const h = l.beginElicitation(ids[0]); assert.equal(l.issue({ skill: S }).ok, true);
+  assert.equal(l.lookup(ids[0]).ok, true); assert.equal(l.lookup(ids[1]).code, 'skill_use_not_found'); h.done();
+});
+test('cap: when all 64 are protected (persisted) the issue is refused with ticket_cap; an expiry frees a slot', () => {
   const { l, clock } = mk({ limits: { issuePerWindow: 10000 } });
-  for (let i = 0; i < MAX_OUTSTANDING; i++) { issueOne(l); clock.t += 1000; }
+  for (let i = 0; i < MAX_OUTSTANDING; i++) { l.markPersisted(issueOne(l)); clock.t += 1000; }
   const r = l.issue({ skill: S }); assert.equal(r.code, 'ticket_cap'); assert.ok(r.retry_after_s >= 1); assert.equal(l.outstanding(), MAX_OUTSTANDING);
   clock.t += TICKET_MS - 64 * 1000 + 1; assert.equal(l.issue({ skill: S }).ok, true);
 });
@@ -92,6 +116,11 @@ test('loop limit: 20 issues per 10 minutes, then rate_limited with a retry hint,
   for (let i = 0; i < ISSUE_PER_WINDOW; i++) issueOne(l);
   const r = l.issue({ skill: S }); assert.equal(r.code, 'rate_limited'); assert.ok(r.retry_after_s > 0 && r.retry_after_s <= 600);
   clock.t += 10 * 60 * 1000 + 1; assert.equal(l.issue({ skill: S }).ok, true);
+});
+test('rate_limited answers and a successful issue are not refusals: they never feed the refusal streak', () => {
+  const { l } = mk({ limits: { issuePerWindow: 2 } });
+  issueOne(l); issueOne(l); for (let i = 0; i < 10; i++) assert.equal(l.issue({ skill: S }).code, 'rate_limited');
+  assert.equal(l.admitWrite().ok, true);
 });
 test('loop limit: 30 write attempts per hour, then rate_limited, then free again', () => {
   const { l, clock } = mk();
@@ -110,6 +139,16 @@ test('decline pause: reads are never blocked (pause, refusal streak, write rate)
   const { l } = mk(); const id = issueOne(l);
   l.noteDecline(); for (let i = 0; i < 10; i++) l.noteRefusal();
   assert.equal(l.admitRead().ok, true); assert.equal(l.lookup(id).ok, true); assert.equal(l.issue({ skill: S }).ok, true, 'a fetch is not a write');
+});
+test('a refusal during an active pause does not extend it', () => {
+  const { l, clock } = mk(); l.noteDecline(); const until = l.writesPausedUntil();
+  clock.t += 5 * 60 * 1000; for (let i = 0; i < 20; i++) l.noteRefusal();
+  assert.equal(l.writesPausedUntil(), until); clock.t = until; assert.equal(l.admitWrite().ok, true);
+  for (let i = 0; i < 4; i++) l.noteRefusal(); assert.equal(l.admitWrite().ok, true, 'refusals while paused were not counted');
+});
+test('a decline resets the refusal streak', () => {
+  const { l, clock } = mk(); for (let i = 0; i < 4; i++) l.noteRefusal();
+  l.noteDecline(); clock.t += PAUSE_MS; l.noteRefusal(); assert.equal(l.admitWrite().ok, true, 'one refusal after a decline is not the fifth');
 });
 test('refusal streak: 5 refusals in a row pause writes; an accepted write resets the streak', () => {
   const { l } = mk();
@@ -133,10 +172,72 @@ test('concurrency: different use_ids do not wait for each other', async () => {
   await Promise.all([l.serialize('use_x', () => new Promise((r) => setTimeout(() => { log.push('slow'); r(); }, 40))), l.serialize('use_y', async () => { log.push('fast'); })]);
   assert.deepEqual(log, ['fast', 'slow']);
 });
-test('concurrency: 100 simultaneous issues never exceed the cap and never share an id', async () => {
-  const { l } = mk({ limits: { issuePerWindow: 1000 } });
-  const rs = await Promise.all(Array.from({ length: 100 }, () => Promise.resolve().then(() => l.issue({ skill: S }))));
-  const ok = rs.filter((r) => r.ok); assert.equal(ok.length, MAX_OUTSTANDING); assert.equal(new Set(ok.map((r) => r.use_id)).size, MAX_OUTSTANDING); assert.ok(rs.filter((r) => !r.ok).every((r) => r.code === 'ticket_cap'));
+test('concurrency: 100 racing withElicitation calls on different ids run one at a time, never overlapping', async () => {
+  const { l } = mk(); let active = 0, maxActive = 0, ran = 0;
+  const rs = await Promise.all(Array.from({ length: 100 }, (_, i) => l.withElicitation(`use_${i}`, async () => { active++; maxActive = Math.max(maxActive, active); await new Promise((r) => setImmediate(r)); active--; ran++; return { ok: true }; })));
+  assert.equal(maxActive, 1); assert.equal(ran + rs.filter((r) => r.code === 'elicitation_pending').length, 100); assert.ok(ran >= 1);
+});
+const fakeTimers = () => { const q = []; return { q, set: (fn, ms) => { const h = { fn, ms, off: false }; q.push(h); return h; }, clear: (h) => { if (h) h.off = true; }, fire: () => q.filter((h) => !h.off).forEach((h) => { h.off = true; h.fn(); }) }; };
+test('withElicitation: returns fn result and releases the lock', async () => {
+  const { l } = mk(); assert.deepEqual(await l.withElicitation('use_a', async () => ({ ok: true, action: 'accept' })), { ok: true, action: 'accept' }); assert.equal(l.elicitationPending(), false);
+});
+test('withElicitation: a second one while pending is refused without running', async () => {
+  const { l } = mk(); let ran = false; let release; const first = l.withElicitation('use_a', () => new Promise((r) => { release = r; }));
+  await new Promise((r) => setImmediate(r)); assert.equal(l.elicitationPending(), true);
+  assert.equal((await l.withElicitation('use_b', async () => { ran = true; })).code, 'elicitation_pending'); assert.equal(ran, false);
+  release({ ok: true }); await first; assert.equal(l.elicitationPending(), false);
+});
+test('withElicitation: a throw or a rejection releases the lock and the use_id chain', async () => {
+  const { l } = mk();
+  await assert.rejects(l.withElicitation('use_a', () => { throw new Error('boom'); }), /boom/); assert.equal(l.elicitationPending(), false);
+  await assert.rejects(l.withElicitation('use_a', () => Promise.reject(new Error('nope'))), /nope/); assert.equal(l.elicitationPending(), false);
+  assert.equal((await l.withElicitation('use_a', async () => ({ ok: true }))).ok, true);
+});
+test('withElicitation: a host that never answers is released at the timeout (default 120 s), and the next use_id call proceeds', async () => {
+  const t = fakeTimers(); const { l } = mk({ timers: t }); const p = l.withElicitation('use_a', () => new Promise(() => {}));
+  const p2 = l.withElicitation('use_a', async () => ({ ok: true, second: true }));
+  await new Promise((r) => setImmediate(r)); assert.equal(t.q[0].ms, ELICIT_TIMEOUT_MS); assert.equal(l.elicitationPending(), true);
+  t.fire(); assert.deepEqual(await p, { ok: false, code: 'elicitation_timeout' }); assert.deepEqual(await p2, { ok: true, second: true }); assert.equal(l.elicitationPending(), false);
+});
+test('withElicitation: a late completion after the timeout does not release a newer lock', async () => {
+  const t = fakeTimers(); const { l } = mk({ timers: t }); let late;
+  const p = l.withElicitation('use_a', () => new Promise((r) => { late = r; })); await new Promise((r) => setImmediate(r)); t.fire(); await p;
+  let release; const q = l.withElicitation('use_b', () => new Promise((r) => { release = r; })); await new Promise((r) => setImmediate(r));
+  assert.equal(l.elicitationPending(), true); late({ ok: true }); await new Promise((r) => setImmediate(r)); assert.equal(l.elicitationPending(), true, 'the newer lock is still held');
+  release({ ok: true }); await q; assert.equal(l.elicitationPending(), false);
+});
+test('rng hang: a constant random source throws on the second id instead of looping (run in a child with a 5 s limit)', () => {
+  const code = `import { createLedger } from ${JSON.stringify(new URL('../../../lib/calibration/mcp-ledger.mjs', import.meta.url).href)};
+    const l = createLedger({ now: () => 0, sessionId: 's', rng: (n) => Buffer.alloc(n, 5) }); const S = { id: 'a', version: '1', definition_hash: 'h' };
+    if (!l.issue({ skill: S }).ok) process.exit(3); try { l.issue({ skill: S }); process.exit(4); } catch (e) { process.exit(/fresh id/.test(e.message) && l.outstanding() === 1 ? 0 : 5); }`;
+  const r = spawnSync(process.execPath, ['--input-type=module', '-e', code], { timeout: 5000 });
+  assert.equal(r.error?.code, undefined, 'the child hung'); assert.equal(r.status, 0, `child exit ${r.status}`);
+});
+test('rng output is validated: short, long, string or non-bytes output throws and takes no cap slot', () => {
+  for (const bad of [(n) => Buffer.alloc(n - 1), (n) => Buffer.alloc(n + 1), (n) => 'ab'.repeat(n), () => null, (n) => new Array(n).fill(1)]) {
+    const l = createLedger({ now: () => 0, sessionId: 's', rng: bad }); assert.throws(() => l.issue({ skill: S }), /random source/); assert.equal(l.outstanding(), 0);
+  }
+  assert.throws(() => createLedger({ rng: () => Buffer.alloc(3) }), /random source/);
+});
+test('default rng is used: two ledgers with no rng and no sessionId get different session ids, and issue works', () => {
+  const a = createLedger(), b = createLedger(); assert.match(a.session_id, /^[0-9a-f]{16}$/); assert.notEqual(a.session_id, b.session_id);
+  assert.equal(a.issue({ skill: S }).ok, true);
+});
+test('task_class follows the store rule: lower-case words joined by single dashes, 3-40 characters', () => {
+  const { l } = mk();
+  for (const ok of ['abc', 'code-review', 'a-b-c', 'x1-y2']) assert.equal(l.issue({ skill: S, task_class: ok }).ok, true, ok);
+  for (const bad of ['a.b.c', 'a_b_c', '-ab', 'ab-', 'a--b', 'ab', 'x'.repeat(41), 'Code-Review']) assert.equal(l.issue({ skill: S, task_class: bad }).code, 'invalid_task_class', bad);
+});
+test('clock moved back 48 h: a decline made after the move still pauses for a full 10 minutes of real time', () => {
+  const { l, clock } = mk(); const T = clock.t; l.admitWrite(); clock.t = T - 48 * 3600 * 1000; l.noteDecline();
+  assert.equal(l.writesPausedUntil(), T + PAUSE_MS); clock.t = T; assert.equal(l.admitWrite().ok, false, 'the pause is not shortened by the clock jump');
+});
+test('clock moved back 48 h: expiry, rate windows and the pause behave as if time stood still', () => {
+  const { l, clock } = mk({ limits: { issuePerWindow: 2 } }); const id = issueOne(l); issueOne(l);
+  l.noteDecline(); const until = l.writesPausedUntil();
+  clock.t -= 48 * 3600 * 1000;
+  assert.equal(l.issue({ skill: S }).code, 'rate_limited'); assert.equal(l.admitWrite().code, 'rate_limited'); assert.equal(l.writesPausedUntil(), until); assert.equal(l.lookup(id).ok, true);
+  clock.t += 48 * 3600 * 1000 + TICKET_MS; assert.equal(l.lookup(id).code, 'skill_use_not_found');
 });
 
 let failed = 0;

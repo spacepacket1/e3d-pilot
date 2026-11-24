@@ -40,6 +40,13 @@
     "skill_outcome_conflict": "An outcome conflicts with a recorded one (a second report that does not supersede the first).",
     "skill_record_insufficient": "A track record asserts a rate or a status without the minimum resolved uses.",
     "skill_scope_denied": "The caller may not read or write records outside its own principal.",
+    "invalid_ticket": "A use ticket was requested without a complete skill identity (id, version, definition hash).",
+    "invalid_task_class": "The task class is not a lower-case dash slug of 3 to 40 characters.",
+    "ticket_cap": "Too many outstanding use tickets, all protected (persisted or awaiting a confirmation); retry later.",
+    "supersession_cap": "A use already has the most corrections one session may add.",
+    "elicitation_pending": "Another confirmation is already waiting for the user; only one may be open at a time.",
+    "elicitation_timeout": "The host did not answer a confirmation in time; nothing was written.",
+    "rate_limited": "Too many requests, or writes are paused after a refusal; retry after the stated delay.",
     "skill_invalid": "A skill folder exists but does not validate (the underlying codes say why), so it cannot be used or silently replaced by another skill of the same name."
   }
 }
