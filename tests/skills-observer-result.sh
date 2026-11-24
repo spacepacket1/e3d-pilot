@@ -139,7 +139,8 @@ EP=$!; PIDS+=("$EP")
 for _ in $(seq 1 200); do [[ "$(jq -s '[.[] | select(.body.model == "gem-hang")] | length' "$VREQ" 2>/dev/null || echo 0)" == 1 ]] && break; sleep 0.1; done
 [[ "$(jq -s '[.[] | select(.body.model == "gem-hang")] | length' "$VREQ")" == 1 ]] || fail "the observer call never reached the vendor: $(tail -3 "$TMP/s1.err")"
 kill -TERM "$EP" 2>/dev/null || true
-rc=0; wait "$EP" || rc=$?
+T0=$SECONDS; rc=0; wait "$EP" || rc=$?
+[[ $((SECONDS - T0)) -le 8 ]] || fail "a stop ends the observer call at once, not when its own deadline (30 s here) runs out: took $((SECONDS - T0)) s"
 [[ $rc -eq 0 ]] || fail "a stop during the observer leaves the finished debate's exit status at 0, got $rc: $(tail -3 "$TMP/s1.err")"
 cmp -s "$TMP/s1.out" "$TMP/stdout.none" || fail "stdout after a stop during the observer is byte-identical to a run without an observer"
 jq -e '.[] | select(.key == "observer:reviewer") | .output_tokens == 150 and .provider == "gemini-api"' "$TMP/s1/usage.json" >/dev/null || fail "the stopped call has its inflight row at the quoted limit: $(jq -c 'map(.key)' "$TMP/s1/usage.json")"
