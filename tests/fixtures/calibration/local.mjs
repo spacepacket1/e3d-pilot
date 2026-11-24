@@ -8,7 +8,7 @@ import { appendFileSync, chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync
 import { hostname, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { tty, ttyJson } from './tty.mjs';
+import { TtySkip, needTty, tty, ttyJson } from './tty.mjs';
 import { BIN_MIN, MIN_RESOLVED, calibrationBlock, computeTrackRecord, describeRecord, round4, wilson95 } from '../../../lib/calibration/record.mjs';
 import { MAX_FILE, appendLine, appendOutcome, compact, deleteOutcome, getUse, newUse, registerUse, reportOutcome, stateDir, trackRecords, validateOutcome, validateTrackRecord } from '../../../lib/calibration/store.mjs';
 
@@ -18,7 +18,15 @@ const BIN = join(ROOT, 'bin/e3d-debate');
 const T = mkdtempSync(join(tmpdir(), 'calibration-local-'));
 process.on('exit', () => rmSync(T, { recursive: true, force: true }));
 let n = 0; let seq = 0;
-const ok = async (name, fn) => { try { await fn(); } catch (e) { console.error(`FAIL: ${name}`); throw e; } n += 1; };
+// every case runs; failures are collected and the file exits 1 at the end (a failing case never hides the ones after it). A case that needs a terminal SKIPs
+// with a message when the pseudo-terminal helper cannot run here.
+const failures = []; const skipped = [];
+const ok = async (name, fn) => {
+  try { await fn(); n += 1; } catch (e) {
+    if (e instanceof TtySkip) { skipped.push(name); console.error(`SKIP: ${name}: ${e.message}`); return; }
+    failures.push(name); console.error(`FAIL: ${name}\n  ${String(e.stack || e).split('\n').slice(0, 8).join('\n  ')}`);
+  }
+};
 const NOW = Date.parse('2026-12-01T00:00:00Z');
 const DAY = 86400000;
 const HASH = `sha256:${'a'.repeat(64)}`;
@@ -35,7 +43,7 @@ function seed(dir, count, outcomes = [], over = {}, now = NOW) {
 }
 const lines = (dir, f) => readFileSync(join(dir, f), 'utf8').split('\n').filter(Boolean);
 // the same command under a pseudo-terminal (D12: user_marked and deletion only at a terminal); output is the terminal's, stdout and stderr mixed
-const ttyCli = (args, env = {}) => tty(BIN, args, { PATH: process.env.PATH, HOME: join(T, 'home'), E3D_CALIBRATION_V1: '1', ...env });
+const ttyCli = (args, env = {}) => needTty() ?? tty(BIN, args, { PATH: process.env.PATH, HOME: join(T, 'home'), E3D_CALIBRATION_V1: '1', ...env });
 const cli = (args, env = {}) => {
   const r = spawnSync(BIN, args, { env: { PATH: process.env.PATH, HOME: join(T, 'home'), E3D_CALIBRATION_V1: '1', ...env }, encoding: 'utf8' });
   return { rc: r.status, out: r.stdout, err: r.stderr };
@@ -429,7 +437,7 @@ await ok('D12: without a terminal --report-outcome stores host_reported (reporte
   const dir = fresh(); const env = { E3D_CALIBRATION_DIR: dir };
   seed(dir, 3, [], {}, Date.now());
   let r = cli(['--report-outcome', uid(1), '--result', 'worked', '--json'], env); assert.equal(r.rc, 0, r.err); let j = JSON.parse(r.out);
-  assert.equal(j.outcome.tier, 'host_reported'); assert.equal(j.outcome.reported_by, 'host');
+  assert.equal(j.outcome.tier, 'host_reported'); assert.equal(j.outcome.reported_by, 'host'); assert.match(r.err, /not run at a terminal, so the outcome is stored as host-reported/);
   r = cli(['--report-outcome', uid(1), '--result', 'failed'], env); assert.equal(r.rc, 0); assert.match(r.out, /host_reported.*not run at a terminal, so it is stored as host-reported/);
   r = ttyCli(['--report-outcome', uid(2), '--result', 'worked', '--json'], env); assert.equal(r.rc, 0, r.out); assert.equal(ttyJson(r.out).outcome.tier, 'user_marked'); // a terminal: user-marked, and it may follow host-reported
   r = cli(['--report-outcome', uid(2), '--result', 'failed', '--json'], env); assert.equal(r.rc, 1); assert.equal(JSON.parse(r.out).error.code, 'skill_outcome_conflict'); // piped cannot replace user-marked
@@ -437,9 +445,23 @@ await ok('D12: without a terminal --report-outcome stores host_reported (reporte
   r = cli(['--delete-outcome', uid(1), '--json'], env); assert.equal(r.rc, 1); assert.equal(JSON.parse(r.out).error.code, 'skill_scope_denied'); assert.match(r.err, /needs a terminal/);
   assert.equal(readFileSync(join(dir, 'outcomes.jsonl'), 'utf8'), before, 'a refused deletion writes nothing');
   // stdin a terminal is not enough: stdout must be one too (and the other way round)
+  needTty();
   const half = spawnSync('script', process.platform === 'darwin' ? ['-q', '/dev/null', 'sh', '-c', `"$0" "$@" > ${JSON.stringify(join(dir, 'half.out'))}`, BIN, '--report-outcome', uid(3), '--result', 'worked', '--json'] : ['-qec', `${BIN} --report-outcome ${uid(3)} --result worked --json > ${join(dir, 'half.out')}`, '/dev/null'], { env: { PATH: process.env.PATH, HOME: join(T, 'home'), E3D_CALIBRATION_V1: '1', ...env }, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
   assert.equal(half.status, 0, half.stdout); assert.equal(JSON.parse(readFileSync(join(dir, 'half.out'), 'utf8')).outcome.tier, 'host_reported');
+});await ok('D12: stdin piped while stdout is a terminal is not a terminal: host_reported, never over user-marked, no deletion', () => {
+  const dir = fresh(); const env = { E3D_CALIBRATION_DIR: dir };
+  seed(dir, 3, [], {}, Date.now());
+  needTty();
+  assert.equal(ttyJson(ttyCli(['--report-outcome', uid(2), '--result', 'worked', '--json'], env).out).outcome.tier, 'user_marked');
+  reportOutcome(dir, { use_id: uid(1), result: 'worked', tier: 'host_reported', reported_by: 'host' }, Date.now());
+  const piped = tty('sh', ['-c', 'printf "" | "$0" "$@"', BIN, '--report-outcome', uid(2), '--result', 'failed', '--json'], { PATH: process.env.PATH, HOME: join(T, 'home'), E3D_CALIBRATION_V1: '1', ...env });
+  assert.equal(piped.rc, 1, piped.out); assert.equal(ttyJson(piped.out).error.code, 'skill_outcome_conflict', 'stdin piped: host_reported, which cannot follow the user-marked outcome of use 2');
+  const pipedNew = tty('sh', ['-c', 'printf "" | "$0" "$@"', BIN, '--report-outcome', uid(3), '--result', 'unknown', '--json'], { PATH: process.env.PATH, HOME: join(T, 'home'), E3D_CALIBRATION_V1: '1', ...env });
+  assert.equal(pipedNew.rc, 0, pipedNew.out); assert.equal(ttyJson(pipedNew.out).outcome.tier, 'host_reported', 'stdin piped, stdout a terminal: host_reported');
+  const pipedDel = tty('sh', ['-c', 'printf "" | "$0" "$@"', BIN, '--delete-outcome', uid(1), '--json'], { PATH: process.env.PATH, HOME: join(T, 'home'), E3D_CALIBRATION_V1: '1', ...env });
+  assert.equal(pipedDel.rc, 1, pipedDel.out); assert.equal(ttyJson(pipedDel.out).error.code, 'skill_scope_denied');
 });
+
 await ok('a bare skill name that matches two skills is refused, and a full id picks one', () => {
   const dir = fresh(); const env = { E3D_CALIBRATION_DIR: dir };
   registerUse(dir, mkUse(1)); registerUse(dir, mkUse(2, { skill: { ...SKILL, id: 'skill.local_user.skeptic' } }));
@@ -804,4 +826,6 @@ await ok('wording: no banned word in any output the commands print, in the usage
   for (const w of ['it is effective', 'a proven skill', 'verified to improve results', 'the best skill', 'rank', 'a score', 'memory', 'learning', 'truth', 'audit trail', 'governance', 'knowledge base', 'better outcomes', 'accurate']) assert.ok(BANNED.test(w), w); // the pattern itself bites
 });
 
-console.log(`calibration-local: ${n} cases ok`);
+if (skipped.length) console.error(`calibration-local: ${skipped.length} case(s) SKIPPED (no pseudo-terminal helper): ${skipped.join('; ')}`);
+if (failures.length) { console.error(`calibration-local: ${failures.length} case(s) failed: ${failures.join('; ')}`); process.exit(1); }
+console.log(`calibration-local: ${n} cases ok${skipped.length ? `, ${skipped.length} skipped` : ''}`);

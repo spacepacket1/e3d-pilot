@@ -13,6 +13,15 @@ export function tty(cmd, args, env) {
   return { rc: r.status, out: clean(r.stdout || '') };
 }
 
+// Whether the helper can give a command a terminal on this machine (checked once). When it cannot, the TTY cases SKIP with a message; they never pass vacuously.
+export class TtySkip extends Error {}
+let avail = null;
+export function ttyAvailable() {
+  if (avail === null) { try { const r = tty('sh', ['-c', 'test -t 0 && test -t 1 && echo TTY-OK'], { PATH: process.env.PATH }); avail = r.rc === 0 && r.out.includes('TTY-OK'); } catch { avail = false; } }
+  return avail;
+}
+export function needTty() { if (!ttyAvailable()) throw new TtySkip(`the \`script\` helper cannot allocate a pseudo-terminal here (${process.platform}); the terminal (D12) cases were not run`); }
+
 export function ttyJson(out) {
   const end = out.lastIndexOf('}');
   for (let start = out.lastIndexOf('{', end); start >= 0; start = out.lastIndexOf('{', start - 1)) {
@@ -24,6 +33,7 @@ export function ttyJson(out) {
 // node tty.mjs <cmd> <args...>: the same, for shell tests; prints the cleaned output and exits with the command's status
 if (process.argv[1] && import.meta.url.endsWith(process.argv[1].split('/').pop())) {
   const [cmd, ...args] = process.argv.slice(2);
+  if (cmd === '--available') process.exit(ttyAvailable() ? 0 : 1);
   const r = tty(cmd, args, process.env);
   process.stdout.write(r.out);
   process.exit(r.rc ?? 1);

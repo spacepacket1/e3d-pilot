@@ -200,8 +200,9 @@ Skills (off unless E3D_SKILLS_V1=1; docs/skills/). Pure local commands: no model
   --diff-skill <id|name|folder> <id|name|folder>   field-level difference and whether the definition hashes agree (exit 3 when they differ)
 Calibration (off unless E3D_CALIBRATION_V1=1; docs/skills.md). Local only: no model, no network. A track record describes what was recorded.
   --skill-record <id|name> [--skill-version V] [--skill-hash H] [--task-class C] [--skill-mode M] [--model-family F] [--json]
-  --report-outcome <use_id> --result worked|failed|unknown [--json]   a later report for the same use supersedes the earlier one
-  --my-calibration [--json]   --delete-outcome <use_id> [--json]   --compact-calibration [--json]
+  --report-outcome <use_id> --result worked|failed|unknown [--json]   a later report for the same use supersedes the earlier one;
+                              user-marked only when stdin and stdout are a terminal, otherwise host-reported
+  --my-calibration [--json]   --delete-outcome <use_id> [--json] (needs a terminal)   --compact-calibration [--json]
 Observer (E3D_SKILLS_V1=1 and E3D_SKILLS_OBSERVER=1; docs/skills.md):
   --observer <id|name>[@version][#sha256:hash][:provider]   one read-only call after the verdict, by a skill with the hook debate_observer/after_synthesis; writes
                               observer-<skill>.md and an `observers` block, never changes the verdict (stdout is untouched; the report goes to stderr and the files);

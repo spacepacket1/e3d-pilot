@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Calibration CLI: `--report-outcome` stores a user-marked outcome only when stdin and stdout are a terminal; from a pipe, a file or an agent's shell it stores a host-reported one, which never replaces a user-marked outcome. `--delete-outcome` needs a terminal. This labels who marked it; it is not a security boundary.
+
 ## 0.3.0 (preview)
 
 Local skills, opt-in and off by default. With no switch set, behaviour is the same as 0.2.0 for skills; this release also contains the other engine changes merged since 0.2.0 (see the git history since the `v0.2.0` tag).
