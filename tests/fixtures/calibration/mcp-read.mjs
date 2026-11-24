@@ -39,7 +39,7 @@ const cases = [];
 const test = (name, fn) => cases.push([name, fn]);
 const tmp = () => mkdtempSync(join(tmpdir(), 'cal-mcp-read-'));
 const mk = (dir, over = {}) => createCalibrationRead({ env: { E3D_CALIBRATION_DIR: dir }, ...over });
-const call = (r, tool, args = {}, ctx = { principal: 'local' }) => r.handlers[tool](args, null, ctx);
+const call = (r, tool, args = {}, ctx = { principal: 'local', hosted: false }) => r.handlers[tool](args, null, ctx);
 const rec = (r, args) => call(r, 'e3d_skill_record', args);
 const allText = (res) => `${res.content.map((c) => c.text).join('\n')}\n${JSON.stringify(res.structuredContent)}`;
 const errCode = (res) => res.structuredContent?.error?.code;
@@ -71,8 +71,8 @@ test('config: refuses the HTTP server itself, even with every other flag set', (
   assert.equal(calibrationMcpFrom({}, { http: true }).ok, true, 'off on HTTP is fine');
 });
 test('principal: only the local principal on a stdio connection', () => {
-  assert.equal(principalOk({ principal: 'local' }), true); assert.equal(principalOk({}), true);
-  assert.equal(principalOk({ principal: 'alice' }), false); assert.equal(principalOk({ principal: 'local', hosted: true }), false);
+  assert.equal(principalOk({ principal: 'local', hosted: false }), true);
+  for (const c of [undefined, null, {}, { principal: 'local' }, { hosted: false }, { principal: 'alice', hosted: false }, { principal: 'local', hosted: true }, { principal: 'local', hosted: 'false' }, { principal: 'local', hosted: undefined }, 'local']) assert.equal(principalOk(c), false, JSON.stringify(c));
 });
 
 // ---- the tools' descriptions and annotations -----------------------------------------------------------------------------------------------------------
@@ -140,6 +140,19 @@ test('10 or more user-marked: the rate and interval, in the unchanged describeRe
   assert.match(row.text, /in your 12 resolved uses, 9 were marked worked \(approximate 95% interval \d+% to \d+%\)/);
   assert.equal(res.content[0].text.includes(row.text), true);
 });
+test('D10: the rate covers user-marked and verified outcomes only, 10 user-marked plus 90 host-reported', async () => {
+  const d = tmp(); fill(d, [...rep(10, 'user_marked', 7), ...rep(90, 'host_reported', 90)]); const r = mk(d);
+  const res = await rec(r, { skill: 'skeptic' }); const row = res.structuredContent.records[0];
+  assert.equal(row.rate_shown, true); assert.equal(row.n_resolved, 10); assert.equal(row.n_resolved_all_sources, 100);
+  assert.equal(row.success.count, 7); assert.equal(row.success.rate, 0.7);
+  const only = null; const d2 = tmp(); fill(d2, rep(10, 'user_marked', 7));
+  assert.deepEqual(row.success, (await rec(mk(d2), { skill: 'skeptic' })).structuredContent.records[0].success, 'equals the figure for the user-marked outcomes alone');
+  assert.deepEqual(row.by_tier, { verified: 0, user_marked: 10, host_reported: 90 });
+  assert.match(row.text, /in your 10 resolved uses, 7 were marked worked/); assert.match(row.text, /90 host-reported outcomes are counted beside it and not in it/);
+  assert.doesNotMatch(row.text, /in your 100 resolved/); assert.notEqual(row.success.rate, 0.97);
+  const mine = (await call(r, 'e3d_my_calibration')).structuredContent.skills[0].records[0]; assert.deepEqual(mine.success, row.success);
+});
+test('descriptions say user-marked or verified', () => { for (const t of [RECORD_TOOL, MINE_TOOL]) assert.match(t.description, /user-marked or verified/); });
 test('verified outcomes count toward the 10 like user-marked ones', async () => {
   const d = tmp(); fill(d, [...rep(5, 'user_marked', 4), ...rep(5, 'verified', 4)]); const r = mk(d);
   assert.equal((await rec(r, { skill: 'skeptic' })).structuredContent.records[0].rate_shown, true);
@@ -192,7 +205,7 @@ test('no use_id, timestamp, path, task text or evidence reference in any answer'
 });
 test('row keys are an allowlist', async () => {
   const d = tmp(); fill(d, rep(12, 'user_marked')); fill(d, rep(3, 'user_marked'), { task_class: 'planning' }); fill(d, rep(12, 'host_reported'), { task_class: 'research' }); const r = mk(d);
-  const ok = new Set(['skill', 'task_class', 'mode', 'model_family', 'n_uses', 'n_resolved', 'n_unknown', 'n_inferred', 'corrections', 'by_tier', 'rate_shown', 'success', 'text']);
+  const ok = new Set(['skill', 'task_class', 'mode', 'model_family', 'n_uses', 'n_resolved', 'n_resolved_all_sources', 'n_unknown', 'n_inferred', 'corrections', 'by_tier', 'rate_shown', 'success', 'text']);
   for (const row of (await rec(r, { skill: 'skeptic' })).structuredContent.records) for (const k of Object.keys(row)) assert.ok(ok.has(k), `unexpected field ${k}`);
   assert.deepEqual(Object.keys((await call(r, 'e3d_my_calibration')).structuredContent).sort(), ['notice', 'scope', 'skills', 'unreadable_lines']);
 });
@@ -200,6 +213,15 @@ test('reads write nothing: every store file is byte-identical after the calls', 
   const d = tmp(); fill(d, rep(12, 'user_marked')); const r = mk(d);
   const snap = () => readdirSync(d).sort().map((f) => `${f}:${createHash('sha256').update(readFileSync(join(d, f))).digest('hex')}`).join('|');
   const before = snap(); await call(r, 'e3d_my_calibration'); await rec(r, { skill: 'skeptic' }); await rec(r, { skill: 'nope' }); assert.equal(snap(), before);
+});
+test('echoed slugs are quoted data lines, never bare text', async () => {
+  const d = tmp(); fill(d, rep(12, 'user_marked')); fill(d, rep(3, 'user_marked'), { task_class: 'planning' }); const r = mk(d);
+  for (const res of [await call(r, 'e3d_my_calibration'), await rec(r, { skill: 'skeptic' })]) {
+    const lines = res.content[0].text.split('\n').slice(2);
+    assert.ok(lines.length >= 2);
+    for (const l of lines) { const m = /^\s*(skill|record): (".*")$/.exec(l); assert.ok(m, `not a quoted data line: ${l}`); assert.equal(typeof JSON.parse(m[2]), 'string'); }
+  }
+  assert.match((await rec(r, { skill: 'skeptic' })).content[0].text, /\nrecord: "skill\.e3d\.skeptic 1\.0\.0 on /);
 });
 test('answers carry the notice and the data label', async () => {
   const d = tmp(); fill(d, rep(12, 'user_marked')); const r = mk(d);
@@ -227,9 +249,9 @@ test('invalid input is refused with invalid_request, never a crash', async () =>
   for (const a of [null, 5, 'x', [], undefined]) { const res = await rec(r, a); assert.equal(res.isError, true); }
   assert.ok(!(await call(r, 'e3d_my_calibration', undefined)).isError);
 });
-test('another principal and a hosted connection are refused skill_scope_denied', async () => {
+test('another principal, a hosted connection and a missing context are refused skill_scope_denied', async () => {
   const d = tmp(); fill(d, rep(12, 'user_marked')); const r = mk(d);
-  for (const ctx of [{ principal: 'alice' }, { principal: 'local', hosted: true }]) for (const [t, a] of [['e3d_my_calibration', {}], ['e3d_skill_record', { skill: 'skeptic' }]]) {
+  for (const ctx of [{ principal: 'alice', hosted: false }, { principal: 'local', hosted: true }, null, {}, { principal: 'local' }]) for (const [t, a] of [['e3d_my_calibration', {}], ['e3d_skill_record', { skill: 'skeptic' }]]) {
     const res = await call(r, t, a, ctx); assert.equal(res.isError, true); assert.match(res.content[0].text, /skill_scope_denied/); assert.doesNotMatch(allText(res), /resolved|marked/);
   }
 });
