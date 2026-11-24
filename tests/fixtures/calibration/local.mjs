@@ -8,6 +8,7 @@ import { appendFileSync, chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync
 import { hostname, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { tty, ttyJson } from './tty.mjs';
 import { BIN_MIN, MIN_RESOLVED, calibrationBlock, computeTrackRecord, describeRecord, round4, wilson95 } from '../../../lib/calibration/record.mjs';
 import { MAX_FILE, appendLine, appendOutcome, compact, deleteOutcome, getUse, newUse, registerUse, reportOutcome, stateDir, trackRecords, validateOutcome, validateTrackRecord } from '../../../lib/calibration/store.mjs';
 
@@ -33,6 +34,8 @@ function seed(dir, count, outcomes = [], over = {}, now = NOW) {
   outcomes.forEach(([result, tier = 'user_marked'], k) => reportOutcome(dir, { use_id: uid(k + 1), result, tier, reported_by: tier === 'host_reported' ? 'host' : 'user', evidence_ref: tier === 'verified' ? { type: 'artifact', id: 'art_01abcd', digest: HASH } : null }, now));
 }
 const lines = (dir, f) => readFileSync(join(dir, f), 'utf8').split('\n').filter(Boolean);
+// the same command under a pseudo-terminal (D12: user_marked and deletion only at a terminal); output is the terminal's, stdout and stderr mixed
+const ttyCli = (args, env = {}) => tty(BIN, args, { PATH: process.env.PATH, HOME: join(T, 'home'), E3D_CALIBRATION_V1: '1', ...env });
 const cli = (args, env = {}) => {
   const r = spawnSync(BIN, args, { env: { PATH: process.env.PATH, HOME: join(T, 'home'), E3D_CALIBRATION_V1: '1', ...env }, encoding: 'utf8' });
   return { rc: r.status, out: r.stdout, err: r.stderr };
@@ -399,9 +402,10 @@ await ok('every command, with --json: record, report, mine, delete, compact; err
   assert.equal(r.rc, 0, r.err); assert.match(r.out, /in your 10 resolved uses, 7 were marked worked \(approximate 95% interval 39% to 90%\); 83% of 12 uses were marked worked or failed/); assert.match(r.out, /not a claim about the skill/);
   r = cli(['--skill-record', 'skeptic', '--skill-version', '9.9.9', '--json'], env); assert.equal(r.rc, 1); assert.equal(JSON.parse(r.out).error.code, 'skill_not_found'); assert.match(r.err, /^error: skill_not_found: /);
   r = cli(['--skill-record', 'nonesuch'], env); assert.equal(r.rc, 1); assert.match(r.err, /skill_not_found/);
-  r = cli(['--report-outcome', uid(11), '--result', 'worked', '--json'], env); assert.equal(r.rc, 0, r.err); j = JSON.parse(r.out); assert.equal(j.status, 'recorded'); assert.equal(j.outcome.tier, 'user_marked'); assert.equal(j.outcome.reported_by, 'user'); assert.equal(j.superseded, null);
-  r = cli(['--report-outcome', uid(11), '--result', 'worked', '--json'], env); assert.equal(JSON.parse(r.out).status, 'unchanged');
-  r = cli(['--report-outcome', uid(11), '--result', 'failed'], env); assert.equal(r.rc, 0); assert.match(r.out, /supersedes out_/);
+  r = ttyCli(["--report-outcome", uid(11), "--result", "worked", "--json"], env); assert.equal(r.rc, 0, `[${r.out}]`); j = ttyJson(r.out); assert.equal(j.status, 'recorded'); assert.equal(j.outcome.tier, 'user_marked'); assert.equal(j.outcome.reported_by, 'user'); assert.equal(j.superseded, null);
+  r = cli(['--report-outcome', uid(11), '--result', 'worked', '--json'], env); assert.equal(r.rc, 1); assert.equal(JSON.parse(r.out).error.code, 'skill_outcome_conflict'); // not a terminal: host_reported, which never follows user-marked
+  r = ttyCli(['--report-outcome', uid(11), '--result', 'worked', '--json'], env); assert.equal(ttyJson(r.out).status, 'unchanged');
+  r = ttyCli(['--report-outcome', uid(11), '--result', 'failed'], env); assert.equal(r.rc, 0); assert.match(r.out, /supersedes out_/);
   assert.equal(JSON.parse(cli(['--skill-record', 'skeptic', '--json'], env).out).records[0].n_resolved, 11);
   r = cli(['--report-outcome', 'use_nope0001', '--result', 'worked', '--json'], env); assert.equal(r.rc, 1); assert.equal(JSON.parse(r.out).error.code, 'skill_use_not_found');
   r = cli(['--report-outcome', uid(12), '--result', 'maybe', '--json'], env); assert.equal(r.rc, 1); assert.equal(JSON.parse(r.out).error.code, 'skill_outcome_invalid');
@@ -410,16 +414,31 @@ await ok('every command, with --json: record, report, mine, delete, compact; err
   r = cli(['--my-calibration', '--json'], env); j = JSON.parse(r.out); assert.equal(r.rc, 0); assert.equal(j.principal, 'local'); assert.equal(j.skills.length, 1); assert.equal(j.skills[0].skill, SKILL.id);
   assert.equal(j.skills[0].records.length, 1); assert.equal(j.skills[0].records[0].n_uses, 13); // the use of 120 days ago is in the same stratum
   r = cli(['--my-calibration'], env); assert.match(r.out, /^skill\.e3d\.skeptic/m); assert.match(r.out, /not a claim about the skill/);
-  r = cli(['--delete-outcome', uid(11), '--json'], env); assert.equal(JSON.parse(r.out).status, 'deleted');
+  r = ttyCli(['--delete-outcome', uid(11), '--json'], env); assert.equal(ttyJson(r.out).status, 'deleted');
   assert.equal(JSON.parse(cli(['--skill-record', 'skeptic', '--json', '--task-class', 'architecture-review', '--skill-mode', 'debate_seat'], env).out).records.length, 1);
-  for (const u of [uid(1), uid(2)]) cli(['--delete-outcome', u], env);
+  for (const u of [uid(1), uid(2)]) assert.equal(ttyCli(['--delete-outcome', u], env).rc, 0);
   r = cli(['--skill-record', 'skeptic', '--json'], env); j = JSON.parse(r.out);
   assert.equal(r.rc, 1); assert.equal(j.error.code, 'skill_record_insufficient'); assert.deepEqual(j.records, []); assert.equal(j.insufficient[0].n_resolved, 8); assert.equal(j.insufficient[0].n_uses, 13); assert.ok(!JSON.stringify(j).includes('"rate"'));
   assert.match(r.err, /skill_record_insufficient/); assert.match(r.err, /8 of 10 needed; 13 uses recorded/);
   r = cli(['--my-calibration'], env); assert.equal(r.rc, 0); assert.match(r.out, /not enough resolved outcomes \(8 of 10 needed; 13 uses recorded; 0 marked unknown\)/);
   r = cli(['--compact-calibration', '--json'], env); j = JSON.parse(r.out); assert.equal(j.ok, true); assert.ok(j.outcomes_dropped >= 3);
   r = cli(['--compact-calibration'], env); assert.match(r.out, /^kept \d+ uses and \d+ outcomes; dropped 0 uses, 0 outcomes and 0 unreadable lines\n$/);
-  r = cli(['--delete-outcome', 'use_nope0001', '--json'], env); assert.equal(r.rc, 1); assert.equal(JSON.parse(r.out).error.code, 'skill_use_not_found');
+  r = ttyCli(['--delete-outcome', 'use_nope0001', '--json'], env); assert.equal(r.rc, 1); assert.equal(ttyJson(r.out).error.code, 'skill_use_not_found');
+});
+await ok('D12: without a terminal --report-outcome stores host_reported (reported_by host), never over a user-marked outcome, and --delete-outcome is refused', () => {
+  const dir = fresh(); const env = { E3D_CALIBRATION_DIR: dir };
+  seed(dir, 3, [], {}, Date.now());
+  let r = cli(['--report-outcome', uid(1), '--result', 'worked', '--json'], env); assert.equal(r.rc, 0, r.err); let j = JSON.parse(r.out);
+  assert.equal(j.outcome.tier, 'host_reported'); assert.equal(j.outcome.reported_by, 'host');
+  r = cli(['--report-outcome', uid(1), '--result', 'failed'], env); assert.equal(r.rc, 0); assert.match(r.out, /host_reported.*not run at a terminal, so it is stored as host-reported/);
+  r = ttyCli(['--report-outcome', uid(2), '--result', 'worked', '--json'], env); assert.equal(r.rc, 0, r.out); assert.equal(ttyJson(r.out).outcome.tier, 'user_marked'); // a terminal: user-marked, and it may follow host-reported
+  r = cli(['--report-outcome', uid(2), '--result', 'failed', '--json'], env); assert.equal(r.rc, 1); assert.equal(JSON.parse(r.out).error.code, 'skill_outcome_conflict'); // piped cannot replace user-marked
+  const before = readFileSync(join(dir, 'outcomes.jsonl'), 'utf8');
+  r = cli(['--delete-outcome', uid(1), '--json'], env); assert.equal(r.rc, 1); assert.equal(JSON.parse(r.out).error.code, 'skill_scope_denied'); assert.match(r.err, /needs a terminal/);
+  assert.equal(readFileSync(join(dir, 'outcomes.jsonl'), 'utf8'), before, 'a refused deletion writes nothing');
+  // stdin a terminal is not enough: stdout must be one too (and the other way round)
+  const half = spawnSync('script', process.platform === 'darwin' ? ['-q', '/dev/null', 'sh', '-c', `"$0" "$@" > ${JSON.stringify(join(dir, 'half.out'))}`, BIN, '--report-outcome', uid(3), '--result', 'worked', '--json'] : ['-qec', `${BIN} --report-outcome ${uid(3)} --result worked --json > ${join(dir, 'half.out')}`, '/dev/null'], { env: { PATH: process.env.PATH, HOME: join(T, 'home'), E3D_CALIBRATION_V1: '1', ...env }, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  assert.equal(half.status, 0, half.stdout); assert.equal(JSON.parse(readFileSync(join(dir, 'half.out'), 'utf8')).outcome.tier, 'host_reported');
 });
 await ok('a bare skill name that matches two skills is refused, and a full id picks one', () => {
   const dir = fresh(); const env = { E3D_CALIBRATION_DIR: dir };
