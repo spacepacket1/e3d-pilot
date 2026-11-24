@@ -9,6 +9,7 @@ What the skills work must not change, and the tests that pin it. All determinist
 | The ten built-in experts: name, version, content hash, lens bytes, tools none, tasks, model hints; the four presets | `tests/skills-compat.sh` against `tests/fixtures/skills/expert-baseline.json` |
 | Folder rules: symlinks, size, unknown fields, scripts never run | `tests/specialists-loader.sh`, `tests/specialists-catalogue.sh` |
 | MCP tool names with every flag unset, and with `E3D_MCP_EXPERTS=1`; no tool mentions "skill" until the skills phases ship | `tests/skills-compat.sh` against `tests/fixtures/skills/mcp-tools-baseline.json` |
+| The FULL MCP `initialize` result (without `serverInfo.version`, so a release bump does not fail the test), the full `tools/list` and the server's stderr, for every combination of `E3D_MCP_SKILLS`, `E3D_CALIBRATION_V1` and `E3D_CALIBRATION_MCP` (calibration phase 3) | `tests/skills-compat.sh` against `tests/fixtures/skills/mcp-full-baseline.json`; regenerate on purpose with `bash tests/skills-compat.sh --write-full` (names baseline: `--write-tools`) and say so in the PR |
 | Experts over MCP, hosted run fields, agent `experts`, chat skills | `tests/mcp-experts-read.sh`, `tests/mcp-experts-run.sh`, `tests/mcp-experts-agent.sh`, `tests/mcp-chat-tool.sh` |
 | Schemas and fixtures | `tests/skills-schemas.sh` |
 
