@@ -39,6 +39,7 @@ import { chooseVoices, independence, isSampling } from '../lib/mcp/voices.js';
 import { startHttpServer } from '../lib/mcp/http.js';
 import { createSlots } from '../lib/mcp/slots.js';
 import { createUsage, usageFromTranscript, worstCase, skillsExtra, usageTool, usageHandler } from '../lib/mcp/usage.js';
+import { observerResult } from '../lib/skills/observer-result.mjs';
 import { webSearchConfig, sanitizeText, cleanUrl, hostOf, API_PROVIDERS, PRIVACY_NOTICE, searchAvailability, stripAnswerPrefix } from '../lib/debate/websearch.mjs';
 import { createExternalAuth, validateConfig as validateAuthConfig, canonicalJson } from '../lib/mcp/external-auth.js';
 import { intakeSkill, intakeDigest } from '../lib/skills/intake.mjs';
@@ -739,7 +740,10 @@ async function executeDebate(plan, handle, ctx, { progress, onStarted, signal } 
     const parsed = parseVerdict(r.out);
     const verdict = applySeatLabel(parsed && webSearch.enabled ? sanitizeVerdict(parsed, clean) : parsed, seats);
     // Every outcome settles what actually ran (no transcript = zero calls = release).
-    const outcome = r.cancelled ? 'error' : r.timedOut ? 'timeout' : (r.code !== 0 || !verdict ? 'error' : 'ok');
+    // A stop (the listener's timeout or a cancel) that arrives while a hosted observer is running does not fail a debate whose verdict is complete: bin/e3d-debate ends only the observer and
+    // exits 0 with the verdict printed (VERDICT_DONE). A stop before the verdict still exits non-zero and is classified exactly as before. Only a run with an observer is read this way.
+    const stoppedAfterVerdict = Boolean(sk?.observer) && Boolean(r.timedOut || r.cancelled) && r.code === 0 && Boolean(verdict);
+    const outcome = stoppedAfterVerdict ? 'ok' : r.cancelled ? 'error' : r.timedOut ? 'timeout' : (r.code !== 0 || !verdict ? 'error' : 'ok');
     const { roundsRan, positions: rawPositions } = parsePositions(transcript);
     // the answer only: the source list and notices ride in the transcript (data for later rounds) and in web_search, not in the position
     const positions = rawPositions.map((p) => ({ ...p, text: clean(stripAnswerPrefix(p.text)) }));
@@ -783,6 +787,8 @@ async function executeDebate(plan, handle, ctx, { progress, onStarted, signal } 
       ...(verdict.claims ? { claims: verdict.claims.map(({ adjusted, ...c }) => c) } : {}),
       ...(verdict.hypotheses ? { hypotheses: verdict.hypotheses } : {}),
       ...(seats?.consensus_note ? { consensus_note: seats.consensus_note } : {}),
+      // a hosted observer's outcome, from the engine's own files only (lib/skills/observer-result.mjs): additive, bounded, plain text
+      ...(sk?.observer ? { observer: observerResult({ outDir: join(dir, 'out'), slug: sk.observer.slug, maxOutputBytes: sk.observer.maxOutputBytes }) } : {}),
     } : null;
     // With finalize, the service stores the result with the charge.
     const finalizeMeta = handle.finalize ? { transcript: transcript || null, finished_at: Date.now(), result: stored } : {};
@@ -1583,7 +1589,7 @@ function skillsPlan(skills, providers) {
     } else {
       // the observer's usage row is keyed observer:<name>; billing drops a key it cannot read, so a name that does not fit is refused up front
       if (!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(d.id.split('.').slice(2).join('.'))) return refuse('the observer skill name is longer than 64 characters or has a character the usage report cannot carry (skill_schema_value)');
-      observer = { spec, provider: skills.observer.provider, maxTokens: skills.observer.max_tokens, inputBytes: skills.observer.input_bytes };
+      observer = { spec, provider: skills.observer.provider, maxTokens: skills.observer.max_tokens, inputBytes: skills.observer.input_bytes, slug: d.id.split('.').slice(2).join('.'), maxOutputBytes: d.limits?.max_output_bytes };
     }
   }
   // the instruction bytes the quote priced: the sum over the distinct skills of the run (a skill that is a seat and the observer counts once)

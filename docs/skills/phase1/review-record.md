@@ -177,6 +177,20 @@ Reviewer: an independent read-only Sonnet agent, with scenario runs and mutation
 | Stale help text for `--specialist` and `--fill-pool` | nit | Fixed |
 | Suggestion to simplify the condition to `--fill-pool` plus one request | nit | Not taken: a lone `--specialist` is also one request, so the explicit clauses are needed (the test that caught this stays) |
 
+## Phase 3c H2d (observer outcome forwarding and stop handling) independent review, 2026-11-23
+
+Reviewer: an independent read-only Sonnet agent, with stop-ordering runs (TERM, INT, HUP, bursts, process-group signals during a hung observer after the verdict) and mutations. No blocker. The stop handling verified: stdout identical with and without an observer, the observer's usage row present, no process left behind, a stop before the verdict unchanged (exit 143).
+
+| Finding | Class | Outcome |
+| --- | --- | --- |
+| S1: the report sanitiser's markup patterns are quadratic on a hostile reply (`![a](` plus 64 KB of spaces took 4 to 8 s and would stall the whole listener) | should fix | Fixed: the report is cut to its cap before sanitising, and again after; test with three hostile leads, under 1.5 s |
+| S2: the swallow-the-stop rule after the verdict applied to every per-token run, so a wedged post-verdict step in a run WITHOUT an observer could outlive the listener's timeout | should fix | Fixed: it applies only to a run with an observer; a seat-only run stopped after its verdict stays a timeout with no result (test with a wrapper that hangs after the engine exits) |
+| Nits: stale comments about a cancel; the position overhead constant had zero slack and its test skipped the duplicate-name suffix | nit | Fixed: comments, constant 80 to 100, test with 16 duplicate names |
+| Sync (non-async) run path would double-report if it ever got observers | nit | Not reachable (hosted skills only use the async path); noted |
+| Survivors: an untested "swallow stop" branch when a stop arrives between the verdict and the call; a reused output directory with a stale skip file | nit | Accepted: the first is covered by code reading and the engine's own skip file, the second cannot occur (the listener uses a fresh directory per run) |
+
+The markup the report may still contain (`<`, `>`, HTML entities, a bare URL) is plain text: the cloud must escape it when it renders it.
+
 ## Calibration phase 2 (local capture) independent reviews, 2026-11-23
 
 Two read-only Opus reviews (statistics and store security, then a re-check of the fix commit) plus the builder's own mutation runs.

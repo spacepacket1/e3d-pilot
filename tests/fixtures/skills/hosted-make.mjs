@@ -14,7 +14,7 @@ export function makeHosted(principal, spec) {
     return spec.map((s) => {
       const dir = join(T, s.name); mkdirSync(join(dir, 'e3d'), { recursive: true });
       writeFileSync(join(dir, 'SKILL.md'), `---\nname: ${s.name}\ndescription: A hosted skill for tests.\nlicense: MIT\n---\n${s.body}\n`);
-      writeFileSync(join(dir, 'e3d', 'skill.json'), JSON.stringify({ version: '1.0.0', capability_level: 'instructional', hooks: s.hooks.map((h) => HOOKS[h]), input_schema_ref: 'e3d://schemas/debate-receipt/v1', output_schema_ref: 'e3d://schemas/observer-report/v1', limits: { max_input_bytes: 64000, max_output_bytes: 1000, max_model_calls: s.hooks.includes('observer') ? 1 : 0, max_tool_calls: 0, timeout_ms: s.timeout_ms || 60000 }, fallback: { on_unavailable_capability: 'fail', on_invalid_output: s.on_invalid_output || 'return_unstructured_with_warning' } }));
+      writeFileSync(join(dir, 'e3d', 'skill.json'), JSON.stringify({ version: '1.0.0', capability_level: 'instructional', hooks: s.hooks.map((h) => HOOKS[h]), input_schema_ref: 'e3d://schemas/debate-receipt/v1', output_schema_ref: 'e3d://schemas/observer-report/v1', limits: { max_input_bytes: 64000, max_output_bytes: s.max_output_bytes || 1000, max_model_calls: s.hooks.includes('observer') ? 1 : 0, max_tool_calls: 0, timeout_ms: s.timeout_ms || 60000 }, fallback: { on_unavailable_capability: 'fail', on_invalid_output: s.on_invalid_output || 'return_unstructured_with_warning' } }));
       const r = skillFromFolder(dir, { root: T, tier: 'user' });
       if (!r.ok) throw new Error(JSON.stringify(r.errors));
       const d = structuredClone(r.definition);
