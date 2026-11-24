@@ -989,6 +989,20 @@ E3D_SPECIALISTS=1 bin/e3d-debate "Should we ship this?" --suggest-panel   # free
 
 Eight built-in experts and three four-seat presets ship in `lib/specialists`. A panel holds up to 6 experts; with fewer providers than experts the extras share a provider (seats `claude`, `claude.2`, ...), and a panel on fewer than 2 vendor families is refused unless you pass `--min-families 1` (lenses differ, the model does not). `--suggest-panel` is a free, rule-based proposal (it matches words, runs no debate and calls no model); `--show-suggest-rules` lists its table. Experts can be listed over MCP (`E3D_MCP_EXPERTS=1`). On the hosted service, pilot.e3d.ai web debates can use skills (a `Skills` menu or a free `Suggest skills` button on the Ask page; one skill per vendor of the quoted panel, names only in results and the Gallery). **Not built:** passing skills through the `e3d_debate` MCP tool, more skills than vendors on a hosted panel, model-chosen skill selection, users' own skills on the hosted server. Whether skills improve answers has **not been measured**: the plan, the equations and a tested cost model are in the [methodology draft](docs/methodology/expert-councils.md). How to use experts, write your own, and what is refused: [docs/experts.md](docs/experts.md).
 
+### Skills (local preview): manage, pin and record how they went
+
+A skill is a versioned set of instructions with an id, a version and a fingerprint (`definition_hash`) computed from what it says. Skills are perspectives, not measured improvements, and nothing here has been shown to improve answers. Everything is local: no skill command calls a model or the network, nothing is run from a skill folder, and a skill grants no tool, flag or permission.
+
+```
+export E3D_SKILLS=1                      # one switch: skill commands, skills on seats, and the debate observer
+e3d-debate --list-skills                 # built-in skills plus your own folders
+e3d-debate --show-skill skeptic          # the text, the version and the fingerprint
+e3d-debate --validate-skill ./my-skill   # schema, hash and safety checks; nothing is stored
+e3d-debate --export-skill skeptic ./out  # a private local copy to edit
+```
+
+Pin a skill with `--skill-version` and `--skill-hash` (for `--show-skill` and `--skill-record`); a pin that does not match fails before anything runs. With `E3D_SKILLS=1` a skill can sit on one seat (`--seat-skill`, with the experts flags) or review a finished debate once (`--observer`, read-only, one extra model call, it never changes the verdict). `--preview-skills` prints the plan and its digest with no model call. `E3D_SKILLS=1` does not turn on the other switches: calibration (`E3D_CALIBRATION_V1=1`, a local record of uses and outcomes with honest uncertainty; see [docs/skills.md](docs/skills.md#calibration-local)), the read-only MCP skill tools (`E3D_MCP_SKILLS=1`) or anything hosted. A switch set by name wins, so `E3D_SKILLS=1 E3D_SKILLS_OBSERVER=0` keeps observers off. Details, limits and what is refused: [docs/skills.md](docs/skills.md).
+
 ## Running on a schedule
 
 e3d-pilot is deliberately not a daemon — every invocation is a single, short-lived CLI call that runs (or resumes) a stage and exits. There's no built-in scheduler, so "continuous" is up to whatever calls it: cron, a systemd timer, a scheduled CI workflow, or your own orchestrator all work equally well.

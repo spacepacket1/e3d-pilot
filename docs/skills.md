@@ -10,6 +10,7 @@ tool, flag or permission. Skills are perspectives, not measured improvements.
 
 | Switch | Turns on |
 | --- | --- |
+| `E3D_SKILLS=1` | the umbrella for local use: sets `E3D_SPECIALISTS`, `E3D_SKILLS_V1`, `E3D_SKILLS_SEATS` and `E3D_SKILLS_OBSERVER` to 1 for any of them you did not set by name. A switch you set (even to 0) wins. It never turns on calibration, hosted skills or the MCP tools |
 | `E3D_SKILLS_V1=1` | the `--list-skills`, `--show-skill`, `--validate-skill`, `--project-expert`, `--export-skill`, `--diff-skill` commands, and a `skills` block in the receipt of a debate that uses experts |
 | `E3D_CALIBRATION_V1=1` | the local calibration commands (`--skill-record`, `--report-outcome`, `--my-calibration`, `--delete-outcome`, `--compact-calibration`) and a note of each skill use of a receipt in the local store; see [Calibration (local)](#calibration-local) |
 | `E3D_MCP_SKILLS=1` | four read-only MCP tools on the local (stdio) server: `e3d_list_skills`, `e3d_get_skill`, `e3d_validate_skill`, `e3d_export_skill`. Never on the hosted server |
