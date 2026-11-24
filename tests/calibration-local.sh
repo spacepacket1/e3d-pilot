@@ -67,14 +67,22 @@ echo "calibration-local 3 (receipt unchanged, uses noted only with the switch on
 # 4. end to end: report an outcome against a receipt's use_id, read the record, correct it, delete it
 USE="$(jq -r '.skills[0].use_id' "$T/out/decision-log.json")"
 cal 1 --report-outcome "$USE" --result worked --json || fail "report: $(cat "$T/stderr")"
-jq -e '.status == "recorded" and .outcome.tier == "user_marked" and .outcome.use_id == "'"$USE"'"' "$T/stdout" >/dev/null || fail "report output"
+jq -e '.status == "recorded" and .outcome.tier == "host_reported" and .outcome.reported_by == "host" and .outcome.use_id == "'"$USE"'"' "$T/stdout" >/dev/null || fail "report output (not a terminal: host_reported, D12)"
 [[ "$(stat -f %Lp "$CALDIR/outcomes.jsonl" 2>/dev/null || stat -c %a "$CALDIR/outcomes.jsonl")" == 600 ]] || fail "outcomes.jsonl is 0600"
 rc=0; cal 1 --skill-record skeptic --json || rc=$?; [[ $rc -eq 1 || $rc -eq 0 ]] || fail "record"
 jq -e '(.error.code == "skill_record_insufficient") and (.insufficient[0].n_resolved <= 1) and (tostring | test("\"rate\"") | not)' "$T/stdout" >/dev/null || fail "a single outcome is not enough for a record: $(cat "$T/stdout")"
 cal 1 --report-outcome "$USE" --result failed || fail "correction"; grep -q 'supersedes out_' "$T/stdout" || fail "the correction supersedes"
 [[ "$(wc -l < "$CALDIR/outcomes.jsonl" | tr -d ' ')" == 2 ]] || fail "both outcomes stay in the file"
-cal 1 --delete-outcome "$USE" --json || fail "delete"; jq -e '.status == "deleted"' "$T/stdout" >/dev/null || fail "delete output"
-cal 1 --compact-calibration || fail "compact"; [[ "$(wc -l < "$CALDIR/outcomes.jsonl" | tr -d ' ')" == 0 ]] || fail "compact removes the deleted outcomes"
+rc=0; cal 1 --delete-outcome "$USE" --json || rc=$?; [[ $rc -eq 1 ]] || fail "a deletion without a terminal is refused (D12)"; grep -q 'needs a terminal' "$T/stderr" || fail "the refusal says why"
+# under a pseudo-terminal (D12): the deletion goes through. Without a working pseudo-terminal helper this step SKIPS loudly (never passes silently).
+if node "$ROOT/tests/fixtures/calibration/tty.mjs" --available; then
+  env -u E3D_CALIBRATION_V1 E3D_CALIBRATION_V1=1 HOME="$T/home" node "$ROOT/tests/fixtures/calibration/tty.mjs" "$ROOT/bin/e3d-debate" --delete-outcome "$USE" --json > "$T/stdout" || fail "delete at a terminal"
+  grep -q '"status": "deleted"' "$T/stdout" || fail "delete output: $(cat "$T/stdout")"
+else
+  echo "SKIP: calibration-local 4: the delete at a terminal and the compact check after it were not run (the script helper cannot allocate a pseudo-terminal here)" >&2
+  NO_TTY=1
+fi
+cal 1 --compact-calibration || fail "compact"; [[ -n "${NO_TTY:-}" || "$(wc -l < "$CALDIR/outcomes.jsonl" | tr -d ' ')" == 0 ]] || fail "compact removes the deleted outcomes"
 rc=0; cal 1 --report-outcome use_00000000000000000000 --result worked || rc=$?; [[ $rc -eq 1 ]] || fail "a use never issued is refused"; grep -q skill_use_not_found "$T/stderr" || fail "skill_use_not_found"
 echo "calibration-local 4 (end to end): ok"
 echo "calibration-local: PASS"

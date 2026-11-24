@@ -59,7 +59,7 @@ import { lensBlock } from '../lib/debate/specialists-plan.mjs';
 import { galleryFrom, createGalleryRead, GALLERY_INSTRUCTION } from '../lib/mcp/gallery-read.js';
 import { chatToolFrom, chatQuoteTool, chatTool, createChatHandlers, CHAT_INSTRUCTION } from '../lib/mcp/agent-chat.js';
 import { skillsFrom, SKILLS_INSTRUCTION } from '../lib/mcp/skills-config.js';
-import { calibrationMcpFrom, CALIBRATION_INSTRUCTION } from '../lib/mcp/calibration-config.js';
+import { calibrationMcpFrom, CALIBRATION_INSTRUCTION, unconfirmedFrom } from '../lib/mcp/calibration-config.js';
 import { expertsFrom, expertsAgentFrom, checkAgentExperts, loadCatalogue as loadExpertsCatalogue, createExpertsRead, EXPERTS_INSTRUCTION, EXPERTS_USE_INSTRUCTION } from '../lib/mcp/experts-read.js';
 import { agentModeFrom, agentFieldsOf, AGENT_INSTRUCTIONS, SCHEMA_VERSION as AGENT_SCHEMA_VERSION, IDEMPOTENCY_KEY_RE, QUOTE_ID_RE, agentError, errorResult, reasonError, extendDebateTool, quoteTool, quoteResult, validQuote } from '../lib/mcp/agent.js';
 import { validatePanelConfig, validateRequiredConfig, withRequired, requireAvailable, createPanelClient, checkFamilies, requireFamilies, degrade, explicitPanel, familiesOf } from '../lib/mcp/panel.js';
@@ -109,6 +109,10 @@ const skillsRead = SKILLS_CONFIG.on ? (await import('../lib/mcp/skills-read.js')
 const CALIBRATION_CONFIG = calibrationMcpFrom(process.env, { http: HTTP_MODE, skillsOn: SKILLS_CONFIG.on });
 if (CALIBRATION_CONFIG.ok && CALIBRATION_CONFIG.missing.length) process.stderr.write(`[e3d-mcp] E3D_CALIBRATION_MCP=1 is set but the calibration tools stay off until ${CALIBRATION_CONFIG.missing.join(' and ')} ${CALIBRATION_CONFIG.missing.length === 1 ? 'is' : 'are'} also set\n`);
 const calibrationRead = CALIBRATION_CONFIG.on ? (await import('../lib/mcp/calibration-read.js')).createCalibrationRead() : null;
+// The write side (lib/mcp/calibration-write.js, plan P3-3): e3d_get_skill issues an in-memory use ticket, and e3d_skill_report_use / _report_outcome / _delete_outcome
+// write only after the user confirms in an MCP elicitation. Same three flags; loaded only when they are all on. E3D_CALIBRATION_MCP_UNCONFIRMED is read only then.
+const CALIBRATION_UNCONFIRMED = CALIBRATION_CONFIG.on ? unconfirmedFrom(process.env) : { ok: true, errors: [], on: false };
+const calibrationWrite = CALIBRATION_CONFIG.on && CALIBRATION_UNCONFIRMED.ok ? (await import('../lib/mcp/calibration-write.js')).createCalibrationWrite({ unconfirmed: CALIBRATION_UNCONFIRMED.on }) : null;
 const expertsRead = EXPERTS_CONFIG.on ? createExpertsRead({ builtinDir: fileURLToPath(new URL('../lib/specialists', import.meta.url)), use: AGENT_EXPERTS_ON }) : null;
 // The version comes from package.json, so a development build (0.2.0-dev.N) reports itself correctly.
 const PKG_VERSION = (() => { try { return JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).version; } catch { return '0.0.0-unknown'; } })();
@@ -1336,7 +1340,7 @@ const sampling = createSampling({ rpc, log });
 const stdioConn = { send, session: { clientInfo: null, capabilities: {}, rootsReady: null }, principal: process.env.E3D_MCP_PRINCIPAL || 'local', rpc, hosted: false, allowed: null };
 const newHttpConn = (principal, allowed) => ({ send: () => {}, session: { clientInfo: null, capabilities: {}, rootsReady: null }, principal, rpc: null, hosted: true, allowed });
 const actions = createPipelineActions({ guard, jobs, base: pipeline, usage });
-TOOLS.push(...pipeline.tools, ...actions.tools, usageTool, ...(galleryRead ? [galleryRead.tool] : []), ...(expertsRead ? expertsRead.tools : []), ...(skillsRead ? skillsRead.tools : []), ...(calibrationRead ? calibrationRead.tools : []));
+TOOLS.push(...pipeline.tools, ...actions.tools, usageTool, ...(galleryRead ? [galleryRead.tool] : []), ...(expertsRead ? expertsRead.tools : []), ...(skillsRead ? skillsRead.tools.map((t) => (calibrationWrite && t.name === 'e3d_get_skill' ? calibrationWrite.getTool(t) : t)) : []), ...(calibrationRead ? calibrationRead.tools : []), ...(calibrationWrite ? calibrationWrite.tools : []));
 
 // The client's workspace folders (MCP roots) are the default set of repos the pipeline tools may touch.
 async function refreshRoots(session = stdioConn.session) {
@@ -1364,6 +1368,7 @@ const HANDLERS = {
   ...(expertsRead ? expertsRead.handlers : {}),
   ...(skillsRead ? skillsRead.handlers : {}),
   ...(calibrationRead ? calibrationRead.handlers : {}),
+  ...(calibrationWrite ? { ...calibrationWrite.handlers, e3d_get_skill: calibrationWrite.wrapGet(skillsRead.handlers.e3d_get_skill) } : {}),
   ...createChatHandlers({ client: { agentChatQuote: (b) => pricingClient.agentChatQuote(b), agentChatSend: (b) => pricingClient.agentChatSend(b) }, log }),
 };
 
@@ -1396,7 +1401,7 @@ async function handle(msg, conn = stdioConn) {
         instructions: conn.hosted && AGENT_ON ? [AGENT_INSTRUCTIONS, ...(galleryRead ? [GALLERY_INSTRUCTION] : []), ...(expertsRead ? [AGENT_EXPERTS_ON ? EXPERTS_USE_INSTRUCTION : EXPERTS_INSTRUCTION] : []), ...(CHAT_TOOL_ON ? [CHAT_INSTRUCTION] : [])].join('\n\n')
           : conn.hosted
           ? 'Use e3d_debate for contestable decisions where independent model perspectives and recorded dissent add value; always report its dissent, and never present a split verdict as settled. It uses a shared usage budget (see e3d_usage); do not use it for simple lookups.'
-          : 'Use e3d_debate for contestable decisions where independent model perspectives and recorded dissent add value; always report its dissent. It costs credits; do not use it for simple lookups. The e3d_pilot_* tools run a human-gated pipeline: propose an idea, a human approves it (e3d_pilot_approve tells you how; never approve on your own), e3d_pilot_implement drafts and negotiates a spec and pauses, e3d_pilot_code_plan shows the plan, and only after the user agrees does e3d_pilot_execute write code and open a draft PR. Tools marked FREE spend nothing; tools marked SPENDS MODEL CREDITS do. Merging is never available here.'  + (skillsRead ? ` ${SKILLS_INSTRUCTION}` : '') + (calibrationRead ? ` ${CALIBRATION_INSTRUCTION}` : ''),
+          : 'Use e3d_debate for contestable decisions where independent model perspectives and recorded dissent add value; always report its dissent. It costs credits; do not use it for simple lookups. The e3d_pilot_* tools run a human-gated pipeline: propose an idea, a human approves it (e3d_pilot_approve tells you how; never approve on your own), e3d_pilot_implement drafts and negotiates a spec and pauses, e3d_pilot_code_plan shows the plan, and only after the user agrees does e3d_pilot_execute write code and open a draft PR. Tools marked FREE spend nothing; tools marked SPENDS MODEL CREDITS do. Merging is never available here.'  + (skillsRead ? ` ${SKILLS_INSTRUCTION}` : '') + (calibrationRead ? ` ${CALIBRATION_INSTRUCTION}` : '') + (calibrationWrite ? ` ${calibrationWrite.instruction}` : ''),
       });
     }
     case 'notifications/initialized': if (!conn.hosted) session.rootsReady = refreshRoots(session); return;
@@ -1484,6 +1489,10 @@ if (!SKILLS_CONFIG.ok) {
 }
 if (!CALIBRATION_CONFIG.ok) {
   process.stderr.write(`[e3d-mcp] refusing to start: ${CALIBRATION_CONFIG.errors.join('; ')}\n`);
+  process.exit(2);
+}
+if (!CALIBRATION_UNCONFIRMED.ok) {
+  process.stderr.write(`[e3d-mcp] refusing to start: ${CALIBRATION_UNCONFIRMED.errors.join('; ')}\n`);
   process.exit(2);
 }
 if (!EXPERTS_CONFIG.ok) {

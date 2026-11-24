@@ -319,7 +319,7 @@
       "id"
     ]
   },
-  "skills_calibration_note": "skills_calibration: E3D_MCP_SKILLS=1 E3D_CALIBRATION_V1=1 E3D_CALIBRATION_MCP=1 (calibration phase 3, P3-2)",
+  "skills_calibration_note": "skills_calibration: E3D_MCP_SKILLS=1 E3D_CALIBRATION_V1=1 E3D_CALIBRATION_MCP=1 (calibration phase 3, P3-2 reads and P3-3 writes)",
   "skills_calibration": {
     "e3d_debate": [
       "include_transcript",
@@ -424,6 +424,7 @@
     "e3d_get_skill": [
       "definition_hash",
       "id",
+      "task_class",
       "version"
     ],
     "e3d_validate_skill": [
@@ -439,6 +440,16 @@
       "task_class",
       "version"
     ],
-    "e3d_my_calibration": []
+    "e3d_my_calibration": [],
+    "e3d_skill_report_use": [
+      "use_id"
+    ],
+    "e3d_skill_report_outcome": [
+      "result",
+      "use_id"
+    ],
+    "e3d_skill_delete_outcome": [
+      "use_id"
+    ]
   }
 }
