@@ -29,8 +29,10 @@ mk "$TMP/d-other.json" "u_zzzzzz999999" '[{"name":"lens-a","body":"OTHERMARK-OWN
 mk "$TMP/d-dual2.json" "$P" '[{"name":"dual","body":"DUALMARK-OTHER-TEXT. A second, different definition under the same id.","hooks":["seat","observer"]}]'
 LONGNAME="$(printf 'a%.0s' $(seq 1 70))"
 mk "$TMP/d-long.json" "$P" "[{\"name\":\"longobs\",\"rename\":\"$LONGNAME\",\"body\":\"OBSMARK-LONGNAME. Review.\",\"hooks\":[\"observer\"]}]"
+mk "$TMP/d-rfast.json" "$P" '[{"name":"reviewer","body":"OBSMARK-FAST. Review quickly.","hooks":["observer"],"timeout_ms":1500}]'
+mk "$TMP/d-rbig.json" "$P" '[{"name":"reviewer","body":"OBSMARK-BIG. Review at length.","hooks":["observer"],"max_output_bytes":8000}]'
 def() { jq -c '.skills[0]' "$1"; }
-DA="$(def "$TMP/d-a.json")"; DB="$(def "$TMP/d-b.json")"; DR="$(def "$TMP/d-r.json")"; DUAL="$(def "$TMP/d-dual.json")"; DTOOLS="$(def "$TMP/d-tools.json")"; DOTHER="$(def "$TMP/d-other.json")"; DUAL2="$(def "$TMP/d-dual2.json")"; DLONG="$(def "$TMP/d-long.json")"
+DRFAST="$(def "$TMP/d-rfast.json")"; DRBIG="$(def "$TMP/d-rbig.json")"; DA="$(def "$TMP/d-a.json")"; DB="$(def "$TMP/d-b.json")"; DR="$(def "$TMP/d-r.json")"; DUAL="$(def "$TMP/d-dual.json")"; DTOOLS="$(def "$TMP/d-tools.json")"; DOTHER="$(def "$TMP/d-other.json")"; DUAL2="$(def "$TMP/d-dual2.json")"; DLONG="$(def "$TMP/d-long.json")"
 spec_of() { jq -r '"\(.id)@\(.version)#\(.definition_hash)"' <<< "$1"; }
 SPEC_A="$(spec_of "$DA")"; SPEC_B="$(spec_of "$DB")"; SPEC_R="$(spec_of "$DR")"; SPEC_DUAL="$(spec_of "$DUAL")"
 [[ "$SPEC_A" =~ ^skill\.u_abc123def456\.lens-a@1\.0\.0#sha256:[0-9a-f]{64}$ ]] || fail "unexpected spec $SPEC_A"
@@ -81,7 +83,11 @@ if [[ -n "${WRAP_TAMPER:-}" && -n "$hs" ]]; then jq -c '.skills[0].instructions.
 if [[ -n "${WRAP_HANG:-}" ]]; then trap 'exit 143' TERM; while true; do sleep 0.2; done; fi
 rc=0
 n="$(wc -l < "$WRAP_REC" | tr -d ' ')"
-"$WRAP_REAL" "$@" 2> >(tee "$WRAP_SNAP/err-$n.txt" >&2) || rc=$?
+# like the listener starting the engine directly: a stop (SIGTERM) reaches the real engine, and its exit status is this script's
+"$WRAP_REAL" "$@" 2> >(tee "$WRAP_SNAP/err-$n.txt" >&2) &
+cp=$!
+trap 'kill -TERM "$cp" 2>/dev/null' TERM
+while kill -0 "$cp" 2>/dev/null; do wait "$cp"; rc=$?; done
 [[ -f "$out/usage.json" ]] && cp "$out/usage.json" "$WRAP_SNAP/usage-$n.json"
 exit $rc
 WRAPEOF
@@ -166,6 +172,7 @@ r="$(rpost '{}')"; assert_eq "$(js "$r" | jq -c '.capabilities')" '["per_token_v
 PLAIN_ON="$(body "$PV3" "$LIM3" '[]' 'del(.skill_attachments, .skills_principal, .skill_bytes)')"
 r="$(rpost "$PLAIN_ON")"; assert_eq "$(code "$r")" "202"; wait_run "$(jq -r .debate_id <<< "$PLAIN_ON")" "$(js "$r" | jq -r .run_token)" done
 assert_eq "$(jq -c '[.args, .hs, .env.spec, .env.omax, .env.oin]' <<< "$(lastrec)")" "$(jq -c '[.args, .hs, .env.spec, .env.omax, .env.oin]' <<< "$REC_OFF")" "switch on, no skills: the debate arguments and the variables this listener sets are identical to switch off"
+assert_eq "$(rget "$(jq -r .debate_id <<< "$PLAIN_ON")" "$(js "$r" | jq -r .run_token)" | jq -c '.run.result | has("observer")')" "false" "a plain run has no observer block"
 
 # ---- 1. a seat run: two seat skills on two of three providers, the third a plain seat
 : > "$VREQ"
@@ -183,6 +190,7 @@ assert_eq "$(prompts_with SEATMARK-BETA)" "2" "skill B text reaches its seat in 
 assert_eq "$(prompts_with '[Your role in this debate]')" "4" "only the two skill seats get a lens block; the plain seat and the synthesis do not"
 V1="$(rget "$D1" "$RT1")"
 assert_eq "$(jq -r '.run.outcome' <<< "$V1")" "ok"; leaks "$V1"
+assert_eq "$(jq -c '.run.result | has("observer")' <<< "$V1")" "false" "a seat-only run (no observer) has no observer block"
 assert_eq "$(jq -c '[.run.result.positions[].provider] | sort' <<< "$V1")" '["anthropic-api","openai-api","xai-api"]' "one position per provider"
 echo "ok - a seat run: --hosted-skills/--seat-skill/--fill-pool/--lens-bytes-max, the switches, a 0600 file in a 0700 directory, removed afterwards; each skill text on its own seat only"
 
@@ -205,6 +213,9 @@ jq -e '.[] | select(.key == "observer:reviewer") | .provider == "gemini-api" and
 # what the listener sends to billing: the observer row is kept (a row that fails the listener's own check is logged as "malformed usage row(s) dropped")
 ! grep -q 'malformed usage row' "$TMP/on.log" || fail "the observer row was dropped before the usage report: $(grep 'malformed usage row' "$TMP/on.log")"
 V2="$(rget "$D2" "$RT2")"; leaks "$V2"; assert_eq "$(jq -r '.run.outcome' <<< "$V2")" "ok"
+assert_eq "$(jq -c '.run.result.observer | del(.latency_ms)' <<< "$V2")" '{"status":"ok","code":null,"report":"FINAL ANSWER: ok\nCONSENSUS: split\nDISSENT: none","tokens":{"input":13,"output":17}}' "the observer outcome rides in the run result next to the positions"
+assert_eq "$(jq -c '.run.result.observer | keys' <<< "$V2")" '["code","latency_ms","report","status","tokens"]'
+assert_eq "$(jq -c '.run.result.observer.latency_ms | type' <<< "$V2")" '"number"' 
 HS2="$(jq -r .hs <<< "$R2")"; [[ ! -e "$HS2" && ! -e "$(dirname "$HS2")" ]] || fail "files gone (observer run)"
 echo "ok - a seat run with an observer: --observer skill:gemini-api, the quoted limits (150 tokens, 20000 bytes), one call, usage row observer:reviewer kept for billing's report"
 
@@ -221,7 +232,8 @@ R3b="$(lastrec)"; assert_not_contains "$(jq -r .args <<< "$R3b")" "--seat-skill"
 # a quoted input bound too small for the smallest prompt: the observer is skipped, the debate is unaffected
 : > "$VREQ"
 B3c="$(body "$PV2" "$LIM2" "[$(seat "$DA" anthropic-api), $(seat "$DB" openai-api), $(obsatt "$DR")]")"; B3c="$(jq -c '.observer = {provider:"gemini-api",max_tokens:150,input_bytes:1}' <<< "$B3c")"
-r="$(rpost "$B3c")"; assert_eq "$(code "$r")" "202"; wait_run "$(jq -r .debate_id <<< "$B3c")" "$(js "$r" | jq -r .run_token)" done
+r="$(rpost "$B3c")"; assert_eq "$(code "$r")" "202"; RT3c="$(js "$r" | jq -r .run_token)"; wait_run "$(jq -r .debate_id <<< "$B3c")" "$RT3c" done
+assert_eq "$(rget "$(jq -r .debate_id <<< "$B3c")" "$RT3c" | jq -c '.run.result.observer')" '{"status":"skipped","code":"skill_too_large","report":null,"tokens":null,"latency_ms":null}' "a skipped observer: no call, no tokens"
 assert_eq "$(jq -s '[.[] | select(.body.model == "gem-test")] | length' "$VREQ")" "0" "no observer call when even the smallest prompt does not fit the quoted bound"
 echo "ok - one skill as seat and observer, an observer-only run, and an observer that does not fit its quoted input bound is skipped"
 
@@ -350,4 +362,59 @@ assert_contains "$(cat "$TMP/crash2.log")" "swept 1 stale hosted-skills file"
 rm -rf "$YOUNG"
 echo "ok - the stale private skills file left by a killed process is swept at start (old, private and ours only)"
 rm -rf "$(dirname "$HSC")"
+
+# ---- 9. (H2d) the observer's outcome in the run result, and a stop during the observer
+# one run on a listener started with extra settings: obs_run <server> <observer attachment definition> <ok|failed...> -> view in $OV
+obs_run() { # obs_run <definition json>; uses the current $RUN; sets OD, ORT, OV
+  local b; b="$(body "$PV2" "$LIM2" "[$(seat "$DA" anthropic-api), $(seat "$DB" openai-api), $(obsatt "$1")]")"; b="$(jq -c --argjson o "$OBSV" '.observer = $o' <<< "$b")"
+  OD="$(jq -r .debate_id <<< "$b")"; local r; r="$(rpost "$b")"; assert_eq "$(code "$r")" "202" "accepted: $(js "$r")"; ORT="$(js "$r" | jq -r .run_token)"
+}
+obs_done() { wait_run "$OD" "$ORT" done; OV="$(rget "$OD" "$ORT")"; assert_eq "$(jq -r '.run.outcome' <<< "$OV")" "ok"; leaks "$OV"; }
+# failed: the vendor answers the observer with no text (billed)
+start_server obsfail "${SKON[@]}" GEMINI_API_MODEL=gem-empty
+obs_run "$DR"; obs_done
+assert_eq "$(jq -c '.run.result.observer | del(.latency_ms)' <<< "$OV")" '{"status":"failed","code":"skill_provider_error","report":null,"tokens":{"input":13,"output":17}}' "a failed observer: the debate is ok, the block says failed"
+assert_eq "$(jq -r '.run.result.final_answer' <<< "$OV")" "ok" "and the verdict is stored"
+# failed before the vendor: HTTP 500, no usage row
+start_server obs500 "${SKON[@]}" GEMINI_API_MODEL=gem-500
+obs_run "$DR"; obs_done
+assert_eq "$(jq -c '.run.result.observer | del(.latency_ms)' <<< "$OV")" '{"status":"failed","code":"skill_provider_error","report":null,"tokens":null}' "an observer call that fails before the vendor has no tokens"
+# timeout: the skill's own deadline
+start_server obstimeout "${SKON[@]}" GEMINI_API_MODEL=gem-hang GEMINI_API_TIMEOUT=30
+obs_run "$DRFAST"; obs_done
+assert_eq "$(jq -c '.run.result.observer | del(.latency_ms)' <<< "$OV")" '{"status":"timeout","code":"skill_timeout","report":null,"tokens":{"input":'"$(jq -r '.run.result.observer.tokens.input' <<< "$OV")"',"output":150}}' "the skill's own deadline: timeout, estimated at the quoted limit"
+# a hostile observer reply: 10 KB, control and bidirectional characters, markup
+FAKE_ANSWER="$(printf 'OBSERVER REPORT\nBELL\001CTRL\033[31mESC bidi\xe2\x80\xaeRLO\xe2\x80\x8bZW <script>alert(1)</script> ![px](http://evil.example/p.png)\n'; head -c 10000 /dev/zero | tr '\0' 'h')" node "$ROOT/tests/fixtures/fake-vendor.mjs" "$TMP/vendorh.jsonl" "$TMP/vendorh.port" &
+PIDS+=("$!")
+for _ in $(seq 1 100); do [[ -s "$TMP/vendorh.port" ]] && break; sleep 0.05; done
+start_server obshostile "${SKON[@]}" GEMINI_API_BASE_URL="http://127.0.0.1:$(cat "$TMP/vendorh.port")/v1"
+obs_run "$DRBIG"; obs_done
+REPT="$(jq -j '.run.result.observer.report' <<< "$OV")"
+[[ "$(jq -r '.run.result.observer.status' <<< "$OV")" == ok && "${#REPT}" -gt 3000 && "$(printf '%s' "$REPT" | wc -c | tr -d ' ')" -le 4096 ]] || fail "the report is within the 4096 byte platform cap although the skill allows 8000: $(printf '%s' "$REPT" | wc -c) bytes"
+for bad in '<script' 'p.png' '](' $'\001' $'\033' $'\xe2\x80\xae' $'\xe2\x80\x8b'; do [[ "$REPT" != *"$bad"* ]] || fail "the stored report holds $(printf '%q' "$bad")"; done
+echo "ok - the observer block in the run result: ok, failed (empty reply and vendor error), timeout, skipped; absent without an observer; a hostile 10 KB reply is cut to 4096 bytes of plain text"
+
+# a whole-run stop during the observer: the listener's own timeout. The verdict is already written, so the run is ok with its result stored and the observer says timeout.
+start_server obsstop "${SKON[@]}" GEMINI_API_MODEL=gem-hang GEMINI_API_TIMEOUT=60 E3D_MCP_TIMEOUT_SEC=12
+: > "$VREQ"; obs_run "$DR"
+wait_run "$OD" "$ORT" done; OV="$(rget "$OD" "$ORT")"
+assert_eq "$(jq -r '.run.outcome' <<< "$OV")" "ok" "a timeout that arrives during the observer does not fail a finished debate"
+assert_eq "$(jq -r '.run.result.final_answer' <<< "$OV")" "ok" "the verdict is stored"
+assert_eq "$(jq -c '.run.result.observer | [.status, .code, .report, .tokens.output]' <<< "$OV")" '["timeout","skill_timeout",null,150]' "the observer was stopped: timeout, with its inflight row"
+assert_eq "$(jq -c '.run | has("cancelled")' <<< "$OV")" "false" "a listener timeout is not a cancel"
+# a cancel (the user's DELETE) during the observer: still reported as a cancel, and the finished verdict is not lost
+start_server obscancel "${SKON[@]}" GEMINI_API_MODEL=gem-hang GEMINI_API_TIMEOUT=60
+: > "$VREQ"; obs_run "$DR"
+for _ in $(seq 1 200); do [[ "$(jq -s '[.[] | select(.body.model == "gem-hang")] | length' "$VREQ" 2>/dev/null || echo 0)" == 1 ]] && break; sleep 0.1; done
+[[ "$(jq -s '[.[] | select(.body.model == "gem-hang")] | length' "$VREQ")" == 1 ]] || fail "the observer call never reached the vendor"
+rdel "$OD" "$ORT" > /dev/null
+wait_run "$OD" "$ORT" done; OV="$(rget "$OD" "$ORT")"
+assert_eq "$(jq -r '.run.outcome' <<< "$OV")" "ok" "a cancel during the observer leaves the finished debate ok"
+assert_eq "$(jq -c '[.run.cancelled, .run.result.final_answer, .run.result.observer.status]' <<< "$OV")" '[true,"ok","timeout"]' "reported as cancelled, the verdict stored, the observer stopped"
+# a stop BEFORE the verdict is as before: no result, the outcome says why
+start_server prestop "${SKON[@]}" ANTHROPIC_API_MODEL=claude-hang ANTHROPIC_API_TIMEOUT=60 E3D_MCP_TIMEOUT_SEC=5
+obs_run "$DR"; wait_run "$OD" "$ORT" failed; OV="$(rget "$OD" "$ORT")"
+assert_eq "$(jq -c '[.run.outcome, (.run.result // null)]' <<< "$OV")" '["timeout",null]' "a timeout before the verdict is a timeout with no result"
+sleep 1; ! pgrep -f "observer.mjs call" >/dev/null 2>&1 || fail "an observer call process outlived the stopped run"
+echo "ok - a stop during the observer (listener timeout, user cancel) leaves a finished debate ok with its verdict and an observer timeout; a stop before the verdict is unchanged"
 echo "mcp-skills-run: all passed"

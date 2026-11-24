@@ -528,7 +528,7 @@ fi
 # runs only with the limits the quote priced, both together: E3D_DEBATE_OBSERVER_MAX_TOKENS (the vendor output limit of that one call) and E3D_DEBATE_OBSERVER_INPUT_BYTES_MAX
 # (the most prompt bytes it may be sent). The provider is named (--observer <skill>:<provider>), never chosen here, and must be an API adapter that has an output-limit setting.
 # The call is never retried and writes its own usage row (key observer:<skill>), also when the debate is stopped while it runs.
-OBS_PT_ON=0; OBS_PT_TOKENS=""; OBS_PT_INPUT=""; OBS_SLUG=""; OBS_ADAPTER=""; OBS_PID=""
+OBS_PT_ON=0; OBS_PT_TOKENS=""; OBS_PT_INPUT=""; OBS_SLUG=""; OBS_ADAPTER=""; OBS_PID=""; OBS_STOPPED=0; VERDICT_DONE=0
 if [[ -n "${E3D_DEBATE_OBSERVER_MAX_TOKENS:-}" || -n "${E3D_DEBATE_OBSERVER_INPUT_BYTES_MAX:-}" ]]; then
   (( PT_ON == 1 )) || { echo "error: E3D_DEBATE_OBSERVER_MAX_TOKENS and E3D_DEBATE_OBSERVER_INPUT_BYTES_MAX apply to a per-token debate (E3D_DEBATE_MAX_TOKENS)" >&2; exit 1; }
   [[ -n "$OBSERVER_SPEC" ]] || { echo "error: observer limits were given but the debate has no --observer; a quote that prices an observer that does not run is refused" >&2; exit 1; }
@@ -1313,14 +1313,18 @@ pt_usage_write() {
 # never an undercount. Calls of earlier rounds already have their rows.
 PT_PHASE=""
 pt_on_term() {
+  if (( VERDICT_DONE == 1 )); then
+    # The verdict is complete and already on stdout: a stop now (the listener's timeout or a cancel) ends the observer, if one is under way, and nothing else. The debate itself is
+    # finished, so it still exits 0 with its output untouched; what remains after the verdict is local and short. The call's usage row is written by run_observer (inflight).
+    OBS_STOPPED=1
+    if [[ "$PT_PHASE" == observer && -n "$OBS_PID" ]]; then kill "$OBS_PID" 2>/dev/null || true; fi
+    return 0
+  fi
   trap - TERM INT HUP
   local p r="${PT_PHASE#r}" st
   if [[ "$PT_PHASE" == synth ]]; then
     kill "${SYNTH_PID:-0}" 2>/dev/null || true
     pt_usage_row synth "${SYNTH_CUR:-$DEBATE_SYNTHESIZER}" "$synth_prompt" "$synth_out" "$work_dir/synthesis.stderr" inflight
-  elif [[ "$PT_PHASE" == observer ]]; then
-    kill "${OBS_PID:-0}" 2>/dev/null || true
-    pt_usage_row "observer:$OBS_SLUG" "$OBS_ADAPTER" "$work_dir/observer.prompt.md" "$work_dir/observer.reply" "$work_dir/observer.stderr" inflight
   elif [[ "$PT_PHASE" == r* ]]; then
     kill ${pids[@]+"${pids[@]}"} 2>/dev/null || true
     for p in "${DEBATE_PROVIDERS[@]}"; do
@@ -1586,6 +1590,7 @@ if [[ $synth_status -eq 0 && -s "$synth_out" ]]; then
     echo "SEATS: $SEATS_ANSWERED of $SEATS_REQUESTED participants answered; unavailable: $seat_list"
   fi
   cat "$synth_out"
+  VERDICT_DONE=1   # from here a stop (pt_on_term) can only end the observer; it never fails the debate
   synth_label="$DEBATE_SYNTHESIZER"
   (( fast_synthesis == 1 )) && synth_label="fast path, no LLM call"
   [[ -z "$SYNTH_FALLBACK_TO" ]] || synth_label="$SYNTH_FALLBACK_TO; fallback for $DEBATE_SYNTHESIZER: $SYNTH_FALLBACK_REASON"
@@ -1736,6 +1741,12 @@ observer_data() { # -> $work_dir/observer.data.json
   done
   jq -n --slurpfile pos "$work_dir/observer.positions.jsonl" --rawfile syn "$synth_out" '{positions:$pos, synthesis:$syn}' > "$work_dir/observer.data.json"
 }
+# A skipped observer (no call was made, so no usage row) leaves observer-skip.json beside the run's files: { "status": "skipped", "code"?: <skill_* code> }. e3d-mcp reads it
+# (lib/skills/observer-result.mjs) so the host can tell "not run" from "failed" without reading any text.
+obs_skip() { # obs_skip [code]
+  [[ -n "${obs_out:-}" ]] || return 0
+  jq -nc --arg c "${1:-}" '{status: "skipped"} + (if ($c | test("^skill_[a-z_]{1,40}$")) then {code: $c} else {} end)' > "$obs_out/observer-skip.json" 2>/dev/null || true
+}
 run_observer() {
   local adapter ms obs_out attempt=1 t0 t1 rc fin status code report slug sid sver
   local -a obs_env=() obs_prompt_extra=()
@@ -1748,14 +1759,18 @@ run_observer() {
     obs_prompt_extra=(--max-input-bytes "$OBS_PT_INPUT")
   fi
   obs_out="${OUT_DIR:-$work_dir}"; mkdir -p "$obs_out"
-  rm -f "$obs_out/observer-$slug.md" "$obs_out/observers.json"   # nothing from an earlier run in the same folder survives beside this run's record
+  rm -f "$obs_out/observer-$slug.md" "$obs_out/observers.json" "$obs_out/observer-skip.json"   # nothing from an earlier run in the same folder survives beside this run's record
   printf '%s' "$QUESTION" > "$work_dir/observer.question"
-  if ! observer_data; then echo "warning: the observer was not run (its input could not be prepared); the debate is unaffected" >&2; return 0; fi
+  if (( OBS_STOPPED == 1 )); then obs_skip; echo "note: the observer was not run (the debate was stopped after its verdict)" >&2; return 0; fi
+  if ! observer_data; then obs_skip; echo "warning: the observer was not run (its input could not be prepared); the debate is unaffected" >&2; return 0; fi
   if ! node "$OBSERVER_LIB" prompt --builtin "$SPEC_BUILTIN" --user "$SPEC_USER" --repo "$SPEC_REPO" $( (( SPEC_BUILTIN_ONLY == 1 )) && echo --builtin-only ) ${HOSTED_ARGS[@]+"${HOSTED_ARGS[@]}"} ${obs_prompt_extra[@]+"${obs_prompt_extra[@]}"} --plan "$OBSERVER_PLAN_JSON" \
        --data-file "$work_dir/observer.data.json" --question-file "$work_dir/observer.question" --meta-out "$work_dir/observer.meta" > "$work_dir/observer.prompt.md" 2> "$work_dir/observer.prompt.err"; then
+    obs_skip "$(jq -r '.error.code // empty' "$work_dir/observer.prompt.md" 2>/dev/null || true)"
     echo "warning: the observer was not run ($(jq -r '.error.code // empty' "$work_dir/observer.prompt.err" 2>/dev/null; true) its skill no longer matches the plan, or its input is over the skill's limit); the debate is unaffected" >&2; return 0
   fi
   while :; do
+    # a stop that arrived while the input was being prepared: no call is made (and so no usage row)
+    if (( OBS_STOPPED == 1 )); then obs_skip; echo "note: the observer was not run (the debate was stopped after its verdict)" >&2; return 0; fi
     t0="$(node -e 'console.log(Date.now())')"
     rc=0
     if (( OBS_PT_ON == 1 )); then
@@ -1763,7 +1778,13 @@ run_observer() {
       PT_PHASE=observer
       env "${obs_env[@]}" node "$OBSERVER_LIB" call --adapter "$adapter" --adapter-path "$PROVIDERS_DIR/$adapter" --prompt "$work_dir/observer.prompt.md" --reply "$work_dir/observer.reply" --stderr "$work_dir/observer.stderr" --timeout-ms "$ms" &
       OBS_PID=$!
+      (( OBS_STOPPED == 1 )) && kill "$OBS_PID" 2>/dev/null
       wait "$OBS_PID" || rc=$?
+      if (( OBS_STOPPED == 1 && rc > 128 )); then
+        # the stop interrupted the wait (or killed the call): the call is reaped, and it counts as not answered in time (inflight row, status timeout); a reply that was already complete is used
+        if wait "$OBS_PID" 2>/dev/null; then rc=0; else rc=143; fi
+      fi
+      OBS_PID=""
     else
       node "$OBSERVER_LIB" call --adapter "$adapter" --adapter-path "$PROVIDERS_DIR/$adapter" --prompt "$work_dir/observer.prompt.md" --reply "$work_dir/observer.reply" --stderr "$work_dir/observer.stderr" --timeout-ms "$ms" || rc=$?
     fi

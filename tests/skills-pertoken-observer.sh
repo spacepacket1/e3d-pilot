@@ -94,7 +94,7 @@ jq -e '(map(.key) | index("observer:reviewer")) == null' "$TMP/o4b/usage.json" >
 grep -q 'observer was not run' "$TMP/run.err" || fail "it says the observer was not run"
 echo "skills-pertoken-observer 4 (the input bound): ok"
 
-# 5. a debate stopped while the observer is under way still reports its call (an estimate at the quoted limit), never an undercount
+# 5. a debate stopped (after its verdict) while the observer is under way still reports its call (an estimate at the quoted limit), never an undercount
 : > "$VREQ"
 ( env -u E3D_DEBATE_OBSERVER_MAX_TOKENS -u E3D_DEBATE_OBSERVER_INPUT_BYTES_MAX "${vendor_env[@]}" GEMINI_API_TIMEOUT=30 HOME="$TMP/home" "${BASE[@]}" "${LIM[@]}" GEMINI_API_MODEL=gem-hang "$ROOT/bin/e3d-debate" "Which database?" --providers anthropic-api,openai-api \
     --rounds 1 --synthesizer anthropic-api --max-words 60 --builtin-only --out-dir "$TMP/o5" "${HOSTED[@]}" --observer "$SKILL:gemini-api" > "$TMP/run5.out" 2> "$TMP/run5.err" ) &
@@ -103,7 +103,7 @@ for _ in $(seq 1 200); do [[ "$(jq -s '[.[] | select(.body.model == "gem-hang")]
 [[ "$(jq -s '[.[] | select(.body.model == "gem-hang")] | length' "$VREQ")" == 1 ]] || fail "the observer call never reached the vendor: $(tail -3 "$TMP/run5.err")"
 kill -TERM "$EP" 2>/dev/null || true
 rc=0; wait "$EP" || rc=$?
-[[ $rc -eq 143 ]] || fail "a stopped debate exits 143, got $rc"
+[[ $rc -eq 0 ]] || fail "a stop during the observer (after the verdict) leaves the finished debate's exit status at 0 (H2d), got $rc"
 jq -e '.[] | select(.key == "observer:reviewer") | .output_tokens == 150 and .provider == "gemini-api"' "$TMP/o5/usage.json" >/dev/null || fail "the call under way has a row estimated at the quoted limit: $(jq -c 'map({key, output_tokens})' "$TMP/o5/usage.json")"
 echo "skills-pertoken-observer 5 (a stopped debate reports the observer's call): ok"
 
