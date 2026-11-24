@@ -2,6 +2,8 @@
 
 Status: **approved by the owner on 2026-11-24: D1 to D9 as recommended, D10 to D12 as recommended. Docs only; build starts with P3-1, and the live check (see "to verify live before P3-3") must pass before P3-3.** Spec: `docs/skills/spec/e3d-pilot-calibration-spec-v0.1.md` ("Phase 3", section 5.1, section 9 gates). Decisions it builds on: ADR-0015 (skills over MCP), ADR-0016 (never prompt by default), ADR-0017 (tiers), ADR-0019 (retention), ADR-0020 (no pooling), ADR-0021 (wording). Hosts: Claude Code first; Codex second and **untested** (an acceptance test, not an assumption).
 
+**Build status.** P3-1 built (2026-11-24): `lib/calibration/mcp-ledger.mjs` (not wired), `tests/calibration-mcp-ledger.sh` with `tests/fixtures/calibration/mcp-ledger.mjs`. Mutations checked locally, each fails a named test: no session check, no expiry, sequential ids, no ticket cap, no issue rate cap, no one-pending rule, no decline pause, decline blocking reads. Awaiting the Opus review. P3-2 to P3-5 not started.
+
 ## 1. Goal and non-goals
 
 **Goal.** A user's own agent can (a) fetch a skill from Pilot as clearly labelled data and apply it itself, (b) with the user's permission, note that it was used and how it went, (c) read the user's own honest track record: counts, an interval, sample size, source mix. Everything stays on the user's machine.
