@@ -5,10 +5,10 @@ import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { appendFileSync, chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, truncateSync, utimesSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { hostname, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { BIN_MIN, MIN_RESOLVED, calibrationBlock, computeTrackRecord, describeRecord, wilson95 } from '../../../lib/calibration/record.mjs';
+import { BIN_MIN, MIN_RESOLVED, calibrationBlock, computeTrackRecord, describeRecord, round4, wilson95 } from '../../../lib/calibration/record.mjs';
 import { MAX_FILE, appendLine, appendOutcome, compact, deleteOutcome, getUse, newUse, registerUse, reportOutcome, stateDir, trackRecords, validateOutcome, validateTrackRecord } from '../../../lib/calibration/store.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -83,7 +83,7 @@ await ok('a record of 41 uses with 17 resolved (2 verified, 11 user-marked, 4 ho
   assert.deepEqual(r.by_tier, { verified: 2, user_marked: 11, host_reported: 4 });
   assert.deepEqual(r.success, { count: 12, rate: 0.7059, interval95: [0.4687, 0.8672], method: 'wilson' }); // 12 / 17
   assert.equal(r.status, 'descriptive'); assert.equal(r.baseline, null); assert.equal(r.calibration, null); assert.equal(r.scope, 'principal');
-  assert.equal(describeRecord(r, records.length ? trackRecords(dir, {}, NOW).details[0] : undefined), 'skill.e3d.skeptic 2.0.0 on architecture-review (debate_seat, unknown): in your 17 resolved uses, 12 were marked worked (approximate 95% interval 46% to 87%); 41% of 41 uses were marked worked or failed; 0 marked unknown and 0 inferred (not counted as resolved); outcome sources: 2 verified, 11 user-marked, 4 host-reported; 22% of uses were made with the reminder on; 0 corrections on file');
+  assert.equal(describeRecord(r, records.length ? trackRecords(dir, {}, NOW).details[0] : undefined), 'skill.e3d.skeptic 2.0.0 on architecture-review (debate_seat, unknown): in your 17 resolved uses, 12 were marked worked (approximate 95% interval 46% to 87%); 41% of 41 uses were marked worked or failed; 0 marked unknown and 0 inferred (not counted as resolved); outcome sources: 2 with an artifact digest attached as evidence, 11 user-marked, 4 host-reported; 22% of uses were made with the reminder on; 0 corrections on file');
 });
 await ok('the minimum rule: 9 resolved uses give no rate; 10 give one', () => {
   for (const [resolved, enough] of [[0, false], [1, false], [9, false], [10, true], [11, true]]) {
@@ -466,15 +466,34 @@ await ok('corrections count superseded and deleted outcomes beside the record', 
   reportOutcome(dir, { use_id: uid(3), result: 'failed' }, NOW + 1000); reportOutcome(dir, { use_id: uid(3), result: 'worked' }, NOW + 2000); // two supersessions
   deleteOutcome(dir, uid(17), NOW + 3000); // one deleted
   const t = trackRecords(dir, {}, NOW + 3000); const line = describeRecord(t.records[0], t.details[0]);
-  assert.equal(t.details[0].corrections, 3); assert.match(line, /3 corrections on file/); assert.match(line, /outcome sources: 2 verified, \d+ user-marked, \d+ host-reported/); assert.match(line, /24% of uses were made with the reminder on/);
+  assert.equal(t.details[0].corrections, 3); assert.match(line, /3 corrections on file/); assert.match(line, /outcome sources: 2 with an artifact digest attached as evidence, \d+ user-marked, \d+ host-reported/); assert.match(line, /24% of uses were made with the reminder on/);
   assert.match(describeRecord(t.records[0], { n_unknown: 0, n_inferred: 0, corrections: 1 }), /1 correction on file/);
 });
-await ok('the interval prints outward (lower down, upper up) and says approximate; a bound on a whole percent is not moved', () => {
-  const fake = (lo, hi) => ({ subject: SKILL, stratum: { task_class: 'architecture-review', mode: 'debate_seat', model_family: 'unknown' }, status: 'descriptive', n_resolved: 10, n_uses: 10, success: { count: 5, rate: 0.5, interval95: [lo, hi], method: 'wilson' }, resolution_rate: 1, reminded_share: 0, by_tier: { verified: 0, user_marked: 10, host_reported: 0 } });
-  assert.match(describeRecord(fake(0.4687, 0.8672)), /approximate 95% interval 46% to 87%/);
-  assert.match(describeRecord(fake(0.29, 0.5801)), /interval 29% to 59%/); // 0.29 is exactly 29%: floor of 28.999... must not give 28
-  assert.match(describeRecord(fake(0, 1)), /interval 0% to 100%/);
+const exactRef = (x, m) => { // the unrounded Wilson bounds by the quadratic route
+  const z2 = 1.959963984540054 ** 2; const a = m + z2; const b = 2 * x + z2; const disc = Math.sqrt(Math.max(0, b * b - (4 * a * x * x) / m));
+  return [Math.max(0, (b - disc) / (2 * a)), Math.min(1, (b + disc) / (2 * a))];
+};
+const fakeRec = (x, m, over = {}) => ({ subject: SKILL, stratum: { task_class: 'architecture-review', mode: 'debate_seat', model_family: 'unknown' }, status: 'descriptive', n_resolved: m, n_uses: over.n_uses ?? m, success: { count: x, rate: round4(x / m), interval95: wilson95(x, m), method: 'wilson' }, resolution_rate: 1, reminded_share: over.reminded ?? 0, by_tier: { verified: 0, user_marked: m, host_reported: 0 } });
+await ok('the printed interval is never tighter than the exact one: for every x of n = 10..400 the lower bound is at or below, the upper at or above', () => {
+  let cases = 0;
+  for (let m = 10; m <= 400; m += (m < 60 ? 1 : 7)) for (let x = 0; x <= m; x++) {
+    cases += 1; const line = describeRecord(fakeRec(x, m)); const mm = /interval (\d+)% to (\d+)%/.exec(line); assert.ok(mm, line);
+    const [lo, hi] = exactRef(x, m); assert.ok(Number(mm[1]) <= lo * 100 + 1e-7 && Number(mm[2]) >= hi * 100 - 1e-7, `${x}/${m}: printed ${mm[1]}-${mm[2]} exact ${lo * 100}-${hi * 100}`);
+    assert.ok(Number(mm[1]) >= Math.floor(lo * 100) - 1 && Number(mm[2]) <= Math.ceil(hi * 100) + 1, `${x}/${m} not wider than needed`);
+  }
+  assert.ok(cases > 4000);
+  assert.match(describeRecord(fakeRec(8, 16)), /interval 27% to 73%/); // the exact interval is 27.9996% to 72.0004%: rounding the stored 4 decimals first would print 28% to 72%
+  assert.match(describeRecord(fakeRec(12, 17)), /interval 46% to 87%/); assert.match(describeRecord(fakeRec(0, 10)), /interval 0% to 28%/); assert.match(describeRecord(fakeRec(10, 10)), /interval 72% to 100%/);
 });
+await ok('a share that is not exactly 0 or 100 never prints as 0% or 100%', () => {
+  assert.match(describeRecord(fakeRec(10, 10, { n_uses: 250 })), /^.*: in your 10 resolved uses.*4% of 250 uses/);
+  assert.match(describeRecord({ ...fakeRec(249, 249, { n_uses: 250 }) }), /over 99% of 250 uses were marked/);
+  assert.match(describeRecord(fakeRec(10, 10, { n_uses: 10000 })), /under 1% of 10000 uses were marked/);
+  assert.match(describeRecord(fakeRec(10, 10)), /; 100% of 10 uses were marked/); // exactly all: 100%
+  assert.match(describeRecord(fakeRec(10, 10, { reminded: 0.996 })), /over 99% of uses were made with the reminder on/);
+  assert.match(describeRecord(fakeRec(10, 10, { reminded: 0.001 })), /under 1% of uses were made/); assert.match(describeRecord(fakeRec(10, 10, { reminded: 0 })), /; 0% of uses were made/); assert.match(describeRecord(fakeRec(10, 10, { reminded: 1 })), /; 100% of uses were made/);
+});
+await ok('the word "verified" never appears in the record line (no definition fits beside it)', () => { assert.ok(!/verified/i.test(describeRecord(fakeRec(10, 10)))); });
 await ok('lines ignored as unreadable are disclosed in the record, in the list of records and in --json', () => {
   const dir = fresh(); const env = { E3D_CALIBRATION_DIR: dir }; seed(dir, 12, Array.from({ length: 10 }, () => ['worked']), {}, Date.now());
   appendFileSync(join(dir, 'outcomes.jsonl'), 'garbage\n{"k":"outcome"}\n');
@@ -491,18 +510,19 @@ await ok('lines ignored as unreadable are disclosed in the record, in the list o
 });
 
 // locks
+const HOSTID = createHash('sha256').update(hostname()).digest('hex').slice(0, 8);
 const alivePid = () => { const p = spawn('sleep', ['30']); return p; };
 await ok('a lock whose holder is gone is taken over at once, even when it is fresh', () => {
-  const dir = fresh(); seed(dir, 1); writeFileSync(join(dir, '.lock'), '2147480000:0123456789abcdef', { mode: 0o600 });
+  const dir = fresh(); seed(dir, 1); writeFileSync(join(dir, '.lock'), `2147480000:${HOSTID}:0123456789abcdef`, { mode: 0o600 });
   const t0 = Date.now(); assert.equal(registerUse(dir, mkUse(2)).status, 'recorded'); assert.ok(Date.now() - t0 < 2500, 'no 5 s wait');
   assert.equal(existsSync(join(dir, '.lock')), false); assert.equal(readdirSync(dir).filter((f) => f.includes('stale')).length, 0);
 });
-await ok('a lock whose holder is alive is NOT taken over, however old it looks (a suspended or slow holder keeps it)', () => {
+await ok('a lock held by a live process on this host is kept for up to the 10-minute ceiling, and taken over after it', () => {
   const dir = fresh(); seed(dir, 1); const p = alivePid(); const lock = join(dir, '.lock');
   try {
-    writeFileSync(lock, `${p.pid}:0123456789abcdef`, { mode: 0o600 }); const old = new Date(Date.now() - 5 * 60000); utimesSync(lock, old, old);
+    writeFileSync(lock, `${p.pid}:${HOSTID}:0123456789abcdef`, { mode: 0o600 }); const old = new Date(Date.now() - 5 * 60000); utimesSync(lock, old, old);
     assert.equal(codeOf(() => registerUse(dir, mkUse(2))), 'skill_scope_denied'); // busy
-    assert.equal(readFileSync(lock, 'utf8'), `${p.pid}:0123456789abcdef`); assert.equal(lines(dir, 'uses.jsonl').length, 1);
+    assert.equal(readFileSync(lock, 'utf8'), `${p.pid}:${HOSTID}:0123456789abcdef`); assert.equal(lines(dir, 'uses.jsonl').length, 1);
     const older = new Date(Date.now() - 11 * 60000); utimesSync(lock, older, older); // past the hard ceiling (a reused pid or a hung process) it is taken
     assert.equal(registerUse(dir, mkUse(2)).status, 'recorded');
   } finally { p.kill(); }
@@ -514,10 +534,122 @@ await ok('an owner-less lock is taken over only after a short grace', () => {
 await ok('the old holder never removes a lock that replaced its own', async () => {
   const { withLock } = await import('../../../lib/calibration/store.mjs');
   const dir = fresh(); seed(dir, 1); const lock = join(dir, '.lock');
-  withLock(dir, () => { rmSync(lock); writeFileSync(lock, '2147480001:ffffffffffffffff', { mode: 0o600 }); }); // taken over meanwhile by another holder
-  assert.equal(readFileSync(lock, 'utf8'), '2147480001:ffffffffffffffff');
+  withLock(dir, () => { rmSync(lock); writeFileSync(lock, `2147480001:${HOSTID}:ffffffffffffffff`, { mode: 0o600 }); }); // taken over meanwhile by another holder
+  assert.equal(readFileSync(lock, 'utf8'), `2147480001:${HOSTID}:ffffffffffffffff`);
   rmSync(lock); withLock(dir, () => {}); assert.equal(existsSync(lock), false); // and its own lock is removed as before
 });
+const hookDir = () => { const d = fresh(); mkdirSync(d); return d; };
+const waitFor = async (pred, ms = 15000) => { const t0 = Date.now(); while (!pred()) { if (Date.now() - t0 > ms) throw new Error('timed out waiting'); await new Promise((r) => setTimeout(r, 20)); } };
+const proc = (args, env = {}) => { const p = spawn(process.execPath, [join(HERE, 'worker.mjs'), ...args], { env: { PATH: process.env.PATH, ...env } }); let out = ''; p.stdout.on('data', (d) => { out += d; }); const done = new Promise((res) => p.on('exit', () => res(out.trim()))); return { p, done }; };
+const hookFile = (h, name) => readdirSync(h).find((f) => f.startsWith(`at-${name}-`));
+await ok('a lock from another host is treated as alive (its pid means nothing here) until the ceiling; pid 0, an empty lock dated in the future and an owner-less old lock are taken at once', () => {
+  const dir = fresh(); seed(dir, 1); const lock = join(dir, '.lock');
+  writeFileSync(lock, '2147480000:abcdef12:0123456789abcdef', { mode: 0o600 }); // dead pid here, but another host
+  assert.equal(codeOf(() => registerUse(dir, mkUse(2))), 'skill_scope_denied'); assert.equal(readFileSync(lock, 'utf8'), '2147480000:abcdef12:0123456789abcdef');
+  const older = new Date(Date.now() - 11 * 60000); utimesSync(lock, older, older); assert.equal(registerUse(dir, mkUse(2)).status, 'recorded');
+  const d2 = fresh(); seed(d2, 1); writeFileSync(join(d2, '.lock'), `0:${HOSTID}:0123456789abcdef`, { mode: 0o600 }); const t3 = new Date(Date.now() - 5000); utimesSync(join(d2, '.lock'), t3, t3);
+  assert.equal(registerUse(d2, mkUse(2)).status, 'recorded'); // pid 0 would signal the whole process group and look alive
+  const d3 = fresh(); seed(d3, 1); writeFileSync(join(d3, '.lock'), '', { mode: 0o600 }); const fut = new Date(Date.now() + 86400000); utimesSync(join(d3, '.lock'), fut, fut);
+  const t0 = Date.now(); assert.equal(registerUse(d3, mkUse(2)).status, 'recorded'); assert.ok(Date.now() - t0 < 1500, 'not blocked until the clock passes the date');
+});
+await ok('a lock path that is a directory or a symbolic link is a clear error naming the path, not "busy" forever', () => {
+  const d = fresh(); seed(d, 1); mkdirSync(join(d, '.lock'));
+  let e = null; try { registerUse(d, mkUse(2)); } catch (x) { e = x; } assert.equal(e.code, 'skill_scope_denied'); assert.ok(e.message.includes(join(d, '.lock')) && /not a regular file/.test(e.message));
+  const d2 = fresh(); seed(d2, 1); symlinkSync(join(T, 'elsewhere.jsonl'), join(d2, '.lock')); e = null; try { registerUse(d2, mkUse(2)); } catch (x) { e = x; } assert.ok(e && /not a regular file/.test(e.message));
+});
+await ok('a holder removes the lock only if both its inode and its text are still its own', async () => {
+  const { withLock } = await import('../../../lib/calibration/store.mjs');
+  const dir = fresh(); seed(dir, 1); const lock = join(dir, '.lock');
+  withLock(dir, () => { writeFileSync(lock, `2147480002:${HOSTID}:eeeeeeeeeeeeeeee`); }); // same inode, rewritten by someone else
+  assert.equal(readFileSync(lock, 'utf8'), `2147480002:${HOSTID}:eeeeeeeeeeeeeeee`);
+});
+await ok('compact removes leftover .lock.stale.* files as well as temp files', () => {
+  const dir = fresh(); seed(dir, 1); writeFileSync(join(dir, '.lock.stale.abc123'), 'x', { mode: 0o600 }); writeFileSync(join(dir, '.lock.stale.zzz'), 'x', { mode: 0o600 });
+  compact(dir, NOW); assert.deepEqual(readdirSync(dir).sort(), ['.lock.stale.zzz', 'uses.jsonl']); // only names the engine makes (hex) are removed
+});
+await ok('three real processes: a breaker that judged a lock stale but finds a live lock in its place puts it back, and no one slips into the gap', async () => {
+  const dir = fresh(); seed(dir, 2); const lock = join(dir, '.lock'); const h = hookDir(); const sleeper = alivePid();
+  try {
+    writeFileSync(lock, `2147480000:${HOSTID}:0123456789abcdef`, { mode: 0o600 }); // T1: stale (its holder is gone)
+    const B = proc([dir, 'take', '0', 'b'], { E3D_CALIBRATION_TEST_HOOKS: h });
+    await waitFor(() => hookFile(h, 'beforeBreakLock')); writeFileSync(join(h, 'go-beforeBreakLock'), '');
+    await waitFor(() => hookFile(h, 'beforeRename')); // B has judged T1 stale, holds the break lock, and is about to rename the lock
+    const aText = `${sleeper.pid}:${HOSTID}:aaaaaaaaaaaaaaaa`; rmSync(lock); writeFileSync(lock, aText, { mode: 0o600 }); // A broke T1 first and now holds a live lock
+    const aIno = statSync(lock).ino;
+    writeFileSync(join(h, 'go-beforeRename'), '');
+    await waitFor(() => hookFile(h, 'afterRename')); // B has moved A's lock away: the path is empty, the break lock exists
+    assert.equal(existsSync(lock), false); assert.ok(existsSync(`${lock}.break`));
+    const C = proc([dir, 'take', '0', 'c']); // a third process arrives in the gap
+    await new Promise((r) => setTimeout(r, 300));
+    writeFileSync(join(h, 'go-afterRename'), '');
+    const [rb, rc] = await Promise.all([B.done, C.done]);
+    assert.equal(rc, 'err:skill_scope_denied', 'C must not have been able to take the lock in the gap'); assert.equal(rb, 'err:skill_scope_denied', 'B must not have taken a lock A still holds');
+    assert.equal(readFileSync(lock, 'utf8'), aText); assert.equal(statSync(lock).ino, aIno); // A's own lock, same file, is back
+    assert.equal(existsSync(`${lock}.break`), false); assert.equal(readdirSync(dir).filter((f) => f.includes('.stale.')).length, 0);
+  } finally { sleeper.kill(); }
+});
+await ok('a breaker re-judges the lock under the break lock: a lock that became live after the first look is left alone', async () => {
+  const dir = fresh(); seed(dir, 2); const lock = join(dir, '.lock'); const h = hookDir(); const sleeper = alivePid();
+  try {
+    writeFileSync(lock, `2147480000:${HOSTID}:0123456789abcdef`, { mode: 0o600 }); // stale at the first look
+    const B = proc([dir, 'take', '0', 'b'], { E3D_CALIBRATION_TEST_HOOKS: h });
+    await waitFor(() => hookFile(h, 'beforeBreakLock'));
+    const aText = `${sleeper.pid}:${HOSTID}:aaaaaaaaaaaaaaaa`; rmSync(lock); writeFileSync(lock, aText, { mode: 0o600 }); // a live holder took over in between
+    writeFileSync(join(h, 'go-beforeBreakLock'), '');
+    await new Promise((r) => setTimeout(r, 600));
+    assert.equal(hookFile(h, 'beforeRename'), undefined, 'B must not go on to rename a live lock'); assert.equal(readFileSync(lock, 'utf8'), aText);
+    writeFileSync(join(h, 'go-beforeRename'), ''); assert.equal(await B.done, 'err:skill_scope_denied');
+  } finally { sleeper.kill(); }
+});
+await ok('the file a breaker moved must be the one it judged, by inode as well as text: an empty lock replaced by another empty lock (a new holder between create and write) is put back', async () => {
+  const dir = fresh(); seed(dir, 2); const lock = join(dir, '.lock'); const h = hookDir();
+  writeFileSync(lock, '', { mode: 0o600 }); const old = new Date(Date.now() - 10000); utimesSync(lock, old, old); // an owner-less lock, past the 2 s grace
+  const B = proc([dir, 'take', '0', 'b'], { E3D_CALIBRATION_TEST_HOOKS: h });
+  await waitFor(() => hookFile(h, 'beforeBreakLock')); writeFileSync(join(h, 'go-beforeBreakLock'), '');
+  await waitFor(() => hookFile(h, 'beforeRename'));
+  rmSync(lock); writeFileSync(lock, '', { mode: 0o600 }); const ino2 = statSync(lock).ino; // a new holder has just created its lock and not yet written to it
+  writeFileSync(join(h, 'go-beforeRename'), '');
+  await waitFor(() => hookFile(h, 'afterRename')); writeFileSync(join(h, 'go-afterRename'), '');
+  await waitFor(() => existsSync(lock) && statSync(lock).ino === ino2, 1200); // put back at once, and kept through the 2 s grace
+  assert.equal(await B.done, 'got'); // after the grace B takes the (still owner-less) lock legitimately
+});
+
+await ok('compact never replaces a file after it has lost its lock: it stops, and the other writer\'s append is kept', async () => {
+  const dir = fresh(); seed(dir, 3, [['worked']], {}, Date.now()); const lock = join(dir, '.lock'); const h = hookDir(); const sleeper = alivePid();
+  try {
+    const W = proc([dir, 'compact', '0', 'w'], { E3D_CALIBRATION_TEST_HOOKS: h });
+    await waitFor(() => hookFile(h, 'beforeCompactRename'));
+    rmSync(lock); writeFileSync(lock, `${sleeper.pid}:${HOSTID}:bbbbbbbbbbbbbbbb`, { mode: 0o600 }); // the lock was taken over while compact was suspended
+    appendFileSync(join(dir, 'uses.jsonl'), `${JSON.stringify(mkUse(9, {}, Date.now()))}\n`); // and the new holder appended a use
+    writeFileSync(join(h, 'go-beforeCompactRename'), '');
+    assert.equal(await W.done, 'err:skill_scope_denied');
+    assert.equal(lines(dir, 'uses.jsonl').length, 4); assert.ok(lines(dir, 'uses.jsonl').some((l) => l.includes(uid(9)))); assert.equal(readdirSync(dir).filter((f) => f.endsWith('.tmp')).length, 0);
+  } finally { sleeper.kill(); }
+});
+await ok('an outcome is judged against the whole chain on file and the life of its use: nothing is accepted that a read would then ignore', () => {
+  const dir = fresh(); registerUse(dir, mkUse(1, {}, NOW - 10 * DAY));
+  assert.equal(codeOf(() => appendOutcome(dir, goodOutcome({ reported_at: isoS(NOW - 370 * DAY) }), NOW)), 'skill_outcome_invalid'); // past retention (and before the use)
+  assert.equal(codeOf(() => appendOutcome(dir, goodOutcome({ reported_at: isoS(NOW - 11 * DAY) }), NOW)), 'skill_outcome_invalid'); // before its use was issued
+  assert.equal(existsSync(join(dir, 'outcomes.jsonl')), false);
+  assert.equal(appendOutcome(dir, goodOutcome({ reported_at: isoS(NOW - 10 * DAY - 60000) }), NOW).status, 'recorded'); // within the clock skew of the issue time
+  assert.equal(reportOutcome(dir, { use_id: uid(1), result: 'failed' }, NOW).status, 'recorded'); assert.equal(trackRecords(dir, {}, NOW).corrupt, 0);
+});
+await ok('a receipt is registered all or none: one conflicting entry stops the whole receipt', () => {
+  const dir = fresh(); const env = { E3D_CALIBRATION_DIR: dir, E3D_CALIBRATION_V1: '1' }; const log = join(T, 'aon.json');
+  const entry = (i, over = {}) => ({ seat: `s${i}`, use_id: `use_${String(i).padStart(8, '0')}`, id: 'skill.e3d.skeptic', version: '2.0.0', definition_hash: HASH, ...over });
+  const run = (body) => { writeFileSync(log, JSON.stringify(body)); return spawnSync(process.execPath, [join(ROOT, 'lib/calibration/cli.mjs'), 'register-uses', '--', log], { env: { PATH: process.env.PATH, ...env }, encoding: 'utf8' }); };
+  const ts = isoS(Date.now() - 2 * DAY);
+  assert.equal(run({ ts, skills: [entry(2, { version: '9.9.9' })] }).status, 0); // use 2 exists as a different use
+  const r = run({ ts: isoS(Date.now() - 1 * DAY), skills: [entry(1), entry(2), entry(3)] }); assert.equal(r.status, 1); assert.match(r.stderr, /skill_outcome_conflict/);
+  assert.equal(lines(dir, 'uses.jsonl').length, 1); // neither the first nor the third was recorded
+  const r2 = run({ ts, skills: [entry(4), entry(4, { version: '1.0.0' })] }); assert.equal(r2.status, 1); assert.equal(lines(dir, 'uses.jsonl').length, 1); // two entries sharing a use_id
+});
+await ok('E3D_SKILLS_HOSTED fails closed: only unset, empty or 0 lets the module run', () => {
+  const dir = fresh(); const direct = (v) => spawnSync(process.execPath, [join(ROOT, 'lib/calibration/cli.mjs'), 'mine'], { env: { PATH: process.env.PATH, E3D_CALIBRATION_DIR: dir, E3D_CALIBRATION_V1: '1', ...(v === undefined ? {} : { E3D_SKILLS_HOSTED: v }) }, encoding: 'utf8' });
+  for (const v of ['1', 'true', 'yes', ' 1', '01', 'on', '2']) assert.equal(direct(v).status, 1, `E3D_SKILLS_HOSTED='${v}'`);
+  for (const v of [undefined, '', '0']) assert.equal(direct(v).status, 0, `E3D_SKILLS_HOSTED='${v}'`);
+});
+
 await ok('a real second process waits for a live holder and then writes; nothing is lost or torn', async () => {
   const dir = fresh(); seed(dir, 2);
   const p = spawn(process.execPath, [join(HERE, 'worker.mjs'), dir, 'hold', '1500', 'x']); await new Promise((res) => p.stdout.once('data', res));
@@ -622,7 +754,8 @@ await ok('impossible dates and outcomes from the future are refused on write and
   for (const t of ['2026-02-30T00:00:00Z', '2026-12-01T24:00:00Z', '2026-13-01T00:00:00Z', '2026-12-01T10:60:00Z']) assert.equal(codeOf(() => appendOutcome(dir, goodOutcome({ reported_at: t }), NOW)), 'skill_outcome_invalid', t);
   for (const t of ['2026-02-30T00:00:00Z', '2026-12-01T24:00:00Z']) assert.equal(codeOf(() => registerUse(dir, { ...mkUse(2), issued_at: t })), 'skill_schema_invalid', t);
   assert.equal(codeOf(() => appendOutcome(dir, goodOutcome({ reported_at: isoS(NOW + 2 * DAY) }), NOW)), 'skill_outcome_invalid'); // two days ahead
-  assert.equal(appendOutcome(dir, goodOutcome({ reported_at: isoS(NOW + DAY - 1000) }), NOW).status, 'recorded'); // inside the one-day skew
+  assert.equal(appendOutcome(dir, goodOutcome({ reported_at: isoS(NOW + 4 * 60000) }), NOW).status, 'recorded'); // inside the 5-minute skew
+  assert.equal(codeOf(() => appendOutcome(dir, goodOutcome({ outcome_id: 'out_late0001', result: 'failed', reported_at: isoS(NOW + 10 * 60000) }), NOW)), 'skill_outcome_invalid'); // ten minutes ahead
   const d2 = fresh(); registerUse(d2, mkUse(1)); appendFileSync(join(d2, 'outcomes.jsonl'), `${JSON.stringify({ k: 'outcome', doc: goodOutcome({ reported_at: '2026-02-30T00:00:00Z' }) })}\n`, { mode: 0o600 });
   assert.equal(trackRecords(d2, {}, NOW).corrupt, 1);
   assert.equal(codeOf(() => registerUse(fresh(), { ...mkUse(3), run_ref: 'skr_abc' })), 'skill_schema_invalid'); // a run_ref must match its pattern
