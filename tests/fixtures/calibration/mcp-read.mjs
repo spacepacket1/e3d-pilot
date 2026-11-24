@@ -109,6 +109,13 @@ test('under 10 resolved: counts only, no rate, no interval', async () => {
   assert.equal(row.success, undefined); assert.equal(row.by_tier, undefined);
   assert.doesNotMatch(allText(res), /interval|rate"|"success"|were marked worked|\d+%/);
 });
+test('boundary: 9 resolved is counts only, 10 resolved user-marked is a rate', async () => {
+  const d = tmp(); fill(d, rep(9, 'user_marked', 9)); const r = mk(d);
+  let row = (await rec(r, { skill: 'skeptic' })).structuredContent.records[0];
+  assert.equal(row.rate_shown, false); assert.match(row.text, /not enough resolved outcomes \(9 of 10 needed/); assert.equal(row.success, undefined);
+  fill(d, [['user_marked', 'worked']]);
+  row = (await rec(r, { skill: 'skeptic' })).structuredContent.records[0]; assert.equal(row.rate_shown, true); assert.equal(row.success.count, 10);
+});
 test('10 or more resolved but only host_reported: counts and source mix, no rate', async () => {
   const d = tmp(); fill(d, rep(14, 'host_reported', 14)); const r = mk(d);
   const res = await rec(r, { skill: 'skill.e3d.skeptic' }); const row = res.structuredContent.records[0];
