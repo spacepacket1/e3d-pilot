@@ -7,7 +7,7 @@ import { existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } fro
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { appendOutcome, newUse, registerUse, reportOutcome, tierAllows } from '../../../lib/calibration/store.mjs';
+import { appendOutcome, deleteOutcome, newUse, registerUse, reportOutcome, tierAllows } from '../../../lib/calibration/store.mjs';
 import { createLedger, ELICIT_TIMEOUT_MS, PAUSE_MS, TICKET_MS } from '../../../lib/calibration/mcp-ledger.mjs';
 import { ASK_TIMEOUT_MS, CALIBRATION_WRITE_INSTRUCTION, USE_NOTE, WRITE_NOTICE, createCalibrationWrite, extendGetTool, hostFamily, writeTools } from '../../../lib/mcp/calibration-write.js';
 import { GET_TOOL, createSkillsRead } from '../../../lib/mcp/skills-read.js';
@@ -36,17 +36,19 @@ const tick = () => new Promise((r) => setImmediate(r));
 function client({ elicitation = { form: {} }, name = 'Claude Code', answer = () => ({ action: 'accept', content: { confirm: true } }) } = {}) {
   const asked = [];
   const held = [];
+  const notes = [];
   const rpc = {
     request(method, params) {
       asked.push({ method, params });
       const a = answer(params);
-      if (a === 'never') return new Promise((res) => held.push(res));
-      if (a === 'reject') return Promise.reject(Object.assign(new Error('method not found'), { code: -32601 }));
-      return Promise.resolve(a);
+      const p = a === 'never' ? new Promise((res) => held.push(res)) : a === 'reject' ? Promise.reject(Object.assign(new Error('method not found'), { code: -32601 })) : Promise.resolve(a);
+      p.requestId = `s-${asked.length}`;
+      return p;
     },
+    notify(method, params) { notes.push({ method, params }); },
   };
   const caps = elicitation === null ? {} : { elicitation };
-  return { asked, held, ctx: { principal: 'local', hosted: false, session: { clientInfo: { name }, capabilities: caps }, rpc } };
+  return { asked, held, notes, ctx: { principal: 'local', hosted: false, session: { clientInfo: { name }, capabilities: caps }, rpc } };
 }
 
 function setup({ unconfirmed = false } = {}) {
@@ -197,6 +199,7 @@ test('timeout: nothing written, a late answer writes nothing, no pause, not coun
   for (const release of c.held) release({ action: 'accept', content: { result: 'failed' } }); // the user answers late
   await tick(); await tick();
   assert.equal(existsSync(s.dir), false, 'a late accept writes nothing');
+  assert.deepEqual(c.notes.map((n) => [n.method, n.params.requestId]), c.asked.map((a, k) => ['notifications/cancelled', `s-${k + 1}`]), 'each abandoned dialog is cancelled at the host');
   assert.equal(s.ledger.writesPausedUntil(), 0, 'a timeout does not pause');
   const c2 = client({ answer: ACCEPT({ result: 'worked' }) });
   assert.equal((await s.call('e3d_skill_report_outcome', { use_id: ids[0], result: 'worked' }, c2.ctx)).structuredContent.status, 'recorded');
@@ -211,9 +214,9 @@ test('a client whose elicitation request fails: nothing written, a refusal', asy
 
 // ---- hosts without elicitation (D3) ---------------------------------------------------------------------------------------------------------------------
 test('no elicitation capability: every write is refused, nothing written, counted as a refusal', async () => {
-  for (const caps of [null, 'url-only', 'not-an-object']) {
+  for (const caps of [null, 'url-only', 'not-an-object', 'form-false', 'form-null', 'form-true']) {
     const s = setup();
-    const c = client({ elicitation: caps === 'url-only' ? { url: {} } : caps === 'not-an-object' ? true : null });
+    const c = client({ elicitation: caps === 'url-only' ? { url: {} } : caps === 'not-an-object' ? true : caps === 'form-false' ? { form: false } : caps === 'form-null' ? { form: null } : caps === 'form-true' ? { form: true } : null });
     const u = (await s.fetch(c.ctx)).structuredContent.use;
     for (const [tool, args] of [['e3d_skill_report_use', {}], ['e3d_skill_report_outcome', { result: 'worked' }], ['e3d_skill_delete_outcome', {}]]) {
       const res = await s.call(tool, { use_id: u.use_id, ...args }, c.ctx);
@@ -413,6 +416,82 @@ test('wording: no banned word and no causal or improvement claim in any descript
   strings.push(text(await s2.call('e3d_skill_report_outcome', { use_id: u2.use_id, result: 'worked' }, c2.ctx)), c2.asked[0].params.message);
   for (const x of strings) { assert.doesNotMatch(x, BANNED, x.slice(0, 120)); assert.doesNotMatch(x, CAUSAL, x.slice(0, 120)); }
   for (const t of writeTools()) assert.match(t.description, /Recording is optional\. Do not call a write tool unless your user has asked you to\./);
+});
+
+// ---- after review: the per-use queue re-checks everything before asking and before writing ------------------------------------------------------------
+test('queued writes after a decline: no further dialog and nothing written (review exp2)', async () => {
+  const s = setup(); let n = 0; const seq = ['decline', 'decline', 'accept', 'accept', 'accept'];
+  const c = client({ answer: () => { const a = seq[n++]; return a === 'accept' ? { action: 'accept', content: { result: 'worked' } } : { action: a }; } });
+  const u = (await s.fetch(c.ctx)).structuredContent.use;
+  const res = await Promise.all([1, 2, 3, 4, 5].map(() => s.call('e3d_skill_report_outcome', { use_id: u.use_id, result: 'failed' }, c.ctx)));
+  assert.equal(c.asked.length, 1, 'one dialog: the calls queued behind the decline do not ask');
+  assert.equal(res[0].structuredContent.reason, 'declined');
+  for (const r of res.slice(1)) { assert.equal(r.isError, true); assert.equal(r.structuredContent.error.code, 'rate_limited'); }
+  assert.equal(existsSync(s.dir), false);
+  // the same for queued report_use and delete calls
+  const s2 = setup(); const c2 = client({ answer: () => ({ action: 'decline' }) }); const u2 = (await s2.fetch(c2.ctx)).structuredContent.use;
+  await Promise.all([s2.call('e3d_skill_report_use', { use_id: u2.use_id }, c2.ctx), s2.call('e3d_skill_report_use', { use_id: u2.use_id }, c2.ctx), s2.call('e3d_skill_delete_outcome', { use_id: u2.use_id }, c2.ctx)]);
+  assert.equal(c2.asked.length, 1); assert.equal(existsSync(s2.dir), false);
+});
+test('supersession cap holds under concurrent calls on the unconfirmed path (review exp1)', async () => {
+  const s = setup({ unconfirmed: true }); const c = client({ elicitation: null });
+  const u = (await s.fetch(c.ctx)).structuredContent.use;
+  await s.call('e3d_skill_report_outcome', { use_id: u.use_id, result: 'worked' }, c.ctx);
+  const res = await Promise.all(['failed', 'worked', 'failed', 'worked', 'failed', 'worked', 'failed', 'worked'].map((r) => s.call('e3d_skill_report_outcome', { use_id: u.use_id, result: r }, c.ctx)));
+  assert.deepEqual(res.slice(0, 3).map((r) => r.structuredContent.status), ['superseded', 'superseded', 'superseded']);
+  // after the cap: a different result is refused, the same result as the current one is `unchanged` (writes nothing)
+  for (const r of res.slice(3)) assert.ok(/supersession_cap/.test(r.content[0].text) || r.structuredContent.status === 'unchanged', r.content[0].text);
+  assert.ok(res.slice(3).filter((r) => /supersession_cap/.test(r.content[0].text)).length >= 2);
+  assert.equal(rows(s.dir, 'outcomes.jsonl').length, 4, 'one outcome and three corrections, no more');
+});
+test('supersession cap holds under concurrent calls on the dialog path', async () => {
+  const s = setup(); let n = 0; const c = client({ answer: () => ({ action: 'accept', content: { result: n++ % 2 ? 'failed' : 'worked' } }) });
+  const u = (await s.fetch(c.ctx)).structuredContent.use;
+  const res = await Promise.all([1, 2, 3, 4, 5, 6, 7].map(() => s.call('e3d_skill_report_outcome', { use_id: u.use_id, result: 'worked' }, c.ctx)));
+  assert.deepEqual(res.slice(0, 4).map((r) => r.structuredContent.status), ['recorded', 'superseded', 'superseded', 'superseded']);
+  for (const r of res.slice(4)) assert.match(r.content[0].text, /supersession_cap/);
+  assert.equal(rows(s.dir, 'outcomes.jsonl').length, 4); assert.equal(c.asked.length, 4, 'no dialog once the cap is reached');
+});
+test('delete: the dialog counts what is on file when it is shown (a report queued before it is included)', async () => {
+  const { s, u } = await chainOfTwo();
+  const c = client({ answer: (p) => ('confirm' in p.requestedSchema.properties ? { action: 'accept', content: { confirm: true } } : { action: 'accept', content: { result: 'unknown' } }) });
+  const [rep, del] = await Promise.all([s.call('e3d_skill_report_outcome', { use_id: u.use_id, result: 'worked' }, c.ctx), s.call('e3d_skill_delete_outcome', { use_id: u.use_id }, c.ctx)]);
+  assert.equal(rep.structuredContent.status, 'superseded');
+  assert.match(c.asked[1].params.message, /removes 3 recorded outcomes \(2 user-marked, 1 host-reported\)/);
+  assert.equal(del.structuredContent.status, 'deleted'); assert.equal(del.structuredContent.removed, 3);
+});
+test('delete: a delete and re-mark of the same shape between the dialog and the write is refused (outcome_ids compared)', async () => {
+  const { s, u } = await chainOfTwo();
+  const c = client({ answer: () => {
+    deleteOutcome(s.dir, u.use_id, s.clock.t); // someone else (the CLI) deletes and re-marks: again 1 host-reported then 1 user-marked
+    reportOutcome(s.dir, { use_id: u.use_id, result: 'worked', tier: 'host_reported', reported_by: 'host' }, s.clock.t);
+    reportOutcome(s.dir, { use_id: u.use_id, result: 'failed', tier: 'user_marked', reported_by: 'user' }, s.clock.t);
+    return { action: 'accept', content: { confirm: true } };
+  } });
+  const before = () => rows(s.dir, 'outcomes.jsonl').filter((r) => r.k === 'tombstone').length;
+  const res = await s.call('e3d_skill_delete_outcome', { use_id: u.use_id }, c.ctx);
+  assert.equal(res.isError, true); assert.match(res.content[0].text, /skill_outcome_conflict/);
+  assert.equal(before(), 1, 'only the other writer\'s deletion is on file');
+});
+test('the outcome dialog never carries the agent\'s result (no anchoring): the same text whatever the agent says', async () => {
+  const msgs = [];
+  for (const r of ['worked', 'failed', 'unknown']) {
+    const s = setup(); const c = client({ answer: ACCEPT({ result: 'unknown' }) });
+    const u = (await s.fetch(c.ctx, { id: 'skeptic', task_class: 'code-review' })).structuredContent.use;
+    await s.call('e3d_skill_report_outcome', { use_id: u.use_id, result: r }, c.ctx);
+    msgs.push(JSON.stringify(c.asked[0].params));
+    assert.doesNotMatch(c.asked[0].params.message, /\b(worked|failed|unknown)\b/, 'no result word in the message');
+    assert.ok(!('default' in c.asked[0].params.requestedSchema.properties.result));
+  }
+  assert.equal(new Set(msgs).size, 1, 'the dialog is byte-identical for every agent result');
+});
+test('session binding: in production a ticket of another session cannot be presented (documented)', async () => {
+  // One ledger per process and a ticket always carries that ledger's session_id, so "another session" means another process: its ids are not in this
+  // ledger at all (the forged/foreign case above). The ledger's own session check is unit-tested in tests/fixtures/calibration/mcp-ledger.mjs. Here: the
+  // writer never passes a session of the caller's choosing, so a lookup in this ledger with another session is refused.
+  const s = setup(); const c = client(); const u = (await s.fetch(c.ctx)).structuredContent.use;
+  assert.equal(s.ledger.lookup(u.use_id, { session_id: 'other' }).ok, false);
+  assert.equal(s.ledger.lookup(u.use_id).ok, true);
 });
 
 let failed = 0;
