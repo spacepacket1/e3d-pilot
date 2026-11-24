@@ -290,6 +290,16 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# E3D_SKILLS=1: one switch for the local skills features (E3D_SPECIALISTS, E3D_SKILLS_V1, E3D_SKILLS_SEATS, E3D_SKILLS_OBSERVER). A switch set by name still wins, so
+# E3D_SKILLS=1 E3D_SKILLS_OBSERVER=0 keeps observers off. It never turns on calibration, hosted skills or the MCP skills tools.
+if [[ -n "${E3D_SKILLS+x}" ]]; then
+  case "$E3D_SKILLS" in ''|0|1) ;; *) echo "error: E3D_SKILLS must be 0 or 1" >&2; exit 2 ;; esac
+  if [[ "$E3D_SKILLS" == "1" ]]; then
+    for _sk in E3D_SPECIALISTS E3D_SKILLS_V1 E3D_SKILLS_SEATS E3D_SKILLS_OBSERVER; do
+      [[ -z "${!_sk+x}" ]] && export "$_sk=1"
+    done
+  fi
+fi
 if [[ -n "${E3D_SPECIALISTS+x}" ]]; then
   case "$E3D_SPECIALISTS" in ''|0|1) ;; *) echo "error: E3D_SPECIALISTS must be 0 or 1" >&2; exit 2 ;; esac
 fi

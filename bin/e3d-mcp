@@ -813,6 +813,7 @@ async function executeDebate(plan, handle, ctx, { progress, onStarted, signal } 
 
 // The environment a hosted-skills debate needs on top of the plan's limits. Switches this run does not use are removed, so the engine never sees a setting the host happened to have.
 function withSkillsEnv(sk, env) {
+  delete env.E3D_SKILLS; // the local umbrella switch never reaches a hosted run
   if (!sk) return env;
   for (const k of ['E3D_SKILLS_SEATS', 'E3D_SKILLS_OBSERVER', 'E3D_DEBATE_OBSERVER_MAX_TOKENS', 'E3D_DEBATE_OBSERVER_INPUT_BYTES_MAX']) delete env[k];
   Object.assign(env, { E3D_SPECIALISTS: '1', E3D_SKILLS_V1: '1', E3D_SKILLS_HOSTED: '1' });
