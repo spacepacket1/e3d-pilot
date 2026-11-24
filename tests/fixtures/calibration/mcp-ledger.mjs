@@ -193,7 +193,7 @@ test('withElicitation: a throw or a rejection releases the lock and the use_id c
   await assert.rejects(l.withElicitation('use_a', () => Promise.reject(new Error('nope'))), /nope/); assert.equal(l.elicitationPending(), false);
   assert.equal((await l.withElicitation('use_a', async () => ({ ok: true }))).ok, true);
 });
-test('withElicitation: a host that never answers is released at the timeout (default 120 s), and the next use_id call proceeds', async () => {
+test('withElicitation: a host that never answers is released at the timeout (default 300 s), and the next use_id call proceeds', async () => {
   const t = fakeTimers(); const { l } = mk({ timers: t }); const p = l.withElicitation('use_a', () => new Promise(() => {}));
   const p2 = l.withElicitation('use_a', async () => ({ ok: true, second: true }));
   await new Promise((r) => setImmediate(r)); assert.equal(t.q[0].ms, ELICIT_TIMEOUT_MS); assert.equal(l.elicitationPending(), true);
