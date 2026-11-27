@@ -270,6 +270,7 @@ assert.ok(!logs.join('\n').includes(MARK), 'route logs carry no skill text');
 
 // ---- stale e3d-chat-* temp dirs
 const base = fs.mkdtempSync(join(tmpdir(), 'cus-'));
+const outside = fs.mkdtempSync(join(tmpdir(), 'cus-out-'));   // NOT swept: the target of a link inside the swept root
 try {
   const old = Date.now() / 1000 - 7200;
   const mk = (name, { mode = 0o700, files = ['prompt.md'], age = old } = {}) => {
@@ -282,7 +283,11 @@ try {
   const extra = mk('e3d-chat-dddddd', { files: ['prompt.md', 'keep.txt'] });
   const other = mk('e3d-mcp-eeeeee');
   const odd = mk('e3d-chat-toolongname');
-  fs.symlinkSync(stale.replace('aaaaaa', 'bbbbbb'), join(base, 'e3d-chat-ffffff'));
+  // a link named like a chat dir, pointing at a STALE private dir of ours outside the root: only lstat (never stat) keeps the sweep from following it
+  const target = join(outside, 'target');
+  fs.mkdirSync(target); for (const f of ['prompt.md', 'ws-record.json']) fs.writeFileSync(join(target, f), `${MARK} elsewhere`, { mode: 0o600 });
+  fs.chmodSync(target, 0o700); fs.utimesSync(target, old, old);
+  fs.symlinkSync(target, join(base, 'e3d-chat-ffffff'));
   const removed = await sweepStaleChatDirs({ base });
   assert.equal(removed, 1);
   assert.ok(!fs.existsSync(stale), 'a stale private chat dir is removed');
@@ -290,9 +295,10 @@ try {
   assert.ok(fs.existsSync(join(open, 'prompt.md')), 'one that is not private (0700) is not ours to touch');
   assert.ok(!fs.existsSync(join(extra, 'prompt.md')) && fs.existsSync(join(extra, 'keep.txt')), 'a dir with an unknown file loses its prompt only');
   assert.ok(fs.existsSync(join(other, 'prompt.md')) && fs.existsSync(join(odd, 'prompt.md')), 'other names are left alone');
-  assert.ok(fs.lstatSync(join(base, 'e3d-chat-ffffff')).isSymbolicLink() && fs.existsSync(join(fresh, 'prompt.md')), 'a symlink is neither followed nor removed');
+  assert.ok(fs.lstatSync(join(base, 'e3d-chat-ffffff')).isSymbolicLink(), 'a symlink is not removed');
+  assert.ok(fs.statSync(target).isDirectory() && fs.existsSync(join(target, 'prompt.md')) && fs.existsSync(join(target, 'ws-record.json')), 'a symlink to a stale private dir is not followed: its target and files survive');
   assert.equal(await sweepStaleChatDirs({ base: join(base, 'missing') }), 0, 'a missing base is not an error');
-} finally { fs.chmodSync(join(base, 'e3d-chat-cccccc'), 0o700); fs.rmSync(base, { recursive: true, force: true }); }
+} finally { fs.chmodSync(join(base, 'e3d-chat-cccccc'), 0o700); fs.rmSync(base, { recursive: true, force: true }); fs.rmSync(outside, { recursive: true, force: true }); }
 ok('stale e3d-chat-* dirs: private, this user\'s and older than an hour are removed; recent, open, oddly named or linked ones are not');
 
 console.log(`chat user skills unit tests: ${n} passed`);
