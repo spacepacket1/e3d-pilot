@@ -50,10 +50,10 @@ import { createHash, randomUUID } from 'node:crypto';
 import { createRuns, validateRunsConfig } from '../lib/mcp/runs.js';
 import { startRunServer, validateRunServerConfig, EXPERTS_LIMITS } from '../lib/mcp/run-server.js';
 import { createRecapRunner, recapConfigFrom } from '../lib/mcp/recap-runner.js';
-import { createChatRunner, chatConfigFrom } from '../lib/mcp/chat-runner.js';
+import { createChatRunner, chatConfigFrom, sweepStaleChatDirs } from '../lib/mcp/chat-runner.js';
 import { normalizeRounds } from '../lib/debate/recap.mjs';
 import { CASE_SYNTH_EXTRA_TOKENS } from '../lib/debate/case.mjs';
-import { validatePricingConfig, createPricingClient, limitsForPlan, pricedError, debateEnvFor, readUsageRows, searchCapable, searchCapFromEnv, requestedSearches, expertsRunFrom, skillsRunFrom } from '../lib/mcp/pricing.js';
+import { validatePricingConfig, createPricingClient, limitsForPlan, pricedError, debateEnvFor, readUsageRows, searchCapable, searchCapFromEnv, requestedSearches, expertsRunFrom, skillsRunFrom, chatUserSkillsFrom } from '../lib/mcp/pricing.js';
 import { loadExperts } from '../lib/debate/specialists.mjs';
 import { lensBlock } from '../lib/debate/specialists-plan.mjs';
 import { galleryFrom, createGalleryRead, GALLERY_INSTRUCTION } from '../lib/mcp/gallery-read.js';
@@ -79,6 +79,9 @@ const SKILLS_RUN = skillsRunFrom(process.env, { mode: PRICING_CONFIG.mode });
 const RECAP_CONFIG = recapConfigFrom(process.env);
 // the single-model chat run (docs/chat-run.md): off unless E3D_MCP_CHAT=1, which also needs E3D_MCP_CHAT_PROVIDERS
 const CHAT_CONFIG = chatConfigFrom(process.env);
+// E3D_MCP_CHAT_USER_SKILLS=1 (cloud docs/skills-chat-plan.md section 7): the chat run takes one hosted user skill per message and the listener advertises
+// chat_user_skills_v1. Needs E3D_MCP_CHAT=1 and the skills-run seats switch; unset or 0, the fields are answered 409 skills_unavailable and nothing else changes.
+const CHAT_USER_SKILLS = chatUserSkillsFrom(process.env, { chatOn: CHAT_CONFIG.on, skillsRun: SKILLS_RUN });
 const RESULT_ROUNDS = process.env.E3D_MCP_RESULT_ROUNDS === '1';
 const BUILTIN_EXPERTS_DIR = fileURLToPath(new URL('../lib/specialists', import.meta.url));
 let pricingClient = null; // billing's quote and usage-report client, once the external hook is running under per_token
@@ -1531,6 +1534,10 @@ if (!SKILLS_RUN.ok) {
   process.stderr.write(`[e3d-mcp] refusing to start: ${SKILLS_RUN.errors.join('; ')}\n`);
   process.exit(2);
 }
+if (!CHAT_USER_SKILLS.ok) {
+  process.stderr.write(`[e3d-mcp] refusing to start: ${CHAT_USER_SKILLS.errors.join('; ')}\n`);
+  process.exit(2);
+}
 if (PANEL_CONFIG.panel && !HTTP_MODE) {
   process.stderr.write('[e3d-mcp] E3D_MCP_PANEL is only supported in hosted mode (--http) with E3D_MCP_AUTH_URL; unset it for stdio.\n');
   process.exit(2);
@@ -1682,6 +1689,8 @@ async function startAuthHook() {
   if (PANEL_CONFIG.panel) panelClient = createPanelClient({ log });
   if (PRICING_CONFIG.mode === 'per_token') pricingClient = createPricingClient({ log });
   if (SKILLS_RUN.on) await sweepStaleHostedFiles();
+  // a chat killed mid-call can leave its temporary prompt (the conversation and, with a user skill, the skill text) behind: removed at start, never logged
+  if (CHAT_CONFIG.on) { const n = await sweepStaleChatDirs(); if (n) log(`swept ${n} stale chat temp director${n === 1 ? 'y' : 'ies'} left by an earlier process`); }
   const outbox = createOutbox({ dir: usage.dir, auth: external, log });
   external.attachOutbox(outbox);
   metering = createMetering({ localUsage: usage, external, outbox, log, dir: usage.dir });
@@ -1726,7 +1735,7 @@ if (HTTP_MODE) {
       runServer = await startRunServer({ port: RUN_SERVER.config.port, token: RUN_SERVER.config.token, failsPerMin: RUN_SERVER.config.failsPerMin,
         runs, external: hook.external, plan: planWebRun, log, pricing: { mode: PRICING_CONFIG.mode, customer: runsConfig.customer, search: searchCapable(process.env, { mode: PRICING_CONFIG.mode }), experts: EXPERTS_RUN.on, skills: SKILLS_RUN.on ? { seats: SKILLS_RUN.seats, observer: SKILLS_RUN.observer } : false },
         recap: RECAP_CONFIG.on ? createRecapRunner({ providersDir: fileURLToPath(new URL('../lib/providers', import.meta.url)), providers: RECAP_CONFIG.providers, log }) : null,
-        chat: CHAT_CONFIG.on ? createChatRunner({ providersDir: fileURLToPath(new URL('../lib/providers', import.meta.url)), providers: CHAT_CONFIG.providers, log, ...(EXPERTS_RUN.on ? { expertsDir: BUILTIN_EXPERTS_DIR } : {}) }) : null });
+        chat: CHAT_CONFIG.on ? createChatRunner({ providersDir: fileURLToPath(new URL('../lib/providers', import.meta.url)), providers: CHAT_CONFIG.providers, log, ...(EXPERTS_RUN.on ? { expertsDir: BUILTIN_EXPERTS_DIR } : {}), userSkills: CHAT_USER_SKILLS.on }) : null });
     }
   } catch (e) { process.stderr.write(`[e3d-mcp] ${redact(e.message)}\n`); process.exit(2); }
   if (process.env.E3D_MCP_PORT_FILE) await writeFile(process.env.E3D_MCP_PORT_FILE, String(server.port));
