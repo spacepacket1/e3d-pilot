@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.1
+
+Hardening and one hosted-only capability. Nothing changes for the local package: with no new switch set, behaviour is the same as 0.3.0.
+
+- Hosted chat can run one hosted user skill per message. The server advertises the capability `chat_user_skills_v1`. It is off unless `E3D_MCP_CHAT_USER_SKILLS=1`, `E3D_MCP_CHAT=1` and the skills-run seats switch are all set; without the switch a request gets a 409 `skills_unavailable`. This is for hosts only; the local package does not use it.
+- Provider adapters no longer write API keys to a temporary file, and keys are no longer in process arguments: the key header is piped to curl. Work directories are cleaned up when the adapter gets TERM, and the hosted listener removes stale leftover work directories at startup.
+- Chat and recap adapters are now ended with SIGTERM first, so the adapter's own cleanup runs, and with SIGKILL only after 5 seconds.
+- CI-only test fixes (jq binding, shared tmp scan, Node 20 load log, calibration-local on Linux). No behaviour change.
+
+Not in this release: skills in the `e3d_debate` MCP tool, a public skills gallery, pooled calibration, automatic skill selection, more than one user skill per chat message, any change to the 0.3.0 local skills or calibration features.
+
 ## 0.3.0
 
 Local skills, opt-in and off by default. With no switch set, behaviour is the same as 0.2.0 for skills; this release also contains the other engine changes merged since 0.2.0 (see the git history since the `v0.2.0` tag).
