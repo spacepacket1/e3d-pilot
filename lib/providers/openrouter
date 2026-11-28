@@ -19,7 +19,7 @@ set -euo pipefail
 #                          the `reasoning` setting of its registry entry.
 #   OPENROUTER_REASONING   off sends reasoning.enabled=false. A model that cannot switch reasoning off answers HTTP 400.
 #   OPENROUTER_REGISTRY / E3D_OPENROUTER_REGISTRY  alternative registry file (tests, operators)
-# The key is sent from a 0600 header file, never on the command line, and is never printed. No web search: these voices are not search-capable.
+# The key goes to curl on a pipe (provider_curl), never on disk or the command line, and is never printed. No web search: these voices are not search-capable.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=./common.sh
@@ -104,10 +104,9 @@ case "$RSN_OFF" in ''|off) ;; *) echo "error: $VOICE OPENROUTER_REASONING must b
 if [[ "${E3D_PROVIDER_PER_TOKEN:-0}" == "1" && -z "${OPENROUTER_MAX_TOKENS:-}" ]]; then echo "error: $VOICE needs OPENROUTER_MAX_TOKENS in per-token mode" >&2; exit "$PROVIDER_EXIT_FAILURE"; fi
 if [[ -n "${OPENROUTER_MAX_TOKENS:-}" && ! "${OPENROUTER_MAX_TOKENS}" =~ ^[0-9]+$ ]]; then echo "error: $VOICE OPENROUTER_MAX_TOKENS must be a number" >&2; exit "$PROVIDER_EXIT_FAILURE"; fi
 
-work="$(mktemp -d "${TMPDIR:-/tmp}/e3d-pilot-openrouter.XXXXXX")"
-trap 'rm -rf "$work"' EXIT
-chmod 700 "$work"
-( umask 077; printf 'Authorization: Bearer %s\nContent-Type: application/json\n' "$(or_key)" > "$work/headers" )
+provider_work_init openrouter
+work="$PROVIDER_WORK_DIR"
+auth_headers="$(printf 'Authorization: Bearer %s\nContent-Type: application/json\n' "$(or_key)")"
 
 # Provider preferences (OpenRouter "provider" object): privacy first, and the request must be honored as sent (require_parameters), so a
 # max_tokens limit is never silently ignored by an endpoint that does not support it.
@@ -123,9 +122,10 @@ jq -n --rawfile content "$PROMPT_FILE" --arg model "$MODEL" --arg max "${OPENROU
    + (if $rsn == "off" then {reasoning: {enabled: false}} elif $effort != "" then {reasoning: {effort: $effort}} else {} end)' > "$work/payload.json"
 
 set +e
-http_code="$(curl -sS -m "${OPENROUTER_TIMEOUT:-180}" -o "$work/response.json" -w '%{http_code}' \
-  -H "@$work/headers" -d "@$work/payload.json" "$URL" 2> "$work/curl.err")"
+provider_curl "$auth_headers" -sS -m "${OPENROUTER_TIMEOUT:-180}" -o "$work/response.json" -w '%{http_code}' \
+  -d "@$work/payload.json" "$URL"
 status=$?
+http_code="$PROVIDER_CURL_OUT"
 set -e
 
 if [[ $status -ne 0 ]]; then

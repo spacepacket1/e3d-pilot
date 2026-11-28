@@ -7,7 +7,7 @@ set -euo pipefail
 #   GEMINI_API_MAX_TOKENS optional (sent as max_tokens)
 #   GEMINI_API_BASE_URL   default https://generativelanguage.googleapis.com/v1beta/openai (any OpenAI-compatible endpoint works)
 # Gemini errors may arrive as a one-element JSON array; both shapes are handled.
-# The key is sent from a 0600 header file, never on the command line, and is never printed.
+# The key goes to curl on a pipe (provider_curl), never on disk or the command line, and is never printed.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=./common.sh
@@ -61,10 +61,9 @@ if [[ "${E3D_PILOT_DRY_RUN:-0}" == "1" ]]; then
   exit "$PROVIDER_EXIT_OK"
 fi
 
-work="$(mktemp -d "${TMPDIR:-/tmp}/e3d-pilot-gemini-api.XXXXXX")"
-trap 'rm -rf "$work"' EXIT
-chmod 700 "$work"
-( umask 077; printf 'Authorization: Bearer %s\nContent-Type: application/json\n' "$(gemini_key)" > "$work/headers" )
+provider_work_init gemini-api
+work="$PROVIDER_WORK_DIR"
+auth_headers="$(printf 'Authorization: Bearer %s\nContent-Type: application/json\n' "$(gemini_key)")"
 
 if ws_enabled; then
   # Web search (lib/providers/websearch.sh; docs/web-search-providers.md). Google documents the google_search tool for
@@ -75,14 +74,15 @@ if ws_enabled; then
   # a search call always has an output ceiling (8192 unless GEMINI_API_MAX_TOKENS says otherwise)
   ws_settings || ws_fail gemini-api invalid_domain_config
   native="${GEMINI_API_NATIVE_BASE_URL:-https://generativelanguage.googleapis.com/v1beta}"
-  ( umask 077; printf 'x-goog-api-key: %s\nContent-Type: application/json\n' "$(gemini_key)" > "$work/native-headers" )
+  native_headers="$(printf 'x-goog-api-key: %s\nContent-Type: application/json\n' "$(gemini_key)")"
   jq -n --rawfile content "$PROMPT_FILE" --arg model "${GEMINI_API_MODEL#models/}" --arg max "${GEMINI_API_MAX_TOKENS:-8192}" --arg sys "$WS_SYSTEM_TEXT" \
     '{model: $model, input: $content, system_instruction: $sys, store: false, tools: [{type: "google_search", search_types: ["web_search"]}]}
       + (if $max != "" then {generation_config: {max_output_tokens: ($max | tonumber)}} else {} end)' > "$work/payload.json"
   set +e
-  http_code="$(curl -sS -m "$(ws_remaining)" -o "$work/response.json" -w '%{http_code}' \
-    -H "@$work/native-headers" -d "@$work/payload.json" "${native%/}/interactions" 2> "$work/curl.err")"
+  provider_curl "$native_headers" -sS -m "$(ws_remaining)" -o "$work/response.json" -w '%{http_code}' \
+    -d "@$work/payload.json" "${native%/}/interactions"
   status=$?
+  http_code="$PROVIDER_CURL_OUT"
   set -e
   (( status == 28 )) && ws_fail gemini-api timeout
   (( status != 0 )) && ws_fail gemini-api request_failed "curl exit $status"
@@ -128,9 +128,10 @@ jq -n --rawfile content "$PROMPT_FILE" --arg model "$GEMINI_API_MODEL" --arg max
   '{model: $model, messages: [{role: "user", content: $content}]} + (if $max != "" then {max_tokens: ($max | tonumber)} else {} end)' > "$work/payload.json"
 
 set +e
-http_code="$(curl -sS -m "${GEMINI_API_TIMEOUT:-180}" -o "$work/response.json" -w '%{http_code}' \
-  -H "@$work/headers" -d "@$work/payload.json" "$URL" 2> "$work/curl.err")"
+provider_curl "$auth_headers" -sS -m "${GEMINI_API_TIMEOUT:-180}" -o "$work/response.json" -w '%{http_code}' \
+  -d "@$work/payload.json" "$URL"
 status=$?
+http_code="$PROVIDER_CURL_OUT"
 set -e
 
 if [[ $status -ne 0 ]]; then

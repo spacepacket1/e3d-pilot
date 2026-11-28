@@ -77,14 +77,15 @@ ws_record() {
   jq -nc --argjson s "$1" --argjson c "$2" '{ok:true, error:null, searches:$s, citations:$c}' > "$WS_OUT"
 }
 
-# ws_responses_run <provider> <url> <work-dir>: one Responses API call (OpenAI and xAI share the shape) with $work/headers
+# ws_responses_run <provider> <url> <work-dir> <header-lines>: one Responses API call (OpenAI and xAI share the shape) with those headers (provider_curl)
 # and $work/payload.json. Prints the answer, writes the record and the usage line, and enforces the token ceiling.
 ws_responses_run() {
-  local provider="$1" url="$2" work="$3" http_code status msg bad content tokens searches cites
+  local provider="$1" url="$2" work="$3" headers="$4" http_code status msg bad content tokens searches cites
   set +e
-  http_code="$(curl -sS -m "$(ws_remaining)" -o "$work/response.json" -w '%{http_code}' \
-    -H "@$work/headers" -d "@$work/payload.json" "$url" 2> "$work/curl.err")"
+  provider_curl "$headers" -sS -m "$(ws_remaining)" -o "$work/response.json" -w '%{http_code}' \
+    -d "@$work/payload.json" "$url"
   status=$?
+  http_code="$PROVIDER_CURL_OUT"
   set -e
   (( status == 28 )) && ws_fail "$provider" timeout
   (( status != 0 )) && ws_fail "$provider" request_failed "curl exit $status"

@@ -8,7 +8,7 @@ set -euo pipefail
 #   ANTHROPIC_API_EFFORT     optional output_config.effort; default "low" for models whose thinking cannot be turned off; empty sends nothing
 #   ANTHROPIC_API_MAX_TOKENS default 4096
 #   ANTHROPIC_API_BASE_URL   default https://api.anthropic.com
-# The key is sent from a 0600 header file, never on the command line, and is never printed.
+# The key goes to curl on a pipe (provider_curl), never on disk or the command line, and is never printed.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=./common.sh
@@ -76,10 +76,9 @@ if [[ "${E3D_PILOT_DRY_RUN:-0}" == "1" ]]; then
   exit "$PROVIDER_EXIT_OK"
 fi
 
-work="$(mktemp -d "${TMPDIR:-/tmp}/e3d-pilot-anthropic.XXXXXX")"
-trap 'rm -rf "$work"' EXIT
-chmod 700 "$work"
-( umask 077; printf 'x-api-key: %s\nanthropic-version: 2023-06-01\ncontent-type: application/json\n' "$(anthropic_key)" > "$work/headers" )
+provider_work_init anthropic
+work="$PROVIDER_WORK_DIR"
+auth_headers="$(printf 'x-api-key: %s\nanthropic-version: 2023-06-01\ncontent-type: application/json\n' "$(anthropic_key)")"
 
 if ws_enabled; then
   # Web search (lib/providers/websearch.sh; docs/web-search-providers.md). The basic tool web_search_20250305 only: the
@@ -107,9 +106,10 @@ if ws_enabled; then
   attempt=0
   while :; do
     set +e
-    http_code="$(curl -sS -m "$(ws_remaining)" -o "$work/response.json" -w '%{http_code}' \
-      -H "@$work/headers" -d "@$work/payload.json" "$URL" 2> "$work/curl.err")"
+    provider_curl "$auth_headers" -sS -m "$(ws_remaining)" -o "$work/response.json" -w '%{http_code}' \
+      -d "@$work/payload.json" "$URL"
     status=$?
+    http_code="$PROVIDER_CURL_OUT"
     set -e
     (( status == 28 )) && ws_fail anthropic-api timeout
     (( status != 0 )) && ws_fail anthropic-api request_failed "curl exit $status"
@@ -165,9 +165,10 @@ jq -n --rawfile content "$PROMPT_FILE" --arg model "$ANTHROPIC_API_MODEL" --arg 
   '{model: $model, max_tokens: ($max | tonumber), messages: [{role: "user", content: $content}]} + (if $think != "" then {thinking: {type: $think}} else {} end) + (if $effort != "" then {output_config: {effort: $effort}} else {} end)' > "$work/payload.json"
 
 set +e
-http_code="$(curl -sS -m "${ANTHROPIC_API_TIMEOUT:-180}" -o "$work/response.json" -w '%{http_code}' \
-  -H "@$work/headers" -d "@$work/payload.json" "$URL" 2> "$work/curl.err")"
+provider_curl "$auth_headers" -sS -m "${ANTHROPIC_API_TIMEOUT:-180}" -o "$work/response.json" -w '%{http_code}' \
+  -d "@$work/payload.json" "$URL"
 status=$?
+http_code="$PROVIDER_CURL_OUT"
 set -e
 
 if [[ $status -ne 0 ]]; then

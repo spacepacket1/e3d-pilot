@@ -6,7 +6,7 @@ set -euo pipefail
 #   AZURE_OPENAI_DEPLOYMENT   the deployment name (not the model name)
 #   AZURE_OPENAI_API_KEY      or AZURE_OPENAI_API_KEY_FILE (a file holding only the key)
 #   AZURE_OPENAI_API_VERSION  default 2024-10-21
-# The key is sent from a 0600 header file, never on the command line, and is never printed.
+# The key goes to curl on a pipe (provider_curl), never on disk or the command line, and is never printed.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=./common.sh
@@ -57,18 +57,18 @@ if [[ "${E3D_PILOT_DRY_RUN:-0}" == "1" ]]; then
   exit "$PROVIDER_EXIT_OK"
 fi
 
-work="$(mktemp -d "${TMPDIR:-/tmp}/e3d-pilot-azure.XXXXXX")"
-trap 'rm -rf "$work"' EXIT
-chmod 700 "$work"
-( umask 077; printf 'api-key: %s\nContent-Type: application/json\n' "$(azure_key)" > "$work/headers" )
+provider_work_init azure
+work="$PROVIDER_WORK_DIR"
+auth_headers="$(printf 'api-key: %s\nContent-Type: application/json\n' "$(azure_key)")"
 
 jq -n --rawfile content "$PROMPT_FILE" --arg max "${AZURE_OPENAI_MAX_TOKENS:-}" \
   '{messages: [{role: "user", content: $content}]} + (if $max != "" then {max_completion_tokens: ($max | tonumber)} else {} end)' > "$work/payload.json"
 
 set +e
-http_code="$(curl -sS -m "${AZURE_OPENAI_TIMEOUT:-120}" -o "$work/response.json" -w '%{http_code}' \
-  -H "@$work/headers" -d "@$work/payload.json" "$URL" 2> "$work/curl.err")"
+provider_curl "$auth_headers" -sS -m "${AZURE_OPENAI_TIMEOUT:-120}" -o "$work/response.json" -w '%{http_code}' \
+  -d "@$work/payload.json" "$URL"
 status=$?
+http_code="$PROVIDER_CURL_OUT"
 set -e
 
 if [[ $status -ne 0 ]]; then
