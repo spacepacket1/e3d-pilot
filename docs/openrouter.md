@@ -34,7 +34,7 @@ OPENROUTER_API_KEY_FILE=~/.config/e3d-pilot/openrouter-key \
 bin/e3d-pilot providers list      # the or-* voices show unavailable until a key is set
 ```
 
-The key is read from `OPENROUTER_API_KEY` or `OPENROUTER_API_KEY_FILE` (a file holding the key, or an `export OPENROUTER_API_KEY=...` line, mode 0600). It is sent from a 0600 header file, never on a command line, and never printed.
+The key is read from `OPENROUTER_API_KEY` or `OPENROUTER_API_KEY_FILE` (a file holding the key, or an `export OPENROUTER_API_KEY=...` line, mode 0600). It goes to curl on a pipe, never on disk or a command line, and is never printed.
 
 ## Settings
 

@@ -50,7 +50,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { createRuns, validateRunsConfig } from '../lib/mcp/runs.js';
 import { startRunServer, validateRunServerConfig, EXPERTS_LIMITS } from '../lib/mcp/run-server.js';
 import { createRecapRunner, recapConfigFrom } from '../lib/mcp/recap-runner.js';
-import { createChatRunner, chatConfigFrom, sweepStaleChatDirs } from '../lib/mcp/chat-runner.js';
+import { createChatRunner, chatConfigFrom, sweepStaleChatDirs, sweepStaleProviderDirs } from '../lib/mcp/chat-runner.js';
 import { normalizeRounds } from '../lib/debate/recap.mjs';
 import { CASE_SYNTH_EXTRA_TOKENS } from '../lib/debate/case.mjs';
 import { validatePricingConfig, createPricingClient, limitsForPlan, pricedError, debateEnvFor, readUsageRows, searchCapable, searchCapFromEnv, requestedSearches, expertsRunFrom, skillsRunFrom, chatUserSkillsFrom } from '../lib/mcp/pricing.js';
@@ -1691,6 +1691,8 @@ async function startAuthHook() {
   if (SKILLS_RUN.on) await sweepStaleHostedFiles();
   // a chat killed mid-call can leave its temporary prompt (the conversation and, with a user skill, the skill text) behind: removed at start, never logged
   if (CHAT_CONFIG.on) { const n = await sweepStaleChatDirs(); if (n) log(`swept ${n} stale chat temp director${n === 1 ? 'y' : 'ies'} left by an earlier process`); }
+  // a provider call killed with SIGKILL (power loss, a hard stop) can leave its curl work directory (the prompt and response) behind; older than 3 hours: removed
+  { const n = await sweepStaleProviderDirs(); if (n) log(`swept ${n} stale provider temp director${n === 1 ? 'y' : 'ies'} left by an earlier process`); }
   const outbox = createOutbox({ dir: usage.dir, auth: external, log });
   external.attachOutbox(outbox);
   metering = createMetering({ localUsage: usage, external, outbox, log, dir: usage.dir });

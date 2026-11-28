@@ -192,7 +192,7 @@ side after the call.
 - Write queries or page text to stderr, the work directory, the transcript or the decision log. The transcript holds each
   answer's domain/URL list. `web-search.json` holds the bounded, sanitised citation list (title, domain, URL, excerpt up to
   the cap; `E3D_DEBATE_SEARCH_EXCERPT_CHARS=0` removes excerpts).
-- Put secrets, environment values or account data into a prompt. Keys stay in 0600 header files, never on argv, and are
+- Put secrets, environment values or account data into a prompt. Keys go to curl on a pipe, never on disk or argv, and are
   never printed.
 - Let web content change pricing, credits, holds or settlement:
   - searches are recorded as usage (`models[].searches`, the daily search cap) and never change `calls`;

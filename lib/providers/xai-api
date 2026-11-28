@@ -6,7 +6,7 @@ set -euo pipefail
 #   XAI_API_MODEL      required: there is deliberately no default, because valid model names change
 #   XAI_API_MAX_TOKENS optional (sent as max_tokens)
 #   XAI_API_BASE_URL   default https://api.x.ai/v1 (any OpenAI-compatible endpoint works)
-# The key is sent from a 0600 header file, never on the command line, and is never printed.
+# The key goes to curl on a pipe (provider_curl), never on disk or the command line, and is never printed.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=./common.sh
@@ -60,10 +60,9 @@ if [[ "${E3D_PILOT_DRY_RUN:-0}" == "1" ]]; then
   exit "$PROVIDER_EXIT_OK"
 fi
 
-work="$(mktemp -d "${TMPDIR:-/tmp}/e3d-pilot-xai-api.XXXXXX")"
-trap 'rm -rf "$work"' EXIT
-chmod 700 "$work"
-( umask 077; printf 'Authorization: Bearer %s\nContent-Type: application/json\n' "$(xai_key)" > "$work/headers" )
+provider_work_init xai-api
+work="$PROVIDER_WORK_DIR"
+auth_headers="$(printf 'Authorization: Bearer %s\nContent-Type: application/json\n' "$(xai_key)")"
 
 if ws_enabled; then
   # Web search (lib/providers/websearch.sh; docs/web-search-providers.md): the Responses API with exactly one tool,
@@ -80,16 +79,17 @@ if ws_enabled; then
         + (if ($allow | length) > 0 and ($allow | length) <= 5 then {filters: {allowed_domains: $allow}}
            elif ($deny | length) > 0 and ($deny | length) <= 5 then {filters: {excluded_domains: $deny}} else {} end)]}
       + (if $max != "" then {max_output_tokens: ($max | tonumber)} else {} end)' > "$work/payload.json"
-  ws_responses_run xai-api "${XAI_API_BASE_URL%/}/responses" "$work"
+  ws_responses_run xai-api "${XAI_API_BASE_URL%/}/responses" "$work" "$auth_headers"
 fi
 
 jq -n --rawfile content "$PROMPT_FILE" --arg model "$XAI_API_MODEL" --arg max "${XAI_API_MAX_TOKENS:-}" \
   '{model: $model, messages: [{role: "user", content: $content}]} + (if $max != "" then {max_tokens: ($max | tonumber)} else {} end)' > "$work/payload.json"
 
 set +e
-http_code="$(curl -sS -m "${XAI_API_TIMEOUT:-180}" -o "$work/response.json" -w '%{http_code}' \
-  -H "@$work/headers" -d "@$work/payload.json" "$URL" 2> "$work/curl.err")"
+provider_curl "$auth_headers" -sS -m "${XAI_API_TIMEOUT:-180}" -o "$work/response.json" -w '%{http_code}' \
+  -d "@$work/payload.json" "$URL"
 status=$?
+http_code="$PROVIDER_CURL_OUT"
 set -e
 
 if [[ $status -ne 0 ]]; then

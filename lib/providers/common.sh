@@ -127,6 +127,43 @@ provider_key_from_file() {
   fi
 }
 
+# Work directory and vendor call for the curl adapters (anthropic-api, openai-api, xai-api, gemini-api, openrouter, azure-openai).
+# The API key is never written to disk and never on a command line: the header lines go to curl on a pipe (-H @-), written by a
+# shell builtin. The work dir (payload, response, curl.err) is removed on exit AND on TERM/INT/HUP: curl runs in the background
+# and the script waits for it, so a signal (provider_run_with_timeout sends TERM, then KILL a second later) runs the cleanup at
+# once instead of after curl returns. The signal is then re-raised, so the caller sees the same status as before.
+PROVIDER_WORK_DIR=""
+PROVIDER_CURL_PID=""
+PROVIDER_CURL_OUT=""
+provider_cleanup() {
+  if [[ -n "$PROVIDER_CURL_PID" ]]; then kill -TERM "$PROVIDER_CURL_PID" 2>/dev/null || true; fi
+  if [[ -n "$PROVIDER_WORK_DIR" ]]; then rm -rf "$PROVIDER_WORK_DIR"; fi
+}
+# provider_work_init <name>: creates ${TMPDIR}/e3d-pilot-<name>.XXXXXX (0700) as PROVIDER_WORK_DIR and installs the cleanup traps.
+# Call it in the main script, not in $(...), so the traps belong to the provider process.
+provider_work_init() {
+  local sig
+  PROVIDER_WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/e3d-pilot-$1.XXXXXX")"
+  trap provider_cleanup EXIT
+  for sig in TERM INT HUP; do
+    # shellcheck disable=SC2064
+    trap "provider_cleanup; trap - EXIT $sig; kill -$sig \$\$; exit 1" "$sig"
+  done
+  chmod 700 "$PROVIDER_WORK_DIR"
+}
+# provider_curl <header-lines> <curl args...>: one vendor call. The header lines (key included) go on curl's stdin; stdout (the -w
+# output) is left in PROVIDER_CURL_OUT and stderr in $PROVIDER_WORK_DIR/curl.err, as the adapters had them. Returns curl's exit status.
+provider_curl() {
+  local headers="$1" status=0
+  shift
+  printf '%s\n' "$headers" | curl "$@" -H @- > "$PROVIDER_WORK_DIR/curl.out" 2> "$PROVIDER_WORK_DIR/curl.err" &
+  PROVIDER_CURL_PID=$!
+  wait "$PROVIDER_CURL_PID" || status=$?
+  PROVIDER_CURL_PID=""
+  PROVIDER_CURL_OUT="$(cat "$PROVIDER_WORK_DIR/curl.out")"
+  return "$status"
+}
+
 # Normalised billed token counts for the OpenAI-compatible adapters (openai-api, gemini-api, xai-api), as a jq function `oai_usage`
 # for the e3d_provider_usage= line: input_tokens = prompt_tokens (cached included); output_tokens = every billed output token,
 # reasoning or thinking included. A vendor may report those apart from completion_tokens (xAI reasoning_tokens, Gemini thoughts), so the

@@ -6,7 +6,7 @@ set -euo pipefail
 #   OPENAI_API_MODEL      required: there is deliberately no default, because valid model names change
 #   OPENAI_API_MAX_TOKENS optional (sent as max_completion_tokens)
 #   OPENAI_API_BASE_URL   default https://api.openai.com/v1 (any OpenAI-compatible endpoint works)
-# The key is sent from a 0600 header file, never on the command line, and is never printed.
+# The key goes to curl on a pipe (provider_curl), never on disk or the command line, and is never printed.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=./common.sh
@@ -60,10 +60,9 @@ if [[ "${E3D_PILOT_DRY_RUN:-0}" == "1" ]]; then
   exit "$PROVIDER_EXIT_OK"
 fi
 
-work="$(mktemp -d "${TMPDIR:-/tmp}/e3d-pilot-openai.XXXXXX")"
-trap 'rm -rf "$work"' EXIT
-chmod 700 "$work"
-( umask 077; printf 'Authorization: Bearer %s\nContent-Type: application/json\n' "$(openai_key)" > "$work/headers" )
+provider_work_init openai
+work="$PROVIDER_WORK_DIR"
+auth_headers="$(printf 'Authorization: Bearer %s\nContent-Type: application/json\n' "$(openai_key)")"
 
 if ws_enabled; then
   # Web search (lib/providers/websearch.sh; docs/web-search-providers.md): the Responses API with exactly one tool,
@@ -80,16 +79,17 @@ if ws_enabled; then
       tools: [{type: "web_search", search_context_size: (if ($ctx | IN("low","medium","high")) then $ctx else "low" end), external_web_access: true}
         + (if ($allow | length) > 0 then {filters: {allowed_domains: $allow}} elif ($deny | length) > 0 then {filters: {blocked_domains: $deny}} else {} end)]}
       + (if $max != "" then {max_output_tokens: ($max | tonumber)} else {} end)' > "$work/payload.json"
-  ws_responses_run openai-api "${OPENAI_API_BASE_URL%/}/responses" "$work"
+  ws_responses_run openai-api "${OPENAI_API_BASE_URL%/}/responses" "$work" "$auth_headers"
 fi
 
 jq -n --rawfile content "$PROMPT_FILE" --arg model "$OPENAI_API_MODEL" --arg max "${OPENAI_API_MAX_TOKENS:-}" \
   '{model: $model, messages: [{role: "user", content: $content}]} + (if $max != "" then {max_completion_tokens: ($max | tonumber)} else {} end)' > "$work/payload.json"
 
 set +e
-http_code="$(curl -sS -m "${OPENAI_API_TIMEOUT:-180}" -o "$work/response.json" -w '%{http_code}' \
-  -H "@$work/headers" -d "@$work/payload.json" "$URL" 2> "$work/curl.err")"
+provider_curl "$auth_headers" -sS -m "${OPENAI_API_TIMEOUT:-180}" -o "$work/response.json" -w '%{http_code}' \
+  -d "@$work/payload.json" "$URL"
 status=$?
+http_code="$PROVIDER_CURL_OUT"
 set -e
 
 if [[ $status -ne 0 ]]; then

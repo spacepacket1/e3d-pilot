@@ -61,10 +61,11 @@ jev_call() {
     '{state:$state, model:$model, questions:$questions}')" || return 1
 
   tmp_body="$(mktemp "${TMPDIR:-/tmp}/e3d-jev-response.XXXXXX")"
-  http_status="$(curl -sS -o "$tmp_body" -w '%{http_code}' \
+  # the key goes to curl on a pipe (a shell builtin writes it), never on curl's command line where ps would show it
+  http_status="$(printf 'Authorization: Bearer %s\n' "$TYPESAFE_API_KEY" | curl -sS -o "$tmp_body" -w '%{http_code}' \
     --max-time "$JEV_CALL_TIMEOUT" \
     -X POST "$JEV_API_URL" \
-    -H "Authorization: Bearer ${TYPESAFE_API_KEY}" \
+    -H @- \
     -H "Content-Type: application/json" \
     -d "$body" 2>/dev/null)" || {
     rm -f "$tmp_body"
