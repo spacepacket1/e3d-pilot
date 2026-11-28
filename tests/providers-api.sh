@@ -9,6 +9,8 @@ OAI="$ROOT/lib/providers/openai-api"
 XAI="$ROOT/lib/providers/xai-api"
 GEM="$ROOT/lib/providers/gemini-api"
 TMP="$(mktemp -d)"
+# private TMPDIR: the leftover-temp-dir checks below must only see dirs this test's own provider runs leave, not ones other tests in the same run leaked
+mkdir -p "$TMP/tmp"; export TMPDIR="$TMP/tmp"
 SERVER_PID=""
 trap '[[ -n "$SERVER_PID" ]] && kill "$SERVER_PID" 2>/dev/null || true; rm -rf "$TMP"' EXIT
 
