@@ -95,7 +95,7 @@ assert_lineage() {
     --arg no_activity "$no_activity" --arg in_progress "$in_progress" \
     --arg shipped "$shipped" --arg external "$external" --arg rejected "$rejected" '
     length == 5
-    and (map({key:.idea_id,value:.}) | from_entries) as $by_id
+    and ((map({key:.idea_id,value:.}) | from_entries) as $by_id
     | ($by_id[$no_activity].status_summary == "no_activity"
        and ($by_id[$no_activity].has_produced_commit | not)
        and ($by_id[$no_activity].has_observed_commit | not)
@@ -109,7 +109,7 @@ assert_lineage() {
          and ($by_id[$external].has_produced_commit | not)
          and $by_id[$external].has_observed_commit)
     and ($by_id[$rejected].status_summary == "rejected")
-    and all(.[]; (.title | type == "string" and length > 0) and (.evidence | length > 0))
+    and all(.[]; (.title | type == "string" and length > 0) and (.evidence | length > 0)))
   ' <<<"$json" >/dev/null
 
   jq -n -e --argjson results "$json" --slurpfile events "$events_file" '
@@ -196,7 +196,7 @@ fleet_cross_repo_compares_proposed_and_actual_sets() {
   json="$("$BIN" fleet provenance query cross-repo "$fleet_file" --json)"
   jq -e --arg mismatch "$mismatch" --arg matched "$matched" --arg proposed_only "$proposed_only" '
     length == 2
-    and (map({key:.idea_id,value:.}) | from_entries) as $by_id
+    and ((map({key:.idea_id,value:.}) | from_entries) as $by_id
     | ($by_id[$mismatch].proposed_repos == ["repo-a","repo-b","repo-c"]
        and $by_id[$mismatch].actual_repos == ["repo-a"]
        and ($by_id[$mismatch].matches | not))
@@ -204,7 +204,7 @@ fleet_cross_repo_compares_proposed_and_actual_sets() {
          and $by_id[$matched].actual_repos == ["repo-a","repo-b"]
          and $by_id[$matched].matches)
     and (map(.idea_id) | index($proposed_only) == null)
-    and all(.[]; (.title | length > 0) and (.evidence | length >= 2))
+    and all(.[]; (.title | length > 0) and (.evidence | length >= 2)))
   ' <<<"$json" >/dev/null
 
   events_file="$workspace/.e3d-pilot-fleet/events.jsonl"
