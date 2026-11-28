@@ -359,7 +359,7 @@ await ok('two writers racing: no torn line, no lost record, and a chain of corre
   registerUse(dir, newUse({ use_id: 'use_race0001', skill: SKILL }, NOW));
   const run = (m, count, tag) => new Promise((res, rej) => { const p = spawn(process.execPath, [join(HERE, 'worker.mjs'), dir, m, String(count), tag]); let out = ''; let err = ''; p.stdout.on('data', (d) => { out += d; }); p.stderr.on('data', (d) => { err += d; }); p.on('exit', (c) => (c === 0 ? res({ out: out.trim(), err }) : rej(new Error(err)))); });
   const rs = await Promise.all([run('distinct', 60, 'a'), run('distinct', 60, 'b'), run('same', 25, 'x'), run('same', 25, 'y')]);
-  assert.deepEqual(rs.map((r) => r.out), ['60', '60', '25', '25']); assert.equal(rs[2].err + rs[3].err, '');
+  assert.deepEqual(rs.map((r) => r.out), ['60', '60', '25', '25'], `writer errors: ${rs.map((r) => r.err.trim()).join(' | ')}`); assert.equal(rs[2].err + rs[3].err, '');
   const raw = readFileSync(join(dir, 'outcomes.jsonl'), 'utf8');
   assert.ok(raw.endsWith('\n'));
   const rows = raw.split('\n').filter(Boolean).map((l) => JSON.parse(l)); // every line parses: nothing torn or interleaved
@@ -648,6 +648,7 @@ await ok('the file a breaker moved must be the one it judged, by inode as well a
   const B = proc([dir, 'take', '0', 'b'], { E3D_CALIBRATION_TEST_HOOKS: h });
   await waitFor(() => hookFile(h, 'beforeBreakLock')); writeFileSync(join(h, 'go-beforeBreakLock'), '');
   await waitFor(() => hookFile(h, 'beforeRename'));
+  linkSync(lock, join(h, 'old-lock')); // keep the old file alive so its inode number cannot be handed straight to the new one (Linux reuses a freed inode at once)
   rmSync(lock); writeFileSync(lock, '', { mode: 0o600 }); const ino2 = statSync(lock).ino; // a new holder has just created its lock and not yet written to it
   writeFileSync(join(h, 'go-beforeRename'), '');
   await waitFor(() => hookFile(h, 'afterRename')); writeFileSync(join(h, 'go-afterRename'), '');
