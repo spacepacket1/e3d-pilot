@@ -20,6 +20,7 @@ skip_reason() {
 if [[ $# -gt 0 ]]; then names=("$@"); else names=(); for f in tests/*.sh; do names+=("$(basename "$f")"); done; fi
 
 passed=(); failed=(); skipped=()
+LOGDIR="$(mktemp -d)"; trap 'rm -rf "$LOGDIR"' EXIT
 for name in "${names[@]}"; do
   name="$(basename "$name")"
   if reason="$(skip_reason "$name")"; then
@@ -27,13 +28,14 @@ for name in "${names[@]}"; do
   fi
   echo "=== RUN  $name"
   start=$SECONDS
-  perl -e 'alarm shift; exec @ARGV' "$LIMIT" bash "tests/$name" </dev/null
+  perl -e 'alarm shift; exec @ARGV' "$LIMIT" bash "tests/$name" </dev/null > "$LOGDIR/$name.log" 2>&1
   rc=$?
+  cat "$LOGDIR/$name.log"
   dur=$((SECONDS - start))
   if [[ $rc -eq 0 ]]; then echo "=== PASS $name (${dur}s)"; passed+=("$name")
   else
     [[ $rc -eq 142 ]] && echo "=== (timed out after ${LIMIT}s)"
-    echo "=== FAIL $name (exit $rc, ${dur}s)"; failed+=("$name (exit $rc)")
+    echo "=== FAIL $name (exit $rc, ${dur}s)"; failed+=("$name (exit $rc)"); tail -n 40 "$LOGDIR/$name.log" > "$LOGDIR/$name.tail"
   fi
 done
 
@@ -43,5 +45,8 @@ echo "passed:  ${#passed[@]}"
 echo "failed:  ${#failed[@]}"
 echo "skipped: ${#skipped[@]}"
 if [[ ${#skipped[@]} -gt 0 ]]; then echo "-- skipped"; printf '   %s\n' "${skipped[@]}"; fi
-if [[ ${#failed[@]} -gt 0 ]]; then echo "-- FAILED"; printf '   %s\n' "${failed[@]}"; exit 1; fi
+if [[ ${#failed[@]} -gt 0 ]]; then echo "-- FAILED"; printf '   %s\n' "${failed[@]}"
+  for f in "${failed[@]}"; do n="${f%% *}"; echo; echo "-- last 40 lines of $n"; cat "$LOGDIR/$n.tail"; done
+  exit 1
+fi
 exit 0
