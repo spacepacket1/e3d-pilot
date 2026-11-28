@@ -257,9 +257,9 @@ PY
 
   local out1="$dir/out1" out2="$dir/out2" rc1=0 rc2=0
   start="$(date +%s)"
-  (LOCAL_MODEL_ENDPOINT="$endpoint" LOCAL_MODEL_LOCK_DIR="$lockdir" "$PROVIDERS_DIR/local" "$prompt1" >"$out1" 2>&1) &
+  (LOCAL_MODEL_ENDPOINT="$endpoint" LOCAL_MODEL_LOCK_DIR="$lockdir" PS4='+${EPOCHREALTIME} ' bash -x "$PROVIDERS_DIR/local" "$prompt1" >"$out1" 2>&1) &
   pid1=$!
-  (LOCAL_MODEL_ENDPOINT="$endpoint" LOCAL_MODEL_LOCK_DIR="$lockdir" "$PROVIDERS_DIR/local" "$prompt2" >"$out2" 2>&1) &
+  (LOCAL_MODEL_ENDPOINT="$endpoint" LOCAL_MODEL_LOCK_DIR="$lockdir" PS4='+${EPOCHREALTIME} ' bash -x "$PROVIDERS_DIR/local" "$prompt2" >"$out2" 2>&1) &
   pid2=$!
   wait "$pid1" || rc1=$?
   wait "$pid2" || rc2=$?
@@ -268,7 +268,9 @@ PY
 
   kill "$server_pid" 2>/dev/null || true
   wait "$server_pid" 2>/dev/null || true
-  local detail="exit1=$rc1 exit2=$rc2 out1=[$(head -c 300 "$out1")] out2=[$(head -c 300 "$out2")]"
+  local detail="exit1=$rc1 exit2=$rc2 
+trace1=[$(grep -E 'mkdir|kill|rm -rf|sleep|curl|holder|trap|pid' "$out1" | head -30)]
+trace2=[$(grep -E 'mkdir|kill|rm -rf|sleep|curl|holder|trap|pid' "$out2" | head -30)]"
   rm -rf "$dir" "$lockdir"
   rm -f "$prompt1" "$prompt2"
 
