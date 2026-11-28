@@ -255,22 +255,26 @@ PY
   prompt1="$(make_prompt_file)"
   prompt2="$(make_prompt_file)"
 
+  local out1="$dir/out1" out2="$dir/out2" rc1=0 rc2=0
   start="$(date +%s)"
-  (LOCAL_MODEL_ENDPOINT="$endpoint" LOCAL_MODEL_LOCK_DIR="$lockdir" "$PROVIDERS_DIR/local" "$prompt1" >/dev/null 2>&1) &
+  (LOCAL_MODEL_ENDPOINT="$endpoint" LOCAL_MODEL_LOCK_DIR="$lockdir" "$PROVIDERS_DIR/local" "$prompt1" >"$out1" 2>&1) &
   pid1=$!
-  (LOCAL_MODEL_ENDPOINT="$endpoint" LOCAL_MODEL_LOCK_DIR="$lockdir" "$PROVIDERS_DIR/local" "$prompt2" >/dev/null 2>&1) &
+  (LOCAL_MODEL_ENDPOINT="$endpoint" LOCAL_MODEL_LOCK_DIR="$lockdir" "$PROVIDERS_DIR/local" "$prompt2" >"$out2" 2>&1) &
   pid2=$!
-  wait "$pid1" "$pid2"
+  wait "$pid1" || rc1=$?
+  wait "$pid2" || rc2=$?
   end="$(date +%s)"
   elapsed=$(( end - start ))
 
   kill "$server_pid" 2>/dev/null || true
   wait "$server_pid" 2>/dev/null || true
+  local detail="exit1=$rc1 exit2=$rc2 out1=[$(head -c 300 "$out1")] out2=[$(head -c 300 "$out2")]"
   rm -rf "$dir" "$lockdir"
   rm -f "$prompt1" "$prompt2"
 
+  (( rc1 == 0 && rc2 == 0 )) || { echo "a local-provider call failed ($detail)" >&2; exit 1; }
   (( elapsed >= 3 )) || {
-    echo "expected two concurrent local-provider calls to serialize (>=3s for two 2s calls), took ${elapsed}s -- lock did not prevent concurrent Qwen requests" >&2
+    echo "($detail) expected two concurrent local-provider calls to serialize (>=3s for two 2s calls), took ${elapsed}s -- lock did not prevent concurrent Qwen requests" >&2
     exit 1
   }
 }
